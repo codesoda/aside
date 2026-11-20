@@ -15,6 +15,6 @@ snapshotId: SnapshotId, overall: OverallCoverage, sources: Array<SourceCoverage>
 /**
  * Current findings whose file is excluded by repository rules. Exclusion
  * edits change this without rerunning analysis.
- * TODO(#30): full scope-aware counts and priority buckets.
+ * Full scope-aware counts and the review queue: `crate::priority` (#30).
  */
 currentFindingsExcluded: number, };

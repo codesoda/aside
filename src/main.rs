@@ -5,6 +5,9 @@ mod descriptor;
 mod diff;
 mod github;
 mod model;
+// TODO(#33): consumed by the session view / findings API.
+#[allow(dead_code)]
+mod priority;
 mod publish;
 mod rules;
 mod server;
