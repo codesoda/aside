@@ -134,14 +134,12 @@ pub struct BatchOutcome {
 
 /// Whether a finding is shown as current. Derived on every read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // TODO(#33): not consumed by the binary yet.
 pub enum ObservationLabel {
     Current,
     Historical,
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // TODO(#33): not consumed by the binary yet.
 pub struct StoredFinding {
     pub finding: Raw<ReviewFinding>,
     pub label: ObservationLabel,
@@ -199,7 +197,6 @@ pub struct PruneReport {
 
 /// Optimistic-concurrency failure for finding triage (HTTP 409 in #33).
 #[derive(Debug)]
-#[allow(dead_code)] // TODO(#33): not consumed by the binary yet.
 pub struct RevisionConflict {
     pub current: Option<FindingUserState>,
 }
@@ -546,7 +543,6 @@ impl Store {
 
     /// Findings for a PR with their derived label. With `include_historical`
     /// false only current findings are returned.
-    #[allow(dead_code)] // TODO(#33): not consumed by the binary yet.
     pub fn list_findings(
         &self,
         pr_id: &str,
@@ -601,7 +597,6 @@ impl Store {
         Ok(out)
     }
 
-    #[allow(dead_code)] // TODO(#33): not consumed by the binary yet.
     pub fn list_finding_evidence(&self, finding_id: &FindingId) -> Result<Vec<Raw<Evidence>>> {
         let mut stmt = self.conn.prepare(
             "SELECT e.evidence_json FROM finding_evidence_links l

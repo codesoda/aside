@@ -255,6 +255,34 @@ impl Session {
         })
     }
 
+    /// One consistent read of analysis state for the read-only API (#33): a
+    /// single snapshot clone and a single store lock, so the items a page
+    /// returns and the coverage it reports describe the same state.
+    pub(crate) fn read_analysis<T>(
+        &self,
+        read: impl FnOnce(AnalysisRead<'_>) -> Result<T>,
+    ) -> Result<T> {
+        let snapshot = self
+            .snapshot
+            .read()
+            .expect("snapshot lock poisoned")
+            .clone();
+        let store = self.store.lock().expect("store lock poisoned");
+        let sequence = self.sequence.load(Ordering::SeqCst);
+        let rules = store.list_rules(&self.repository.id)?;
+        let summary = self.analysis_summary(&store, &snapshot, &rules)?;
+        let mut threads = store.list_threads(&self.pr_id)?;
+        attach_files(&mut threads, &snapshot.files);
+        read(AnalysisRead {
+            store: &store,
+            pr_id: &self.pr_id,
+            sequence,
+            rules,
+            summary,
+            threads,
+        })
+    }
+
     fn analysis_input(&self, snapshot: PrSnapshot) -> AnalysisInput {
         let canonical = snapshot
             .provider_repository_id
@@ -515,6 +543,18 @@ fn invalidation_payload(invalidation: &Invalidation) -> Value {
 
 /// Import-source IDs. PR ingestion and GitHub feedback are sources alongside
 /// analysis providers, so one view says what was and was not covered.
+/// State handed to [`Session::read_analysis`]. Everything is scoped to the
+/// session's PR; nothing here reaches another PR's records.
+pub(crate) struct AnalysisRead<'a> {
+    pub store: &'a Store,
+    pub pr_id: &'a str,
+    pub sequence: u64,
+    pub rules: Vec<ExclusionRule>,
+    pub summary: AnalysisSummary,
+    /// Every thread of the PR with current file IDs attached.
+    pub threads: Vec<ReviewThread>,
+}
+
 pub mod source {
     pub const PR_DIFF: &str = "github.pr_diff";
     pub const REVIEW_THREADS: &str = "github.review_threads";
