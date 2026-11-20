@@ -10,7 +10,7 @@ mod snapshot;
 mod threads;
 
 pub use review::{
-    NewReviewComment, create_review, fetch_head_sha, reply_to_comment, review_comments,
+    NewReviewComment, create_review, fetch_revision, reply_to_comment, review_comments,
 };
 
 #[allow(unused_imports)]

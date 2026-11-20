@@ -55,6 +55,7 @@ pub struct OmittedDraft {
 pub struct PublishPlan {
     pub plan_id: String,
     pub head_sha: String,
+    pub base_sha: String,
     pub verdict: Verdict,
     pub summary: String,
     pub inline: Vec<PlannedInline>,
@@ -113,6 +114,7 @@ fn build_plan(
     let mut plan = PublishPlan {
         plan_id: String::new(),
         head_sha: snapshot.pr.head_sha.clone(),
+        base_sha: snapshot.pr.base_sha.clone(),
         verdict,
         summary: summary.to_owned(),
         inline: Vec::new(),
@@ -247,18 +249,78 @@ pub async fn publish(session: &Session, plan_id: &str, confirm: bool) -> Result<
     if !snapshot.complete {
         bail!("snapshot is incomplete; refresh before publication");
     }
-    let head = blocking({
+    let plan = preview(session)?;
+    if plan.plan_id != plan_id {
+        bail!("publication plan changed; preview again");
+    }
+    // Fetch a fresh, internally consistent diff before claiming drafts or writing
+    // anything remotely. A matching head alone does not protect against a base
+    // update, changed patch, or removed review-comment parent.
+    let current = blocking({
         let gh = gh.clone();
         let pr = pr.clone();
-        move || github::fetch_head_sha(gh.as_ref(), &pr)
+        move || github::fetch_snapshot(gh.as_ref(), &pr, &diff::Limits::default())
     })
     .await?;
-    if head != snapshot.pr.head_sha {
-        bail!("PR head changed; refresh and preview again");
+    if !current.complete
+        || current.pr.base_sha != plan.base_sha
+        || current.pr.head_sha != plan.head_sha
+    {
+        bail!("PR base, head or diff changed; refresh and preview again");
     }
-    let plan = preview(session)?;
-    if plan.head_sha != head || plan.plan_id != plan_id {
-        bail!("publication plan changed; preview again");
+    let threads = lock_store(session)?.list_threads(&session.pr_id)?;
+    for inline in &plan.inline {
+        let thread = threads
+            .iter()
+            .find(|t| t.id == inline.thread_id)
+            .context("planned inline thread disappeared; preview again")?;
+        if thread.path != inline.path
+            || thread.side != inline.side
+            || thread.line != Some(inline.line)
+            || thread.start_line != inline.start_line
+            || !current_anchor(thread, &current)
+        {
+            bail!("inline anchor changed or disappeared; refresh and preview again");
+        }
+    }
+    for reply in &plan.replies {
+        if let Some(parent_id) = reply.github_parent_id {
+            let thread = threads
+                .iter()
+                .find(|t| t.id == reply.thread_id)
+                .context("reply thread disappeared; preview again")?;
+            let valid = thread.github_thread_id.as_deref().is_some_and(|id| {
+                current.github_threads.iter().any(|remote| {
+                    remote.node_id == id
+                        && !remote.is_outdated
+                        && !remote.is_resolved
+                        && remote
+                            .comments
+                            .iter()
+                            .any(|c| c.database_id == Some(parent_id))
+                })
+            });
+            if !valid {
+                bail!("reply parent is missing or outdated; refresh and preview again");
+            }
+        } else if !plan
+            .inline
+            .iter()
+            .any(|c| c.comment_id == reply.parent_comment_id && c.thread_id == reply.thread_id)
+        {
+            bail!("reply parent is not a validated inline comment; preview again");
+        }
+    }
+    // Close the window between the expensive snapshot fetch and the first
+    // remote operation with a final lightweight revision check.
+    let refs = blocking({
+        let gh = gh.clone();
+        let pr = pr.clone();
+        move || github::fetch_revision(gh.as_ref(), &pr)
+    })
+    .await?;
+    if refs.0 != plan.base_sha || refs.1 != plan.head_sha {
+        bail!("PR base or head changed; refresh and preview again");
     }
     let plan_json = serde_json::to_string(&plan)?;
     let attempt_id = {
@@ -274,7 +336,7 @@ pub async fn publish(session: &Session, plan_id: &str, confirm: bool) -> Result<
             )
             .collect();
         // The transactional claim and draft reservations commit before the remote call.
-        store.start_publication(&session.pr_id, plan_id, &plan_json, &head, &drafts)?
+        store.start_publication(&session.pr_id, plan_id, &plan_json, &plan.head_sha, &drafts)?
     };
     let mut outcome = PublishOutcome {
         attempt_id: attempt_id.clone(),
@@ -328,6 +390,9 @@ async fn execute(
             body: c.body.clone(),
         })
         .collect();
+    // The final revision check runs before start_publication. Do not perform
+    // fallible read-only preflight after claiming drafts: a failure there would
+    // leave a partial attempt even though no remote write was made.
     let review_id = blocking({
         let gh = gh.clone();
         let pr = pr.clone();
@@ -388,6 +453,45 @@ async fn execute(
             .github_parent_id
             .or_else(|| root_ids.get(&c.parent_comment_id).copied())
             .context("reply parent is not confirmed on GitHub")?;
+        if c.github_parent_id.is_some() {
+            let fresh = blocking({
+                let gh = gh.clone();
+                let pr = pr.clone();
+                move || github::fetch_snapshot(gh.as_ref(), &pr, &diff::Limits::default())
+            })
+            .await?;
+            let thread = lock_store(session)?
+                .list_threads(&session.pr_id)?
+                .into_iter()
+                .find(|t| t.id == c.thread_id)
+                .context("reply thread disappeared")?;
+            if !fresh.complete
+                || fresh.pr.base_sha != plan.base_sha
+                || fresh.pr.head_sha != plan.head_sha
+                || !thread.github_thread_id.as_deref().is_some_and(|id| {
+                    fresh.github_threads.iter().any(|remote| {
+                        remote.node_id == id
+                            && !remote.is_outdated
+                            && !remote.is_resolved
+                            && remote
+                                .comments
+                                .iter()
+                                .any(|comment| comment.database_id == Some(parent))
+                    })
+                })
+            {
+                bail!("reply parent is missing or outdated; reconcile this attempt");
+            }
+        }
+        let refs = blocking({
+            let gh = gh.clone();
+            let pr = pr.clone();
+            move || github::fetch_revision(gh.as_ref(), &pr)
+        })
+        .await?;
+        if refs.0 != plan.base_sha || refs.1 != plan.head_sha {
+            bail!("PR revision changed before reply; reconcile this attempt");
+        }
         let id = blocking({
             let gh = gh.clone();
             let pr = pr.clone();
@@ -446,6 +550,38 @@ mod tests {
         }
     }
 
+    fn script_preflight(fake: &FakeGh, base: &str, diff_text: &str, files: &str) {
+        let metadata = serde_json::json!({
+            "number": 1, "title": "t", "url": "u", "author": {"login": "a"},
+            "baseRefName": "main", "baseRefOid": base,
+            "headRefName": "feature", "headRefOid": "head", "changedFiles": if files == "[[]]" { 0 } else { 1 }
+        }).to_string();
+        let refs = serde_json::json!({"baseRefOid": base, "headRefOid": "head"}).to_string();
+        fake.on(
+            &[
+                "pr",
+                "view",
+                "https://github.com/o/r/pull/1",
+                "--json",
+                "baseRefOid,headRefOid",
+            ],
+            Ok(&refs),
+        );
+        fake.on(&["pr", "view"], Ok(&metadata));
+        fake.on(&["repo", "view"], Ok(r#"{"id":"repo"}"#));
+        fake.on(&["pr", "diff"], Ok(diff_text));
+        fake.on(
+            &[
+                "api",
+                "--paginate",
+                "--slurp",
+                "repos/o/r/pulls/1/files?per_page=100",
+            ],
+            Ok(files),
+        );
+        fake.on(&["api", "graphql"], Ok(r#"{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}"#));
+    }
+
     #[test]
     fn plan_id_binds_head_and_text() {
         let a = build_plan(&snapshot(), Verdict::Approve, "looks good", &[]).unwrap();
@@ -457,6 +593,14 @@ mod tests {
         );
         let mut changed = snapshot();
         changed.pr.head_sha = "later".into();
+        assert_ne!(
+            a.plan_id,
+            build_plan(&changed, Verdict::Approve, "looks good", &[])
+                .unwrap()
+                .plan_id
+        );
+        changed.pr.head_sha = "head".into();
+        changed.pr.base_sha = "later-base".into();
         assert_ne!(
             a.plan_id,
             build_plan(&changed, Verdict::Approve, "looks good", &[])
@@ -481,7 +625,12 @@ mod tests {
         )
         .files;
         let fake = Arc::new(FakeGh::default());
-        fake.on(&["pr", "view"], Ok(r#"{"headRefOid":"head"}"#));
+        script_preflight(
+            &fake,
+            "base",
+            "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n",
+            r#"[[{"filename":"a.rs","status":"modified","patch":null,"additions":1,"deletions":1}]]"#,
+        );
         fake.on(
             &["api", "--method", "POST", "repos/o/r/pulls/1/reviews"],
             Ok(r#"{"id":7}"#),
@@ -582,7 +731,7 @@ mod tests {
     #[tokio::test]
     async fn unknown_remote_outcome_is_durable_and_never_retried() {
         let fake = Arc::new(FakeGh::default());
-        fake.on(&["pr", "view"], Ok(r#"{"headRefOid":"head"}"#));
+        script_preflight(&fake, "base", "", "[[]]");
         fake.on(
             &["api", "--method", "POST"],
             Err("connection lost after submit"),
@@ -619,6 +768,164 @@ mod tests {
         assert_ne!(plan.plan_id, changed.plan_id);
         assert!(publish(&session, &changed.plan_id, true).await.is_err());
         assert_eq!(fake.calls_matching(&["api", "--method", "POST"]).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn base_only_change_fails_before_claim_or_write() {
+        let fake = Arc::new(FakeGh::default());
+        script_preflight(&fake, "new-base", "", "[[]]");
+        let session = Session::new(
+            snapshot(),
+            Store::open_in_memory().unwrap(),
+            Some(fake.clone()),
+            Some(PrRef {
+                owner: "o".into(),
+                repo: "r".into(),
+                number: 1,
+            }),
+        )
+        .unwrap();
+        session
+            .store
+            .lock()
+            .unwrap()
+            .finish_review(&session.pr_id, Verdict::Approve, "okay")
+            .unwrap();
+        let plan = preview(&session).unwrap();
+        assert!(
+            publish(&session, &plan.plan_id, true)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("base")
+        );
+        assert!(fake.calls_matching(&["api", "--method", "POST"]).is_empty());
+        // No claim was made: a corrected remote revision can use the same plan.
+        let corrected = Arc::new(FakeGh::default());
+        script_preflight(&corrected, "base", "", "[[]]");
+        corrected.on(&["api", "--method", "POST"], Err("unknown result"));
+        let retry = Session::new(
+            snapshot(),
+            Store::open_in_memory().unwrap(),
+            Some(corrected),
+            Some(PrRef {
+                owner: "o".into(),
+                repo: "r".into(),
+                number: 1,
+            }),
+        )
+        .unwrap();
+        retry
+            .store
+            .lock()
+            .unwrap()
+            .finish_review(&retry.pr_id, Verdict::Approve, "okay")
+            .unwrap();
+        assert_eq!(preview(&retry).unwrap().plan_id, plan.plan_id);
+        assert_eq!(
+            publish(&retry, &plan.plan_id, true).await.unwrap().status,
+            "partial"
+        );
+    }
+
+    #[tokio::test]
+    async fn deleted_anchor_fails_before_claim_and_keeps_draft() {
+        let mut local = snapshot();
+        local.files = diff::parse_unified(
+            "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n",
+            "head",
+            &diff::Limits::default(),
+        )
+        .files;
+        let fake = Arc::new(FakeGh::default());
+        script_preflight(
+            &fake,
+            "base",
+            "diff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n@@ -1 +1 @@\n-old\n+new\n",
+            r#"[[{"filename":"b.rs","status":"modified","patch":null,"additions":1,"deletions":1}]]"#,
+        );
+        let session = Session::new(
+            local,
+            Store::open_in_memory().unwrap(),
+            Some(fake.clone()),
+            Some(PrRef {
+                owner: "o".into(),
+                repo: "r".into(),
+                number: 1,
+            }),
+        )
+        .unwrap();
+        {
+            let mut store = session.store.lock().unwrap();
+            store
+                .insert_thread(
+                    &session.pr_id,
+                    &NewThread {
+                        id: "t".into(),
+                        source: ThreadSource::Local,
+                        github_thread_id: None,
+                        path: "a.rs".into(),
+                        side: Side::Right,
+                        line: Some(1),
+                        start_line: None,
+                        line_text: Some("new".into()),
+                        diff_digest: None,
+                        head_sha: "head".into(),
+                        anchor_state: AnchorState::Current,
+                        anchor_reason: None,
+                        resolved: false,
+                        created_at: None,
+                    },
+                )
+                .unwrap();
+            store
+                .insert_comment(
+                    &Comment {
+                        id: "c".into(),
+                        thread_id: "t".into(),
+                        author_kind: Actor::Human,
+                        author: "me".into(),
+                        body: "fix".into(),
+                        created_at: "now".into(),
+                        updated_at: "now".into(),
+                        publish_state: PublishState::Draft,
+                        github_comment_id: None,
+                    },
+                    None,
+                )
+                .unwrap();
+            store
+                .finish_review(&session.pr_id, Verdict::Comment, "body")
+                .unwrap();
+        }
+        let plan = preview(&session).unwrap();
+        assert_eq!(plan.inline.len(), 1);
+        assert!(
+            publish(&session, &plan.plan_id, true)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("anchor")
+        );
+        assert!(fake.calls_matching(&["api", "--method", "POST"]).is_empty());
+        assert_eq!(
+            session
+                .store
+                .lock()
+                .unwrap()
+                .list_threads(&session.pr_id)
+                .unwrap()[0]
+                .comments[0]
+                .publish_state,
+            PublishState::Draft
+        );
+        // A preflight rejection must not reserve the draft or claim the PR.
+        let mut store = session.store.lock().unwrap();
+        assert!(
+            store
+                .start_publication(&session.pr_id, "other", "{}", "head", &[("c", "fix")])
+                .is_ok()
+        );
     }
 
     #[test]
