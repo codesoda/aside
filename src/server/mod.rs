@@ -34,7 +34,7 @@ use self::{
 use crate::{
     model::Actor,
     session::Session,
-    store::{NotADraft, NotFound, ReservedDraft},
+    store::{NotADraft, NotFound, PublishingElsewhere, ReservedDraft},
 };
 
 /// Tokens are session-specific secrets. The UI token is never included in API responses.
@@ -119,6 +119,12 @@ fn db_error(error: anyhow::Error) -> ApiError {
             StatusCode::CONFLICT,
             "draft_reserved",
             "draft is reserved for publication",
+        )
+    } else if error.downcast_ref::<PublishingElsewhere>().is_some() {
+        ApiError::new(
+            StatusCode::CONFLICT,
+            "publishing_elsewhere",
+            "another Aside process is publishing this PR; try again once it is done",
         )
     } else if error.downcast_ref::<NotADraft>().is_some() {
         ApiError::new(

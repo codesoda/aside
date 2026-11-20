@@ -7,7 +7,10 @@
 
 mod plan;
 
-use std::sync::{Arc, OnceLock};
+use std::{
+    fs::{File, OpenOptions, TryLockError},
+    sync::{Arc, OnceLock},
+};
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
@@ -17,6 +20,7 @@ use self::plan::{Selection, build_plan};
 use crate::{
     github::{self, GhRunner, NewReviewComment, PrRef},
     session::Session,
+    store::PublishingElsewhere,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,16 +94,41 @@ fn publication_lock() -> &'static tokio::sync::Mutex<()> {
     LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
+/// Lock this PR's publication against other Aside processes sharing the database,
+/// until the returned file is dropped. The OS releases the lock if the process dies,
+/// so a crash never leaves the PR locked. Callers hold `publication_lock` first.
+fn lock_across_processes(session: &Session) -> Result<Option<File>> {
+    let Some(path) = lock_store(session)?.publication_lock_path(&session.pr_id) else {
+        return Ok(None);
+    };
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&path)
+        .with_context(|| format!("cannot open {}", path.display()))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(TryLockError::WouldBlock) => Err(PublishingElsewhere.into()),
+        Err(TryLockError::Error(error)) => Err(error.into()),
+    }
+}
+
 /// Record what the human found on GitHub for the PR's unresolved attempt, releasing its
-/// unsent drafts for a later plan (`Store::reconcile_publication`). Waits for a send in
-/// progress, so its drafts are never released mid-send. The HTTP layer must authorize a
-/// human actor before calling this function.
+/// unsent drafts for a later plan (`Store::reconcile_publication`). Waits for this
+/// process's send in progress and refuses while another process sends, so drafts are
+/// never released mid-send. The HTTP layer must authorize a human actor before calling
+/// this function.
 pub async fn reconcile(
     session: &Session,
     attempt_id: &str,
     published: &[(String, Option<i64>)],
 ) -> Result<()> {
     let _guard = publication_lock().lock().await;
+    let _held = lock_across_processes(session)?;
     lock_store(session)?.reconcile_publication(&session.pr_id, attempt_id, published)
 }
 
@@ -113,6 +142,7 @@ pub async fn publish(session: &Session, plan_id: &str, confirm: bool) -> Result<
         bail!("demo sessions cannot publish to GitHub");
     }
     let _guard = publication_lock().lock().await;
+    let _held = lock_across_processes(session)?;
     let (gh, pr) = github_context(session)?;
     let snapshot = session
         .snapshot

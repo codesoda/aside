@@ -309,7 +309,7 @@ A previously reviewed file that becomes ignored still retains its review history
 - The user must explicitly confirm **Publish to GitHub** after seeing this plan.
 - Rust revalidates PR head, line anchors and publication permissions before executing `gh` operations.
 - Invalid/outdated anchors remain local with reasons; never publish them to a guessed destination.
-- Publishing must be idempotent or safely recoverable; partial failures are surfaced honestly, and any remaining drafts are preserved. An unresolved attempt is never retried automatically: the reviewer checks GitHub and records which of its drafts arrived, and the rest become drafts again for a new plan.
+- Publishing must be idempotent or safely recoverable; partial failures are surfaced honestly, and any remaining drafts are preserved. An unresolved attempt is never retried automatically: the reviewer checks GitHub and records which of its drafts arrived, and the rest become drafts again for a new plan. While one Aside process sends or reconciles a PR's publication, it holds an OS lock that other Aside processes sharing the database respect, and the send continues even if the browser request is dropped.
 - Review completion and review publication are distinct states: a session may be finished locally but not published.
 - A previously published review does not prevent reopening a PR to inspect a later diff, though publishing a new review requires a new explicit confirmation.
 

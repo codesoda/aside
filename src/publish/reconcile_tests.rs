@@ -1,11 +1,11 @@
 //! Reconciling an unresolved publication so its remaining drafts can be sent (#13).
 
-use super::selection_tests::{POST_REVIEW, github, inline_ids, select, session};
+use super::selection_tests::{POST_REVIEW, github, inline_ids, select, session, session_with};
 use super::*;
 use crate::{
     github::fake::FakeGh,
     model::{PublishState, Verdict},
-    store::NotFound,
+    store::{NotFound, PublishingElsewhere, Store},
 };
 
 const REPLY_TO_70: &[&str] = &[
@@ -160,4 +160,48 @@ async fn reconciling_needs_the_unresolved_attempt_and_its_own_drafts() {
         ["c1", "c2"],
         "a refused reconcile changes nothing"
     );
+}
+
+#[tokio::test]
+async fn another_process_publishing_the_pr_holds_off_reconcile_and_publish() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("aside.db")).unwrap();
+    let fake = lost_connection();
+    let s = session_with(&fake, store);
+    select(&s, &["c3"], false).unwrap();
+    let plan = preview(&s).unwrap();
+    let outcome = publish(&s, &plan.plan_id, true).await.unwrap();
+    assert_eq!(outcome.status, "partial");
+
+    // Another Aside process sharing this database is sending this PR's review.
+    let path = lock_store(&s)
+        .unwrap()
+        .publication_lock_path(&s.pr_id)
+        .unwrap();
+    let other = std::fs::File::open(&path).unwrap();
+    other.try_lock().unwrap();
+    let error = reconcile(&s, &outcome.attempt_id, &[]).await.unwrap_err();
+    assert!(error.downcast_ref::<PublishingElsewhere>().is_some());
+    let unresolved = lock_store(&s)
+        .unwrap()
+        .unresolved_publication(&s.pr_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        unresolved.remaining_comment_ids,
+        ["c1", "c2"],
+        "a refused reconcile changes nothing"
+    );
+
+    // When that process ends, the OS releases its lock.
+    drop(other);
+    reconcile(&s, &outcome.attempt_id, &[]).await.unwrap();
+    recover(&fake);
+    let held = std::fs::File::open(&path).unwrap();
+    held.try_lock().unwrap();
+    let error = publish(&s, &plan.plan_id, true).await.unwrap_err();
+    assert!(error.downcast_ref::<PublishingElsewhere>().is_some());
+    drop(held);
+    let outcome = publish(&s, &plan.plan_id, true).await.unwrap();
+    assert_eq!(outcome.status, "succeeded", "{:?}", outcome.error);
 }

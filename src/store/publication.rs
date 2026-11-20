@@ -1,4 +1,7 @@
-use std::collections::BTreeSet;
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result, bail};
 use rusqlite::{OptionalExtension, params};
@@ -30,6 +33,18 @@ impl std::fmt::Display for NotADraft {
 }
 impl std::error::Error for NotADraft {}
 
+/// Another Aside process sharing the database is sending or reconciling this PR's
+/// publication, so this one must not touch it until that process is done.
+#[derive(Debug)]
+pub struct PublishingElsewhere;
+
+impl std::fmt::Display for PublishingElsewhere {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "another Aside process is publishing this PR")
+    }
+}
+impl std::error::Error for PublishingElsewhere {}
+
 /// The attempt holding a PR's publication claim: in flight, or partial and waiting
 /// for the human to reconcile it against GitHub.
 #[derive(Debug, Serialize)]
@@ -43,6 +58,13 @@ pub struct UnresolvedPublication {
 }
 
 impl Store {
+    /// The file whose OS lock marks this PR's publication as busy, beside the database.
+    /// An in-memory store is never shared between processes, so it has none.
+    pub fn publication_lock_path(&self, pr_id: &str) -> Option<PathBuf> {
+        let db = Path::new(self.conn.path().filter(|path| !path.is_empty())?);
+        Some(db.with_file_name("locks").join(format!("{pr_id}.lock")))
+    }
+
     /// Local drafts of this PR that the human held back from publication.
     pub fn deselected_comment_ids(&self, pr_id: &str) -> Result<BTreeSet<String>> {
         let mut stmt = self.conn.prepare(

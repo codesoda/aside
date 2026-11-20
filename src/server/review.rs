@@ -11,6 +11,7 @@ use super::{ApiError, ApiResult, AppState, db_error, human};
 use crate::{
     model::{Actor, Verdict},
     publish,
+    store::PublishingElsewhere,
 };
 
 /// The human-only publication routes, under `/api/v1`.
@@ -141,9 +142,19 @@ async fn publish_confirm(
     if !input.confirm {
         return Err(ApiError::bad("explicit confirmation is required"));
     }
-    let outcome = publish::publish(&state.session, &input.plan_id, input.confirm)
+    // A send keeps its locks until it ends, even if the browser drops this request.
+    let session = state.session.clone();
+    let send =
+        tokio::spawn(
+            async move { publish::publish(&session, &input.plan_id, input.confirm).await },
+        );
+    let outcome = send
         .await
-        .map_err(|_| {
+        .map_err(|_| ApiError::internal())?
+        .map_err(|error| {
+            if error.is::<PublishingElsewhere>() {
+                return db_error(error);
+            }
             ApiError::new(
                 StatusCode::CONFLICT,
                 "publish_conflict",
