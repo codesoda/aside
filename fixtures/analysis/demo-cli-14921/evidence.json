@@ -1,0 +1,170 @@
+[
+  {
+    "schemaVersion": 1,
+    "id": "ev_2074e8f3eb1f901ad4282d5f4e55a622006beab778af846e976d1b634299a6e4",
+    "kind": "code_reference",
+    "sourceRunId": "run_8888a8df5fc1a3760892ea8620d7c1670ca52b3273c7c34fe1b76a157e2cde64",
+    "sourceEntityId": null,
+    "anchor": {
+      "kind": "diff_line",
+      "fileId": "f_562acc67de25c534",
+      "currentPath": "internal/identity/ssh_command.go",
+      "previousPath": null,
+      "entityId": null,
+      "side": "RIGHT",
+      "line": 24,
+      "startLine": null,
+      "originalLine": null,
+      "originalStartLine": null,
+      "commitSha": "a123f7736e7aaabe56b4662de888cc2bff1338a6",
+      "originalCommitSha": null,
+      "diffDigest": "cf17c7af27e51770ce3057fcff61619c6288161ba7700b075574ee802b794794",
+      "githubThreadId": null,
+      "externalUrl": null
+    },
+    "label": "Environment-selected SSH variant compared verbatim",
+    "value": {
+      "line": 24,
+      "snippet": "if variant := os.Getenv(variantEnv); variant != \"\" && variant != \"ssh\" {"
+    },
+    "unit": null,
+    "numerator": null,
+    "denominator": null,
+    "method": "aside.static.env_passthrough@1",
+    "inputDigest": "cf17c7af27e51770ce3057fcff61619c6288161ba7700b075574ee802b794794",
+    "observedAt": "2026-11-20T11:40:19Z",
+    "limitations": []
+  },
+  {
+    "schemaVersion": 1,
+    "id": "ev_6c33cc0d2c753fd0c79da8a36989639c05d0efb4072f684f6c14da211b06d119",
+    "kind": "history",
+    "sourceRunId": "run_740e3906033f24648817c4a32e69f509650df23f5f96cd5a1338ede89866256c",
+    "sourceEntityId": null,
+    "anchor": {
+      "kind": "file",
+      "fileId": "f_54c7c1af5fa8d5db",
+      "currentPath": "internal/config/config.go",
+      "previousPath": null,
+      "entityId": null,
+      "side": null,
+      "line": null,
+      "startLine": null,
+      "originalLine": null,
+      "originalStartLine": null,
+      "commitSha": null,
+      "originalCommitSha": null,
+      "diffDigest": "2aa2c2a5af15ba1267760bd2db7c5595cde44d9e39585ba945a1985b7b01db7c",
+      "githubThreadId": null,
+      "externalUrl": null
+    },
+    "label": "Commits touching internal/config/config.go in window",
+    "value": {
+      "authors": 6,
+      "commits": 14,
+      "windowDays": 180,
+      "windowEnd": "2026-11-20"
+    },
+    "unit": "commits",
+    "numerator": 14.0,
+    "denominator": null,
+    "method": "git-log --follow (merge commits excluded)",
+    "inputDigest": "hist-window-180d",
+    "observedAt": "2026-11-20T11:40:19Z",
+    "limitations": [
+      "shallow_repository: history before 2026-05-24 unavailable",
+      "formatting-only commits excluded by policy"
+    ]
+  },
+  {
+    "schemaVersion": 1,
+    "id": "ev_ffeb885d8c22603214d915e37293550ba7851f2de2a2ff9bbc04f6487294d1d7",
+    "kind": "measurement",
+    "sourceRunId": "run_8888a8df5fc1a3760892ea8620d7c1670ca52b3273c7c34fe1b76a157e2cde64",
+    "sourceEntityId": null,
+    "anchor": null,
+    "label": "Changed files and lines",
+    "value": {
+      "additions": 3768,
+      "deletions": 43,
+      "files": 33
+    },
+    "unit": "lines",
+    "numerator": null,
+    "denominator": null,
+    "method": "diff_stat",
+    "inputDigest": "a123f7736e7aaabe56b4662de888cc2bff1338a6",
+    "observedAt": "2026-11-20T11:40:19Z",
+    "limitations": []
+  },
+  {
+    "schemaVersion": 1,
+    "id": "ev_2148a55ff569c0f9cdc030ddd665a8154c4ee41dca47928c2a000fc6ade8a824",
+    "kind": "code_reference",
+    "sourceRunId": "run_8888a8df5fc1a3760892ea8620d7c1670ca52b3273c7c34fe1b76a157e2cde64",
+    "sourceEntityId": null,
+    "anchor": {
+      "kind": "diff_line",
+      "fileId": "f_ccedca01e076cd06",
+      "currentPath": "git/client.go",
+      "previousPath": null,
+      "entityId": null,
+      "side": "RIGHT",
+      "line": 193,
+      "startLine": null,
+      "originalLine": null,
+      "originalStartLine": null,
+      "commitSha": "a123f7736e7aaabe56b4662de888cc2bff1338a6",
+      "originalCommitSha": null,
+      "diffDigest": "6e789ad162a4654557e08794267f656bd162e701f4d4c8f3557b144d9fb7b445",
+      "githubThreadId": null,
+      "externalUrl": null
+    },
+    "label": "SSH variant forwarded to child environment",
+    "value": {
+      "line": 193
+    },
+    "unit": null,
+    "numerator": null,
+    "denominator": null,
+    "method": "aside.static.env_passthrough@1",
+    "inputDigest": "6e789ad162a4654557e08794267f656bd162e701f4d4c8f3557b144d9fb7b445",
+    "observedAt": "2026-11-20T11:40:19Z",
+    "limitations": []
+  },
+  {
+    "schemaVersion": 1,
+    "id": "ev_1daec31b08f81a558ea77316416ffb8b96a2fe24eb8108ea595825e9940ce2ac",
+    "kind": "code_reference",
+    "sourceRunId": "run_c34cbe5a207f977b3c3380be7ed2fd33730fcacf9ec646f4b9608b7e8447455f",
+    "sourceEntityId": null,
+    "anchor": {
+      "kind": "diff_line",
+      "fileId": "f_ffad9eab34e01b22",
+      "currentPath": "internal/identity/credentials.go",
+      "previousPath": null,
+      "entityId": null,
+      "side": "RIGHT",
+      "line": 58,
+      "startLine": null,
+      "originalLine": null,
+      "originalStartLine": null,
+      "commitSha": "0000000000000000000000000000000000c0ffee",
+      "originalCommitSha": null,
+      "diffDigest": "000000000000000000000000000000000000000000000000000000005ca1ab1e",
+      "githubThreadId": null,
+      "externalUrl": null
+    },
+    "label": "Token variable list duplicated",
+    "value": {
+      "line": 58
+    },
+    "unit": null,
+    "numerator": null,
+    "denominator": null,
+    "method": "aside.static.duplicate_literal@1",
+    "inputDigest": "000000000000000000000000000000000000000000000000000000005ca1ab1e",
+    "observedAt": "2026-11-19T09:00:03Z",
+    "limitations": []
+  }
+]

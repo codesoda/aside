@@ -1,0 +1,32 @@
+[
+  {
+    "findingId": "find_d9d23af04c5656a14f171c853ae123ad1875f146c18461c820b8f465f5626961",
+    "sessionId": "demo",
+    "disposition": "investigating",
+    "snoozedUntil": null,
+    "note": "Checking with the author.",
+    "promotedDraftId": null,
+    "updatedAt": "2026-11-20T11:41:00Z",
+    "revision": 1
+  },
+  {
+    "findingId": "find_ff82e8b74783df2dde5e98a25bef136de1b6ff04316baa1bf49f6cc1c16e03c7",
+    "sessionId": "demo",
+    "disposition": "accepted_for_review",
+    "snoozedUntil": null,
+    "note": null,
+    "promotedDraftId": null,
+    "updatedAt": "2026-11-20T11:41:00Z",
+    "revision": 1
+  },
+  {
+    "findingId": "find_b55a6ec37ca6387ec633cb0da532f02fadc4c3ab117017acb8b33003b30b74a3",
+    "sessionId": "demo",
+    "disposition": "dismissed_local",
+    "snoozedUntil": null,
+    "note": null,
+    "promotedDraftId": null,
+    "updatedAt": "2026-11-20T11:41:00Z",
+    "revision": 2
+  }
+]

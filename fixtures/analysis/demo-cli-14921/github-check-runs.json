@@ -1,0 +1,72 @@
+[
+  {
+    "githubCheckRunId": 9100000001,
+    "appSlug": "github-actions",
+    "name": "lint",
+    "status": "completed",
+    "conclusion": "failure",
+    "headSha": "a123f7736e7aaabe56b4662de888cc2bff1338a6",
+    "startedAt": "2026-11-20T11:00:00Z",
+    "completedAt": "2026-11-20T11:05:00Z",
+    "detailsUrl": "https://github.com/cli/cli/runs/9100000001",
+    "summary": "_(synthetic fixture)_ 2 lint findings",
+    "annotationsCount": 2,
+    "observedAt": "2026-11-20T11:40:19Z"
+  },
+  {
+    "githubCheckRunId": 9100000002,
+    "appSlug": "github-actions",
+    "name": "lint",
+    "status": "completed",
+    "conclusion": "success",
+    "headSha": "0000000000000000000000000000000000c0ffee",
+    "startedAt": "2026-11-20T11:00:00Z",
+    "completedAt": "2026-11-20T11:05:00Z",
+    "detailsUrl": "https://github.com/cli/cli/runs/9100000002",
+    "summary": "_(synthetic fixture)_ lint on the earlier head",
+    "annotationsCount": 0,
+    "observedAt": "2026-11-20T11:40:19Z"
+  },
+  {
+    "githubCheckRunId": 9100000003,
+    "appSlug": "github-actions",
+    "name": "test",
+    "status": "completed",
+    "conclusion": "success",
+    "headSha": "a123f7736e7aaabe56b4662de888cc2bff1338a6",
+    "startedAt": "2026-11-20T11:00:00Z",
+    "completedAt": "2026-11-20T11:05:00Z",
+    "detailsUrl": "https://github.com/cli/cli/runs/9100000003",
+    "summary": null,
+    "annotationsCount": 0,
+    "observedAt": "2026-11-20T11:40:19Z"
+  },
+  {
+    "githubCheckRunId": 9100000004,
+    "appSlug": "github-code-scanning",
+    "name": "CodeQL",
+    "status": "completed",
+    "conclusion": "neutral",
+    "headSha": "a123f7736e7aaabe56b4662de888cc2bff1338a6",
+    "startedAt": "2026-11-20T11:00:00Z",
+    "completedAt": "2026-11-20T11:05:00Z",
+    "detailsUrl": "https://github.com/cli/cli/runs/9100000004",
+    "summary": "_(synthetic fixture)_ Alerts predate this PR",
+    "annotationsCount": 0,
+    "observedAt": "2026-11-20T11:40:19Z"
+  },
+  {
+    "githubCheckRunId": 9100000005,
+    "appSlug": "github-actions",
+    "name": "integration",
+    "status": "in_progress",
+    "conclusion": null,
+    "headSha": "a123f7736e7aaabe56b4662de888cc2bff1338a6",
+    "startedAt": "2026-11-20T11:00:00Z",
+    "completedAt": null,
+    "detailsUrl": "https://github.com/cli/cli/runs/9100000005",
+    "summary": null,
+    "annotationsCount": 0,
+    "observedAt": "2026-11-20T11:40:19Z"
+  }
+]

@@ -1,0 +1,38 @@
+[
+  {
+    "checkRunId": 9100000001,
+    "key": {
+      "kind": "content_fingerprint",
+      "value": "85f177a4f922fad554954f210000504830eaf92e1563a86c2c1af0b9ff1bfb25"
+    },
+    "path": "internal/identity/ssh_command.go",
+    "startLine": 24,
+    "endLine": 25,
+    "startColumn": null,
+    "endColumn": null,
+    "annotationLevel": "failure",
+    "title": "gocritic",
+    "message": "(synthetic fixture) compare a normalised environment value",
+    "rawDetails": null,
+    "headSha": "a123f7736e7aaabe56b4662de888cc2bff1338a6",
+    "observedAt": "2026-11-20T11:40:19Z"
+  },
+  {
+    "checkRunId": 9100000001,
+    "key": {
+      "kind": "content_fingerprint",
+      "value": "ad31d16379e02aee74e2da1b3440a1ff04a06f26505ad7c2a8a6e429da0ab147"
+    },
+    "path": "internal/identity/store.go",
+    "startLine": 66,
+    "endLine": 66,
+    "startColumn": null,
+    "endColumn": null,
+    "annotationLevel": "warning",
+    "title": "lll",
+    "message": "(synthetic fixture) line is 130 characters (lll)",
+    "rawDetails": null,
+    "headSha": "a123f7736e7aaabe56b4662de888cc2bff1338a6",
+    "observedAt": "2026-11-20T11:40:19Z"
+  }
+]
