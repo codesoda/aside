@@ -80,6 +80,7 @@ impl<T: Serialize + DeserializeOwned> Raw<T> {
         &self.json
     }
 
+    #[allow(dead_code)] // TODO(#33): not consumed by the binary yet.
     pub fn into_value(self) -> T {
         self.value
     }
@@ -133,12 +134,14 @@ pub struct BatchOutcome {
 
 /// Whether a finding is shown as current. Derived on every read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // TODO(#33): not consumed by the binary yet.
 pub enum ObservationLabel {
     Current,
     Historical,
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // TODO(#33): not consumed by the binary yet.
 pub struct StoredFinding {
     pub finding: Raw<ReviewFinding>,
     pub label: ObservationLabel,
@@ -152,6 +155,7 @@ pub struct StoredFinding {
 
 /// One native record in an import batch.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // TODO(#23): not consumed by the binary yet.
 pub struct ImportedSourceWrite {
     pub native: Raw<NativeSourceRef>,
     /// The record as received from GitHub (or the importer's typed record
@@ -163,6 +167,7 @@ pub struct ImportedSourceWrite {
 
 /// One transactional refresh of a GitHub resource group.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // TODO(#23): not consumed by the binary yet.
 pub struct ImportBatch {
     /// For example `check_runs`, `check_annotations`, `commit_statuses`.
     pub resource_kind: String,
@@ -174,6 +179,7 @@ pub struct ImportBatch {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // TODO(#23): not consumed by the binary yet.
 pub struct StoredImportedSource {
     pub id: i64,
     pub resource_kind: String,
@@ -193,6 +199,7 @@ pub struct PruneReport {
 
 /// Optimistic-concurrency failure for finding triage (HTTP 409 in #33).
 #[derive(Debug)]
+#[allow(dead_code)] // TODO(#33): not consumed by the binary yet.
 pub struct RevisionConflict {
     pub current: Option<FindingUserState>,
 }
@@ -291,6 +298,7 @@ impl Store {
     /// Deletes runs, evidence and observations of old snapshots, keeping the
     /// current snapshot, the `keep` most recent ones, and any snapshot with
     /// queued or running runs. Local dispositions are never pruned.
+    #[allow(dead_code)] // TODO(#34): not consumed by the binary yet.
     pub fn prune_analysis(&mut self, pr_id: &str, keep: usize) -> Result<PruneReport> {
         let tx = self.write_tx()?;
         let report = prune(&tx, pr_id, keep)?;
@@ -514,6 +522,7 @@ impl Store {
 
     /// Findings for a PR with their derived label. With `include_historical`
     /// false only current findings are returned.
+    #[allow(dead_code)] // TODO(#33): not consumed by the binary yet.
     pub fn list_findings(
         &self,
         pr_id: &str,
@@ -568,6 +577,7 @@ impl Store {
         Ok(out)
     }
 
+    #[allow(dead_code)] // TODO(#33): not consumed by the binary yet.
     pub fn list_finding_evidence(&self, finding_id: &FindingId) -> Result<Vec<Raw<Evidence>>> {
         let mut stmt = self.conn.prepare(
             "SELECT e.evidence_json FROM finding_evidence_links l
@@ -578,6 +588,7 @@ impl Store {
         rows.map(|json| Raw::from_json(&json?)).collect()
     }
 
+    #[allow(dead_code)] // TODO(#33): not consumed by the binary yet.
     pub fn list_finding_relations(&self, finding_id: &FindingId) -> Result<Vec<FindingRelation>> {
         let mut stmt = self.conn.prepare(
             "SELECT relation_json FROM finding_relations WHERE source_finding_id = ?1
@@ -593,6 +604,7 @@ impl Store {
 
     /// Records that `alias` reports the same logical claim as `canonical`.
     /// Both source findings stay intact.
+    #[allow(dead_code)] // TODO(#23): not consumed by the binary yet.
     pub fn add_finding_alias(
         &mut self,
         alias: &FindingId,
@@ -637,6 +649,7 @@ impl Store {
     }
 
     /// Findings aliased to `canonical`.
+    #[allow(dead_code)] // TODO(#33): not consumed by the binary yet.
     pub fn list_finding_aliases(&self, canonical: &FindingId) -> Result<Vec<FindingId>> {
         let mut stmt = self.conn.prepare(
             "SELECT alias_finding_id FROM finding_aliases WHERE canonical_finding_id = ?1 ORDER BY alias_finding_id",
@@ -651,6 +664,7 @@ impl Store {
 
     /// Upserts one GitHub resource group in a single transaction. Returns the
     /// record IDs in input order.
+    #[allow(dead_code)] // TODO(#23): not consumed by the binary yet.
     pub fn commit_import_batch(&mut self, pr_id: &str, batch: &ImportBatch) -> Result<Vec<i64>> {
         for rec in &batch.records {
             serde_json::from_str::<Value>(&rec.raw_json).context("imported record is not JSON")?;
@@ -726,6 +740,7 @@ impl Store {
         Ok(ids)
     }
 
+    #[allow(dead_code)] // TODO(#23): not consumed by the binary yet.
     pub fn list_imported_sources(
         &self,
         pr_id: &str,
@@ -764,6 +779,7 @@ impl Store {
     }
 
     /// Record ID for an alias such as a GraphQL node ID.
+    #[allow(dead_code)] // TODO(#23): not consumed by the binary yet.
     pub fn resolve_imported_alias(&self, kind: &str, value: &str) -> Result<Option<i64>> {
         Ok(self
             .conn
@@ -776,6 +792,7 @@ impl Store {
     }
 
     /// Findings that project the native record `source_record_id`.
+    #[allow(dead_code)] // TODO(#23): not consumed by the binary yet.
     pub fn findings_for_imported_source(&self, source_record_id: i64) -> Result<Vec<FindingId>> {
         let mut stmt = self.conn.prepare(
             "SELECT finding_id FROM finding_source_links WHERE source_record_id = ?1 ORDER BY finding_id",
@@ -791,6 +808,7 @@ impl Store {
     /// Compare-and-set update of local triage. `expected_revision` is `0` when
     /// no state exists yet. Returns the stored state with its new revision.
     /// Never touches review state and is never published to GitHub.
+    #[allow(dead_code)] // TODO(#26): not consumed by the binary yet.
     pub fn put_finding_user_state(
         &mut self,
         pr_id: &str,
@@ -840,6 +858,7 @@ impl Store {
         Ok(stored)
     }
 
+    #[allow(dead_code)] // TODO(#26): not consumed by the binary yet.
     pub fn get_finding_user_state(
         &self,
         session_id: &str,
@@ -849,6 +868,7 @@ impl Store {
     }
 
     /// Explicitly deletes local triage (the only way it is removed).
+    #[allow(dead_code)] // TODO(#26): not consumed by the binary yet.
     pub fn delete_finding_user_state(
         &mut self,
         session_id: &str,
@@ -991,6 +1011,7 @@ fn upsert_run(
     })
 }
 
+#[allow(dead_code)] // TODO(#26): not consumed by the binary yet.
 fn read_user_state(
     conn: &rusqlite::Connection,
     session_id: &str,

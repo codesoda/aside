@@ -10,6 +10,7 @@ use serde_json::Value;
 use tokio::sync::{Mutex as AsyncMutex, broadcast};
 
 use crate::{
+    analysis::{self, AnalysisInput, RunHandle, Scheduler, SchedulerConfig, SystemClock},
     demo,
     diff::{self, Limits},
     github::{self, GhRunner, PrRef},
@@ -27,7 +28,9 @@ pub struct Session {
     pub demo: bool,
     pub pr_ref: Option<PrRef>,
     pub gh: Option<Arc<dyn GhRunner>>,
-    pub store: Mutex<Store>,
+    pub store: Arc<Mutex<Store>>,
+    /// Background analysis. Never holds the store lock across an await.
+    pub analysis: Scheduler,
     pub snapshot: RwLock<PrSnapshot>,
     pub repository: Repository,
     pub pr_id: String,
@@ -78,12 +81,20 @@ impl Session {
                 0
             };
         let (events, _) = broadcast::channel(256);
+        let store = Arc::new(Mutex::new(store));
+        let analysis = Scheduler::new(
+            Arc::clone(&store),
+            analysis::default_providers(),
+            SchedulerConfig::default(),
+            Arc::new(SystemClock),
+        )?;
         Ok(Arc::new(Self {
             id: new_id("session"),
             demo: pr_ref.is_none(),
             pr_ref,
             gh,
-            store: Mutex::new(store),
+            store,
+            analysis,
             snapshot: RwLock::new(snapshot),
             repository,
             pr_id,
@@ -148,6 +159,23 @@ impl Session {
         })
     }
 
+    /// Pins analysis to the current PR snapshot and starts providers in the
+    /// background. Returns at once; the Review screen never waits for them.
+    /// Must be called inside a Tokio runtime.
+    pub fn start_analysis(&self) -> Result<Vec<RunHandle>> {
+        let snapshot = self
+            .snapshot
+            .read()
+            .expect("snapshot lock poisoned")
+            .clone();
+        let canonical = snapshot
+            .provider_repository_id
+            .clone()
+            .unwrap_or_else(|| self.repository.id.clone());
+        self.analysis
+            .begin_snapshot(AnalysisInput::new(&self.pr_id, &canonical, snapshot))
+    }
+
     /// Emit an event only after the corresponding mutation has committed.
     pub fn notify(&self, event_type: &str, payload: Value) -> EventEnvelope {
         let event = EventEnvelope {
@@ -209,6 +237,10 @@ impl Session {
         *self.snapshot.write().expect("snapshot lock poisoned") = snapshot;
         if let Some(next) = next_demo_version {
             self.demo_version.store(next, Ordering::SeqCst);
+        }
+        if let Err(error) = self.start_analysis() {
+            // Analysis is advisory; a failure here must not fail the refresh.
+            eprintln!("could not start analysis: {error:#}");
         }
         self.notify("pr.refreshed", serde_json::json!({"headSha": self.snapshot.read().expect("snapshot lock poisoned").pr.head_sha}));
         self.view(Actor::Human)
