@@ -267,6 +267,8 @@ pub struct SessionView {
     pub warnings: Vec<String>,
     pub complete: bool,
     pub fetched_at: String,
+    /// Per-source completeness and analysis status of the canonical snapshot.
+    pub analysis: super::AnalysisSummary,
 }
 
 /// Envelope for every SSE and stdout event.

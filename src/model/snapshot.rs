@@ -260,6 +260,9 @@ pub struct PrSnapshot {
     /// Snapshots stored before this field existed decode as `unknown`.
     #[serde(default = "unknown_completeness")]
     pub github_threads_completeness: super::Completeness,
+    /// Why the thread import is not complete. Empty when it is.
+    #[serde(default)]
+    pub github_threads_problems: Vec<String>,
     pub reviews: Vec<ImportedReview>,
     pub issue_comments: Vec<IssueComment>,
     pub warnings: Vec<String>,

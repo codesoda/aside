@@ -27,7 +27,7 @@
 
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -42,7 +42,7 @@ use super::provider::{
 use crate::{
     model::{
         AnalysisCoverage, AnalysisRun, AnalysisRunId, Completeness, RunKeyInput, RunStatus,
-        RunWarning, SnapshotId,
+        RunWarning, SnapshotId, stable_digest,
     },
     store::{AnalysisBatch, Raw, Store},
     util::now_rfc3339,
@@ -112,6 +112,28 @@ pub struct RunReport {
     pub write_error: Option<String>,
 }
 
+/// A durable run state change, reported after it was written (#27).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunEvent {
+    pub pr_id: String,
+    pub run_id: AnalysisRunId,
+    pub provider_id: String,
+    pub snapshot_id: SnapshotId,
+    /// Status the store holds.
+    pub status: RunStatus,
+    pub reported_status: RunStatus,
+    pub reason: Option<String>,
+    /// True when `snapshot_id` was the PR's current snapshot after the write
+    /// and the run is not stale. Late output for an old snapshot is `false`.
+    pub current: bool,
+    /// `Some(n)` for a committed result batch of `n` findings.
+    pub findings: Option<usize>,
+}
+
+/// Receives [`RunEvent`]s. Called synchronously from scheduler tasks after
+/// the write committed, never while the store lock is held.
+pub type RunObserver = Arc<dyn Fn(RunEvent) + Send + Sync>;
+
 /// A queued, running or finished run.
 #[derive(Debug, Clone)]
 pub struct RunHandle {
@@ -159,6 +181,7 @@ struct Inner {
     /// Queued or running runs. Lock order: `active` before `store`.
     active: Mutex<HashMap<RunKey, Active>>,
     inputs: Mutex<HashMap<SnapshotId, Arc<AnalysisInput>>>,
+    observer: OnceLock<RunObserver>,
 }
 
 #[derive(Clone)]
@@ -191,8 +214,42 @@ impl Scheduler {
                 slots,
                 active: Mutex::new(HashMap::new()),
                 inputs: Mutex::new(HashMap::new()),
+                observer: OnceLock::new(),
             }),
         })
+    }
+
+    /// Installs the receiver of run lifecycle events. Only the first call
+    /// takes effect.
+    pub fn observe(&self, observer: RunObserver) {
+        let _ = self.inner.observer.set(observer);
+    }
+
+    /// Registered provider IDs, in registration order.
+    pub fn provider_ids(&self) -> Vec<String> {
+        self.inner
+            .providers
+            .iter()
+            .map(|p| p.descriptor().id.clone())
+            .collect()
+    }
+
+    /// Digest of every provider's identity, engine version and configuration.
+    /// Changes whenever any provider would produce a new run ID for the same
+    /// input (analyze.md §4.3). Exclusion rules are not part of it.
+    pub fn config_digest(&self) -> String {
+        let mut parts: Vec<String> = self
+            .inner
+            .providers
+            .iter()
+            .map(|p| {
+                let d = p.descriptor();
+                format!("{}\0{}\0{}", d.id, d.engine_version, d.configuration_digest)
+            })
+            .collect();
+        parts.sort();
+        let fields: Vec<Option<&str>> = parts.iter().map(|p| Some(p.as_str())).collect();
+        stable_digest("aside-analysis-config/v1", &fields)
     }
 
     /// Makes `input` the PR's current analysis snapshot and starts every
@@ -385,6 +442,7 @@ impl Scheduler {
             if let Some(error) = &report.write_error {
                 bail!("could not record skipped run: {error}");
             }
+            self.inner.emit(&input.pr_id, &report, None);
             let _ = tx.send(Some(report));
             return Ok(handle);
         }
@@ -404,6 +462,21 @@ impl Scheduler {
         tokio::spawn(async move {
             let key = (queued.snapshot_id.clone(), queued.provider_id.clone());
             let run_id = queued.id.clone();
+            let pr_id = input.pr_id.clone();
+            // Emitted from the task, after the queued row committed above.
+            inner.emit(
+                &pr_id,
+                &RunReport {
+                    run_id: queued.id.clone(),
+                    provider_id: queued.provider_id.clone(),
+                    snapshot_id: queued.snapshot_id.clone(),
+                    stored_status: RunStatus::Queued,
+                    reported_status: RunStatus::Queued,
+                    reason: None,
+                    write_error: None,
+                },
+                None,
+            );
             let report = inner
                 .drive(provider, input, limits, queued, cancel_rx)
                 .await;
@@ -412,6 +485,7 @@ impl Scheduler {
             {
                 active.remove(&key);
             }
+            inner.emit(&pr_id, &report, None);
             let _ = tx.send(Some(report));
         });
         Ok(handle)
@@ -425,6 +499,32 @@ enum Outcome {
 }
 
 impl Inner {
+    /// Reports a written state to the observer. Nothing is reported for a
+    /// state that failed to persist: a client resyncs from the store instead.
+    fn emit(&self, pr_id: &str, report: &RunReport, findings: Option<usize>) {
+        let Some(observer) = self.observer.get() else {
+            return;
+        };
+        if report.write_error.is_some() {
+            return;
+        }
+        let current = report.stored_status != RunStatus::Stale
+            && lock(&self.store)
+                .and_then(|s| s.current_analysis_snapshot(pr_id))
+                .is_ok_and(|c| c.as_ref() == Some(&report.snapshot_id));
+        observer(RunEvent {
+            pr_id: pr_id.to_owned(),
+            run_id: report.run_id.clone(),
+            provider_id: report.provider_id.clone(),
+            snapshot_id: report.snapshot_id.clone(),
+            status: report.stored_status,
+            reported_status: report.reported_status,
+            reason: report.reason.clone(),
+            current,
+            findings,
+        });
+    }
+
     async fn drive(
         &self,
         provider: Arc<dyn AnalysisProvider>,
@@ -470,6 +570,7 @@ impl Inner {
         if report.write_error.is_some() {
             return report;
         }
+        self.emit(pr_id, &report, None);
 
         let started = Instant::now();
         let ctx = ProviderContext {
@@ -542,6 +643,7 @@ impl Inner {
         done.coverage = output.coverage;
         done.warnings = output.warnings;
         done.metrics.duration_ms = elapsed;
+        let produced = output.findings.len();
         let result = Raw::new(done).and_then(|run| {
             let batch = AnalysisBatch {
                 run,
@@ -552,15 +654,21 @@ impl Inner {
             lock(&self.store)?.commit_analysis_batch(&batch)
         });
         match result {
-            Ok(outcome) => RunReport {
-                run_id: running.id.clone(),
-                provider_id: running.provider_id.clone(),
-                snapshot_id: running.snapshot_id.clone(),
-                stored_status: outcome.stored_status,
-                reported_status: output.status,
-                reason: None,
-                write_error: None,
-            },
+            Ok(outcome) => {
+                let report = RunReport {
+                    run_id: running.id.clone(),
+                    provider_id: running.provider_id.clone(),
+                    snapshot_id: running.snapshot_id.clone(),
+                    stored_status: outcome.stored_status,
+                    reported_status: output.status,
+                    reason: None,
+                    write_error: None,
+                };
+                if produced > 0 {
+                    self.emit(pr_id, &report, Some(produced));
+                }
+                report
+            }
             // The batch rolled back as a whole. Most likely the run was
             // cancelled in between (the store refuses its results) or the
             // output broke the contract.

@@ -295,6 +295,30 @@ impl Store {
             .map(SnapshotId::new))
     }
 
+    /// Base and head SHAs a registered snapshot was analysed for.
+    pub fn analysis_snapshot_shas(
+        &self,
+        snapshot_id: &SnapshotId,
+    ) -> Result<Option<(String, String)>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT base_sha, head_sha FROM analysis_snapshots WHERE id = ?1",
+                [snapshot_id.as_str()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?)
+    }
+
+    /// Findings one run observed (its committed batch size, deduplicated).
+    pub fn count_run_findings(&self, run_id: &AnalysisRunId) -> Result<u32> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM finding_occurrences WHERE run_id = ?1",
+            [run_id.as_str()],
+            |r| r.get(0),
+        )?)
+    }
+
     /// Deletes runs, evidence and observations of old snapshots, keeping the
     /// current snapshot, the `keep` most recent ones, and any snapshot with
     /// queued or running runs. Local dispositions are never pruned.

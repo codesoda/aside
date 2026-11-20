@@ -114,9 +114,10 @@ pub fn fetch_snapshot(gh: &dyn GhRunner, pr_ref: &PrRef, limits: &Limits) -> Res
     for problem in &thread_import.problems {
         warnings.push(format!("review threads incomplete: {problem}"));
     }
-    // TODO(#27): persist this per-source completeness and surface it over SSE
-    // instead of only through `warnings`.
+    // Persisted per snapshot and surfaced as a source (#27, see
+    // `session::import_sources`); `warnings` keeps the human-readable copy.
     let github_threads_completeness = thread_import.completeness;
+    let github_threads_problems = thread_import.problems;
     let github_threads = thread_import.threads;
 
     // The diff and paginated files API target a mutable PR number. A force push
@@ -161,6 +162,7 @@ pub fn fetch_snapshot(gh: &dyn GhRunner, pr_ref: &PrRef, limits: &Limits) -> Res
         files,
         github_threads,
         github_threads_completeness,
+        github_threads_problems,
         reviews: meta
             .reviews
             .iter()
