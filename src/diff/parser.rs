@@ -4,36 +4,12 @@
 //! turns it into files → hunks → lines, keeping old/new line numbers and
 //! GitHub's per-file patch `position`.
 
-use crate::model::{ChangeKind, ChangedFile, DiffHunk, DiffLine, LineKind, Side};
-use crate::util::{file_id, sha256_hex};
-
-/// Bump when the fingerprint algorithm changes. Old acknowledgements with a
-/// different version never count as "reviewed".
-pub const FINGERPRINT_VERSION: u32 = 1;
-
-#[derive(Debug, Clone, Copy)]
-pub struct Limits {
-    pub max_lines_per_file: usize,
-    pub max_files: usize,
-}
-
-impl Default for Limits {
-    fn default() -> Self {
-        Self {
-            max_lines_per_file: 20_000,
-            max_files: 3_000,
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct ParsedDiff {
-    pub files: Vec<ChangedFile>,
-    pub warnings: Vec<String>,
-}
+use super::{FINGERPRINT_VERSION, Limits, ParsedDiff, fingerprint};
+use crate::model::{ChangeKind, ChangedFile, DiffHunk, DiffLine, LineKind};
+use crate::util::file_id;
 
 #[derive(Default)]
-struct FileBuilder {
+pub(super) struct FileBuilder {
     old_path: Option<String>,
     new_path: Option<String>,
     rename_from: Option<String>,
@@ -139,7 +115,7 @@ impl FileBuilder {
         }
     }
 
-    fn finish(self, head_sha: &str, warnings: &mut Vec<String>) -> ChangedFile {
+    pub(super) fn finish(self, head_sha: &str, warnings: &mut Vec<String>) -> ChangedFile {
         let path = self.path();
         let previous_path = self.previous_path(&path);
         let kind = self.kind.unwrap_or(if previous_path.is_some() {
@@ -400,147 +376,11 @@ pub fn unquote(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Canonical review fingerprint (version 1).
-///
-/// Includes: path and previous path, change kind, modes, binary marker and
-/// content digest for binaries, and every hunk's line kinds and exact text
-/// (CR and no-newline markers included). Hunk start offsets are excluded: if
-/// the same change shifts because of edits elsewhere in the file, the review
-/// meaning is the same. Truncated patches and binaries without a content
-/// digest include the head SHA, so they always need re-review when the head
-/// moves (fail closed).
-pub fn fingerprint(file: &ChangedFile, head_sha: &str) -> String {
-    let mut c = String::with_capacity(256);
-    c.push_str(&format!("aside-fingerprint-v{FINGERPRINT_VERSION}\n"));
-    c.push_str(&format!("path:{}\n", escape(&file.path)));
-    c.push_str(&format!(
-        "prev:{}\n",
-        escape(file.previous_path.as_deref().unwrap_or(""))
-    ));
-    c.push_str(&format!("kind:{}\n", file.change_kind.as_str()));
-    c.push_str(&format!(
-        "mode:{}>{}\n",
-        file.old_mode.as_deref().unwrap_or(""),
-        file.new_mode.as_deref().unwrap_or("")
-    ));
-    if file.is_binary {
-        match &file.content_digest {
-            Some(blob) => c.push_str(&format!("binary:{blob}\n")),
-            None => c.push_str(&format!("binary-unknown:{head_sha}\n")),
-        }
-    }
-    if !file.patch_complete {
-        c.push_str(&format!("incomplete:{head_sha}\n"));
-    }
-    for hunk in &file.hunks {
-        c.push_str(&format!("@@{},{}\n", hunk.old_count, hunk.new_count));
-        for line in &hunk.lines {
-            let marker = match line.kind {
-                LineKind::Context => ' ',
-                LineKind::Addition => '+',
-                LineKind::Deletion => '-',
-                LineKind::Meta => '\\',
-            };
-            c.push(marker);
-            c.push_str(&escape(&line.text));
-            c.push('\n');
-        }
-    }
-    sha256_hex(c.as_bytes())
-}
-
-/// Escape newlines and backslashes so the canonical form is unambiguous.
-fn escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('\n', "\\n")
-}
-
-/// Find the diff line a review comment can attach to.
-pub fn find_line(file: &ChangedFile, side: Side, line: u32) -> Option<&DiffLine> {
-    file.hunks
-        .iter()
-        .flat_map(|h| &h.lines)
-        .find(|l| match side {
-            Side::Right => {
-                l.new_line == Some(line) && matches!(l.kind, LineKind::Context | LineKind::Addition)
-            }
-            Side::Left => {
-                l.old_line == Some(line) && matches!(l.kind, LineKind::Context | LineKind::Deletion)
-            }
-        })
-}
-
-/// Build a file from GitHub's REST `pulls/{n}/files` entry (fallback path).
-pub struct ApiFile<'a> {
-    pub path: &'a str,
-    pub previous_path: Option<&'a str>,
-    pub status: &'a str,
-    pub patch: Option<&'a str>,
-    pub blob_sha: Option<&'a str>,
-    pub additions: u32,
-    pub deletions: u32,
-}
-
-pub fn file_from_api(
-    api: &ApiFile,
-    head_sha: &str,
-    limits: &Limits,
-    warnings: &mut Vec<String>,
-) -> ChangedFile {
-    let kind = match api.status {
-        "added" => ChangeKind::Added,
-        "removed" => ChangeKind::Removed,
-        "renamed" => ChangeKind::Renamed,
-        "copied" => ChangeKind::Copied,
-        _ => ChangeKind::Modified,
-    };
-    let old = api.previous_path.unwrap_or(api.path);
-    let mut text = format!("diff --git a/{old} b/{}\n", api.path);
-    if kind == ChangeKind::Renamed {
-        text.push_str(&format!("rename from {old}\nrename to {}\n", api.path));
-    }
-    let old_side = if kind == ChangeKind::Added {
-        "/dev/null".to_string()
-    } else {
-        format!("a/{old}")
-    };
-    let new_side = if kind == ChangeKind::Removed {
-        "/dev/null".to_string()
-    } else {
-        format!("b/{}", api.path)
-    };
-    text.push_str(&format!("--- {old_side}\n+++ {new_side}\n"));
-    if let Some(patch) = api.patch {
-        text.push_str(patch);
-        text.push('\n');
-    }
-    let mut parsed = parse_unified(&text, head_sha, limits);
-    warnings.append(&mut parsed.warnings);
-    let mut file = parsed
-        .files
-        .pop()
-        .unwrap_or_else(|| FileBuilder::default().finish(head_sha, warnings));
-    file.change_kind = kind;
-    file.content_digest = api.blob_sha.map(str::to_string);
-    if api.patch.is_none() {
-        if api.additions + api.deletions > 0 {
-            warnings.push(format!(
-                "{}: GitHub did not return a patch (file too large)",
-                api.path
-            ));
-            file.patch_complete = false;
-        } else if kind != ChangeKind::Renamed {
-            file.is_binary = true;
-        }
-        file.additions = api.additions;
-        file.deletions = api.deletions;
-    }
-    file.diff_digest = fingerprint(&file, head_sha);
-    file
-}
-
 #[cfg(test)]
 mod tests {
+    use super::super::{ApiFile, file_from_api, find_line};
     use super::*;
+    use crate::model::Side;
 
     const SAMPLE: &str = "diff --git a/src/lib.rs b/src/lib.rs
 index 1111111..2222222 100644

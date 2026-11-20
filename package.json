@@ -1,0 +1,7 @@
+{
+  "name": "aside",
+  "private": true,
+  "scripts": {
+    "web": "node scripts/website.mjs"
+  }
+}

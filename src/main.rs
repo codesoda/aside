@@ -8,6 +8,7 @@ mod publish;
 mod rules;
 mod server;
 mod session;
+mod skill;
 mod store;
 mod update;
 mod util;
@@ -54,6 +55,11 @@ enum Command {
     Set { key: String, value: String },
     /// Show one config value, or all values.
     Get { key: Option<String> },
+    /// Install the embedded Aside skill for coding agents.
+    Skill {
+        #[command(flatten)]
+        agents: SkillAgents,
+    },
     /// Inspect existing local sessions.
     Session {
         #[command(subcommand)]
@@ -68,6 +74,19 @@ enum Command {
         #[arg(short = 'y', long)]
         yes: bool,
     },
+}
+
+#[derive(Args)]
+struct SkillAgents {
+    /// Install for Claude Code (~/.claude/skills/aside).
+    #[arg(long)]
+    claude: bool,
+    /// Install for Codex (~/.codex/skills/aside).
+    #[arg(long)]
+    codex: bool,
+    /// Install for agents using ~/.agents/skills/aside.
+    #[arg(long)]
+    agents: bool,
 }
 
 #[derive(Subcommand)]
@@ -270,6 +289,14 @@ async fn main() -> Result<()> {
             return Ok(());
         }
         (Some(Command::Session { command }), _) => return show_sessions(command),
+        (Some(Command::Skill { agents }), _) => {
+            let home = dirs::home_dir().context("cannot find home directory for agent skills")?;
+            let selected = skill::selected(agents.claude, agents.codex, agents.agents);
+            for path in skill::install(&home, &selected)? {
+                println!("{}", json!({"event": "skill.installed", "path": path}));
+            }
+            return Ok(());
+        }
         (Some(Command::Update { check, yes }), _) => return run_update(check, yes).await,
         (Some(Command::Demo { serve }), _) => (demo::snapshot(0), None, None, serve),
         (None, Some(url)) => {

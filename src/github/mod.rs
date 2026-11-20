@@ -1,0 +1,336 @@
+//! GitHub access through the user's authenticated `gh` CLI.
+//!
+//! `gh` is always run with an argv array, never through a shell. All calls go
+//! through [`GhRunner`] so tests can substitute a fake.
+
+mod review;
+mod runner;
+mod snapshot;
+mod threads;
+
+pub use review::{
+    NewReviewComment, create_review, fetch_head_sha, reply_to_comment, review_comments,
+};
+
+#[allow(unused_imports)]
+pub use review::ReviewCommentRecord;
+pub use runner::{GhRunner, PrRef, SystemGh, check_gh, parse_pr_url};
+pub use snapshot::fetch_snapshot;
+
+#[cfg(test)]
+pub mod fake {
+    //! Scripted `gh` for tests. Never touches the network.
+    use super::GhRunner;
+    use anyhow::{Result, anyhow};
+    use std::sync::Mutex;
+
+    type ScriptedResponse = (Vec<String>, Result<Vec<u8>, String>);
+
+    #[derive(Default)]
+    pub struct FakeGh {
+        /// (argv prefix, response). First matching prefix wins.
+        pub responses: Mutex<Vec<ScriptedResponse>>,
+        pub calls: Mutex<Vec<(Vec<String>, Option<String>)>>,
+    }
+
+    impl FakeGh {
+        pub fn on(&self, prefix: &[&str], response: Result<&str, &str>) {
+            self.responses.lock().unwrap().push((
+                prefix.iter().map(|s| s.to_string()).collect(),
+                response
+                    .map(|s| s.as_bytes().to_vec())
+                    .map_err(str::to_string),
+            ));
+        }
+
+        pub fn calls_matching(&self, prefix: &[&str]) -> Vec<(Vec<String>, Option<String>)> {
+            self.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(a, _)| {
+                    a.starts_with(&prefix.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+                })
+                .cloned()
+                .collect()
+        }
+    }
+
+    impl GhRunner for FakeGh {
+        fn run(&self, args: &[&str], stdin: Option<&[u8]>) -> Result<Vec<u8>> {
+            let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+            self.calls.lock().unwrap().push((
+                args.clone(),
+                stdin.map(|s| String::from_utf8_lossy(s).into_owned()),
+            ));
+            let responses = self.responses.lock().unwrap();
+            let found = responses
+                .iter()
+                .find(|(prefix, _)| args.starts_with(prefix));
+            match found {
+                Some((_, Ok(out))) => Ok(out.clone()),
+                Some((_, Err(e))) => Err(anyhow!("{e}")),
+                None => Err(anyhow!("fake gh: no response for {args:?}")),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fake::FakeGh;
+    use super::runner::classify_error;
+    use super::snapshot::PR_FIELDS;
+    use super::*;
+    use crate::diff::Limits;
+    use anyhow::Result;
+    use serde_json::{Value, json};
+
+    #[test]
+    fn parses_pr_url() {
+        let pr = parse_pr_url("https://github.com/acme/widget/pull/42/files").unwrap();
+        assert_eq!(
+            pr,
+            PrRef {
+                owner: "acme".into(),
+                repo: "widget".into(),
+                number: 42
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_other_hosts_and_paths() {
+        assert!(parse_pr_url("https://gitlab.com/a/b/pull/1").is_err());
+        assert!(parse_pr_url("https://github.com/a/b/issues/1").is_err());
+        assert!(parse_pr_url("https://github.com/a/b/pull/x").is_err());
+        assert!(parse_pr_url("https://github.com/a;rm/b/pull/1").is_err());
+    }
+
+    #[test]
+    fn classifies_errors_without_echoing_secrets() {
+        assert!(
+            classify_error("To get started with GitHub CLI, please run:  gh auth login")
+                .to_string()
+                .contains("authentication")
+        );
+        assert!(
+            classify_error("API rate limit exceeded")
+                .to_string()
+                .contains("rate limit")
+        );
+        assert!(
+            classify_error("GraphQL: Could not resolve to a PullRequest")
+                .to_string()
+                .contains("not found")
+        );
+    }
+
+    fn pr_json() -> String {
+        json!({
+            "number": 7, "title": "T", "body": "B", "url": "https://github.com/o/r/pull/7", "state": "OPEN",
+            "isDraft": false, "author": {"login": "alice"}, "baseRefName": "main", "baseRefOid": "base1",
+            "headRefName": "feat", "headRefOid": "head1", "changedFiles": 1,
+            "reviews": [{"author": {"login": "bob"}, "state": "COMMENTED", "body": "hi", "submittedAt": "2026-01-01T00:00:00Z"}],
+            "comments": [{"author": {"login": "carol"}, "body": "c", "createdAt": "2026-01-01T00:00:00Z"}]
+        })
+        .to_string()
+    }
+
+    fn threads_json() -> String {
+        json!({"data": {"repository": {"pullRequest": {"reviewThreads": {
+            "pageInfo": {"hasNextPage": false, "endCursor": null},
+            "nodes": [{"id": "T1", "isResolved": false, "isOutdated": false, "path": "a.rs", "line": 1,
+                "originalLine": 1, "startLine": null, "diffSide": "RIGHT",
+                "comments": {"nodes": [{"id": "C1", "databaseId": 11, "body": "why?", "createdAt": "2026-01-01T00:00:00Z", "author": {"login": "bob"}}]}}]
+        }}}}})
+        .to_string()
+    }
+
+    #[test]
+    fn fetches_snapshot_through_gh() {
+        let gh = FakeGh::default();
+        gh.on(&["pr", "view"], Ok(&pr_json()));
+        gh.on(&["repo", "view"], Ok(r#"{"id":"R_1"}"#));
+        gh.on(
+            &["pr", "diff"],
+            Ok("diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-x\n+y\n"),
+        );
+        gh.on(&["api", "graphql"], Ok(&threads_json()));
+        let pr = PrRef {
+            owner: "o".into(),
+            repo: "r".into(),
+            number: 7,
+        };
+        let snap = fetch_snapshot(&gh, &pr, &Limits::default()).unwrap();
+        assert_eq!(snap.pr.head_sha, "head1");
+        assert_eq!(snap.provider_repository_id.as_deref(), Some("R_1"));
+        assert_eq!(snap.files.len(), 1);
+        assert!(snap.complete);
+        assert_eq!(snap.github_threads[0].comments[0].database_id, Some(11));
+        assert_eq!(snap.reviews[0].author, "bob");
+        assert!(snap.warnings.is_empty());
+    }
+
+    // A force push can happen after the metadata request, while the diff and
+    // thread requests still return successful, same-sized responses.
+    struct MovingPrGh {
+        fake: FakeGh,
+        views: std::sync::atomic::AtomicUsize,
+        changed: String,
+    }
+
+    impl GhRunner for MovingPrGh {
+        fn run(&self, args: &[&str], stdin: Option<&[u8]>) -> Result<Vec<u8>> {
+            if args.starts_with(&["pr", "view"])
+                && self.views.fetch_add(1, std::sync::atomic::Ordering::SeqCst) > 0
+            {
+                return Ok(self.changed.as_bytes().to_vec());
+            }
+            self.fake.run(args, stdin)
+        }
+    }
+
+    #[test]
+    fn rejects_force_push_between_metadata_and_diff_even_with_same_file_count() {
+        let fake = FakeGh::default();
+        fake.on(&["pr", "view"], Ok(&pr_json()));
+        fake.on(&["repo", "view"], Ok(r#"{"id":"R_1"}"#));
+        fake.on(
+            &["pr", "diff"],
+            Ok("diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n"),
+        );
+        fake.on(&["api", "graphql"], Ok(&threads_json()));
+        let mut changed: Value = serde_json::from_str(&pr_json()).unwrap();
+        changed["headRefOid"] = json!("head2");
+        let gh = MovingPrGh {
+            fake,
+            views: std::sync::atomic::AtomicUsize::new(0),
+            changed: changed.to_string(),
+        };
+        let pr = PrRef {
+            owner: "o".into(),
+            repo: "r".into(),
+            number: 7,
+        };
+        assert!(fetch_snapshot(&gh, &pr, &Limits::default()).is_err());
+    }
+
+    #[test]
+    fn rejects_base_change_during_import() {
+        let fake = FakeGh::default();
+        fake.on(&["pr", "view"], Ok(&pr_json()));
+        fake.on(&["repo", "view"], Ok(r#"{"id":"R_1"}"#));
+        fake.on(
+            &["pr", "diff"],
+            Ok("diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-x\n+y\n"),
+        );
+        fake.on(&["api", "graphql"], Ok(&threads_json()));
+        let mut changed: Value = serde_json::from_str(&pr_json()).unwrap();
+        changed["baseRefOid"] = json!("base2");
+        let gh = MovingPrGh {
+            fake,
+            views: std::sync::atomic::AtomicUsize::new(0),
+            changed: changed.to_string(),
+        };
+        let pr = PrRef {
+            owner: "o".into(),
+            repo: "r".into(),
+            number: 7,
+        };
+        assert!(
+            fetch_snapshot(&gh, &pr, &Limits::default())
+                .unwrap_err()
+                .to_string()
+                .contains("base or head changed")
+        );
+    }
+
+    #[test]
+    fn rejects_force_push_during_paginated_files_fallback() {
+        let fake = FakeGh::default();
+        fake.on(&["pr", "view"], Ok(&pr_json()));
+        fake.on(&["repo", "view"], Ok(r#"{"id":"R_1"}"#));
+        fake.on(&["pr", "diff"], Err("diff unavailable"));
+        fake.on(&["api", "--paginate"], Ok(r#"[[{"filename":"a.rs","status":"modified","patch":"@@ -1 +1 @@\n-x\n+y","sha":"s1","additions":1,"deletions":1}]]"#));
+        fake.on(&["api", "graphql"], Ok(&threads_json()));
+        let mut changed: Value = serde_json::from_str(&pr_json()).unwrap();
+        changed["headRefOid"] = json!("head2");
+        let gh = MovingPrGh {
+            fake,
+            views: std::sync::atomic::AtomicUsize::new(0),
+            changed: changed.to_string(),
+        };
+        let pr = PrRef {
+            owner: "o".into(),
+            repo: "r".into(),
+            number: 7,
+        };
+        assert!(
+            fetch_snapshot(&gh, &pr, &Limits::default())
+                .unwrap_err()
+                .to_string()
+                .contains("base or head changed")
+        );
+        assert_eq!(gh.fake.calls_matching(&["api", "--paginate"]).len(), 1);
+    }
+
+    #[test]
+    fn fails_closed_if_revision_cannot_be_rechecked() {
+        let fake = FakeGh::default();
+        fake.on(
+            &[
+                "pr",
+                "view",
+                "https://github.com/o/r/pull/7",
+                "--json",
+                PR_FIELDS,
+            ],
+            Ok(&pr_json()),
+        );
+        fake.on(&["repo", "view"], Ok(r#"{"id":"R_1"}"#));
+        fake.on(
+            &["pr", "diff"],
+            Ok("diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-x\n+y\n"),
+        );
+        fake.on(&["api", "graphql"], Ok(&threads_json()));
+        let pr = PrRef {
+            owner: "o".into(),
+            repo: "r".into(),
+            number: 7,
+        };
+        assert!(
+            fetch_snapshot(&fake, &pr, &Limits::default())
+                .unwrap_err()
+                .to_string()
+                .contains("could not verify PR revision")
+        );
+    }
+
+    #[test]
+    fn falls_back_to_files_api_and_flags_missing_files() {
+        let gh = FakeGh::default();
+        let mut pr = serde_json::from_str::<Value>(&pr_json()).unwrap();
+        pr["changedFiles"] = json!(2);
+        gh.on(&["pr", "view"], Ok(&pr.to_string()));
+        gh.on(&["repo", "view"], Ok(r#"{"id":"R_1"}"#));
+        gh.on(&["pr", "diff"], Err("HTTP 406: diff too large"));
+        gh.on(
+            &["api", "--paginate"],
+            Ok(r#"[[{"filename":"a.rs","status":"modified","patch":"@@ -1 +1 @@\n-x\n+y","sha":"s1","additions":1,"deletions":1}]]"#),
+        );
+        gh.on(&["api", "graphql"], Err("boom"));
+        let pr = PrRef {
+            owner: "o".into(),
+            repo: "r".into(),
+            number: 7,
+        };
+        let snap = fetch_snapshot(&gh, &pr, &Limits::default()).unwrap();
+        assert_eq!(snap.files.len(), 1);
+        assert!(
+            !snap.complete,
+            "1 of 2 files must mark the snapshot incomplete"
+        );
+        assert!(snap.warnings.iter().any(|w| w.contains("review threads")));
+    }
+}

@@ -55,11 +55,11 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-          cache-dependency-path: web/pnpm-lock.yaml
+          cache-dependency-path: app/pnpm-lock.yaml
       - name: Build frontend for embedding
         run: |
-          pnpm -C web install --frozen-lockfile
-          pnpm -C web build
+          pnpm -C app install --frozen-lockfile
+          pnpm -C app build
       - name: Build release CLI
         run: cargo build --locked --release --target ${{ matrix.target }}
 
