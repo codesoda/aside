@@ -1,0 +1,38 @@
+name: Website checks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'web/**'
+      - 'scripts/website.mjs'
+      - '.github/workflows/website-check.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: website-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  website:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Check site and guide
+        run: |
+          node --check scripts/website.mjs
+          node scripts/website.mjs &
+          server=$!
+          trap 'kill "$server" 2>/dev/null || true' EXIT
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -fsS http://127.0.0.1:4173/ -o /tmp/aside-home.html; then break; fi
+            sleep 1
+          done
+          grep -Fq 'https://asidecode.dev/agents.md' /tmp/aside-home.html
+          curl -fsS http://127.0.0.1:4173/agents.md -o /tmp/aside-agents.md
+          grep -Fq 'Set up Aside with a coding agent' /tmp/aside-agents.md
