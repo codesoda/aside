@@ -1,6 +1,6 @@
 # Set up Aside with a coding agent
 
-Aside is a local-first workspace for reviewing pull requests. This guide is for the agent helping a person install it. The URL `https://asidedomain/agents.md` in the homepage prompt is a **placeholder**: replace `asidedomain` with the actual production domain when deploying the website. This page must be served at `/agents.md` on that domain.
+Aside is a local-first workspace for reviewing pull requests. This guide is for the agent helping a person install it. The homepage prompt points to `https://asidecode.dev/agents.md`. Deploy this guide at `/agents.md` on that domain before using the prompt publicly.
 
 ## Check the machine and ask first
 

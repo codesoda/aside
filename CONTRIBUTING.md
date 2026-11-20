@@ -73,4 +73,4 @@ cargo test --locked
 actionlint .github/workflows/*.yml
 ```
 
-Do not test GitHub publication against another person's PR. Use the offline demo or fake GitHub runner for mutation tests. See [`aside-prd.md`](aside-prd.md) for the behavior and security contracts.
+Do not test GitHub publication against another person's PR. Use the offline demo or fake GitHub runner for mutation tests. See [`aside-prd.md`](docs/plans/aside-prd.md) for the behavior and security contracts.
