@@ -7,6 +7,9 @@
 use crate::model::ChangedFile;
 
 mod api;
+// Consumed by the provider scheduler (TODO(#22)); unused in the binary until then.
+#[allow(dead_code)]
+pub mod facts;
 mod fingerprint;
 mod parser;
 
