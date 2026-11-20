@@ -234,7 +234,8 @@ fn review_status(file: &ChangedFile, history: &[Acknowledgement]) -> (FileStatus
         return (FileStatus::Unreviewed, last_reviewed_at);
     }
     if latest.is_some_and(|ack| {
-        ack.kind == "reviewed"
+        file.patch_complete
+            && ack.kind == "reviewed"
             && ack.fingerprint_version == file.fingerprint_version
             && ack.diff_digest == file.diff_digest
     }) {
@@ -407,6 +408,43 @@ mod tests {
                 .status,
             FileStatus::Unreviewed
         );
+    }
+
+    #[test]
+    fn incomplete_patch_never_derives_reviewed_current_from_stored_acknowledgement() {
+        let session = session();
+        let path = "git/client.go";
+        acknowledge(&session, path, "reviewed");
+        let current = session.view(Actor::Human).unwrap();
+        assert_eq!(
+            current
+                .file_states
+                .iter()
+                .find(|s| s.path == path)
+                .unwrap()
+                .review_status,
+            FileStatus::ReviewedCurrent
+        );
+
+        session
+            .snapshot
+            .write()
+            .unwrap()
+            .files
+            .iter_mut()
+            .find(|f| f.path == path)
+            .unwrap()
+            .patch_complete = false;
+        let incomplete = session.view(Actor::Human).unwrap();
+        let state = incomplete
+            .file_states
+            .iter()
+            .find(|s| s.path == path)
+            .unwrap();
+        assert_eq!(state.review_status, FileStatus::ChangedSinceReviewed);
+        assert_eq!(state.status, FileStatus::ChangedSinceReviewed);
+        assert_eq!(incomplete.progress.reviewed, 0);
+        assert_eq!(incomplete.progress.changed_since_reviewed, 1);
     }
 
     #[tokio::test]

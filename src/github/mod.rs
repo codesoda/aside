@@ -3,6 +3,7 @@
 //! `gh` is always run with an argv array, never through a shell. All calls go
 //! through [`GhRunner`] so tests can substitute a fake.
 
+mod git_fallback;
 mod review;
 mod runner;
 mod snapshot;
@@ -80,7 +81,7 @@ pub mod fake {
 mod tests {
     use super::fake::FakeGh;
     use super::runner::classify_error;
-    use super::snapshot::PR_FIELDS;
+    use super::snapshot::{GhApiFile, PR_FIELDS, needs_recovery, validated_aggregate};
     use super::*;
     use crate::diff::Limits;
     use anyhow::Result;
@@ -156,6 +157,7 @@ mod tests {
             &["pr", "diff"],
             Ok("diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-x\n+y\n"),
         );
+        gh.on(&["api", "--paginate"], Ok(r#"[[{"filename":"a.rs","status":"modified","patch":null,"additions":1,"deletions":1}]]"#));
         gh.on(&["api", "graphql"], Ok(&threads_json()));
         let pr = PrRef {
             owner: "o".into(),
@@ -194,6 +196,7 @@ mod tests {
     #[test]
     fn rejects_force_push_between_metadata_and_diff_even_with_same_file_count() {
         let fake = FakeGh::default();
+        fake.on(&["api", "--paginate"], Ok(r#"[[{"filename":"a.rs","status":"modified","patch":null,"additions":1,"deletions":1}]]"#));
         fake.on(&["pr", "view"], Ok(&pr_json()));
         fake.on(&["repo", "view"], Ok(r#"{"id":"R_1"}"#));
         fake.on(
@@ -219,6 +222,7 @@ mod tests {
     #[test]
     fn rejects_base_change_during_import() {
         let fake = FakeGh::default();
+        fake.on(&["api", "--paginate"], Ok(r#"[[{"filename":"a.rs","status":"modified","patch":null,"additions":1,"deletions":1}]]"#));
         fake.on(&["pr", "view"], Ok(&pr_json()));
         fake.on(&["repo", "view"], Ok(r#"{"id":"R_1"}"#));
         fake.on(
@@ -278,6 +282,7 @@ mod tests {
     #[test]
     fn fails_closed_if_revision_cannot_be_rechecked() {
         let fake = FakeGh::default();
+        fake.on(&["api", "--paginate"], Ok(r#"[[{"filename":"a.rs","status":"modified","patch":null,"additions":1,"deletions":1}]]"#));
         fake.on(
             &[
                 "pr",
@@ -305,6 +310,161 @@ mod tests {
                 .to_string()
                 .contains("could not verify PR revision")
         );
+    }
+
+    fn snapshot_for_diff(
+        diff: &str,
+        manifest: Result<&str, &str>,
+    ) -> Result<crate::model::PrSnapshot> {
+        let gh = FakeGh::default();
+        gh.on(&["pr", "view"], Ok(&pr_json()));
+        gh.on(&["repo", "view"], Ok(r#"{"id":"R_1"}"#));
+        gh.on(&["pr", "diff"], Ok(diff));
+        gh.on(&["api", "--paginate"], manifest);
+        gh.on(&["api", "graphql"], Ok(&threads_json()));
+        fetch_snapshot(
+            &gh,
+            &PrRef {
+                owner: "o".into(),
+                repo: "r".into(),
+                number: 7,
+            },
+            &Limits::default(),
+        )
+    }
+
+    #[test]
+    fn validated_diff_survives_null_api_patch() {
+        let snap = snapshot_for_diff("diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-x\n+y\n", Ok(r#"[[{"filename":"a.rs","status":"modified","patch":null,"additions":1,"deletions":1}]]"#)).unwrap();
+        assert!(snap.complete);
+        assert_eq!(snap.files[0].hunks.len(), 1);
+    }
+
+    #[test]
+    fn incomplete_hunk_uses_api_patch() {
+        let snap = snapshot_for_diff("diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,2 +1,2 @@\n-x\n+y\n", Ok(r#"[[{"filename":"a.rs","status":"modified","patch":"@@ -1 +1 @@\n-x\n+y","additions":1,"deletions":1}]]"#)).unwrap();
+        assert_eq!(snap.files[0].hunks[0].old_count, 1);
+        assert!(snap.warnings.iter().any(|w| w.contains("did not match")));
+    }
+
+    #[test]
+    fn equal_count_wrong_path_uses_api_patch() {
+        let snap = snapshot_for_diff("diff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n@@ -1 +1 @@\n-x\n+y\n", Ok(r#"[[{"filename":"a.rs","status":"modified","patch":"@@ -1 +1 @@\n-x\n+y","additions":1,"deletions":1}]]"#)).unwrap();
+        assert_eq!(snap.files[0].path, "a.rs");
+        assert!(snap.warnings.iter().any(|w| w.contains("did not match")));
+    }
+
+    #[test]
+    fn duplicate_aggregate_path_cannot_hide_missing_manifest_file() {
+        let snap = snapshot_for_diff(
+            "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-x\n+y\ndiff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-x\n+y\n",
+            Ok(r#"[[{"filename":"a.rs","status":"modified","patch":"@@ -1 +1 @@\n-x\n+y","additions":1,"deletions":1},{"filename":"b.rs","status":"modified","patch":"@@ -1 +1 @@\n-x\n+y","additions":1,"deletions":1}]]"#),
+        )
+        .unwrap();
+        assert_eq!(
+            snap.files
+                .iter()
+                .map(|f| f.path.as_str())
+                .collect::<Vec<_>>(),
+            ["a.rs", "b.rs"]
+        );
+        assert!(snap.warnings.iter().any(|w| w.contains("did not match")));
+    }
+
+    #[test]
+    fn aggregate_rename_must_match_previous_filename() {
+        let snap = snapshot_for_diff(
+            "diff --git a/wrong.rs b/new.rs\nsimilarity index 50%\nrename from wrong.rs\nrename to new.rs\n--- a/wrong.rs\n+++ b/new.rs\n@@ -1 +1 @@\n-x\n+y\n",
+            Ok(r#"[[{"filename":"new.rs","previous_filename":"old.rs","status":"renamed","patch":"@@ -1 +1 @@\n-x\n+y","additions":1,"deletions":1}]]"#),
+        )
+        .unwrap();
+        assert_eq!(snap.files[0].previous_path.as_deref(), Some("old.rs"));
+        assert!(snap.warnings.iter().any(|w| w.contains("did not match")));
+    }
+
+    #[test]
+    fn aggregate_change_kind_must_match_manifest_status() {
+        let snap = snapshot_for_diff(
+            "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-x\n+y\n",
+            Ok(r#"[[{"filename":"a.rs","status":"added","patch":"@@ -0,0 +1 @@\n+y","additions":1,"deletions":1}]]"#),
+        )
+        .unwrap();
+        assert_eq!(snap.files[0].change_kind, crate::model::ChangeKind::Added);
+        assert!(snap.warnings.iter().any(|w| w.contains("did not match")));
+    }
+
+    #[test]
+    fn api_omission_prevents_complete_snapshot() {
+        let snap = snapshot_for_diff("diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-x\n+y\n", Ok(r#"[[{"filename":"a.rs","status":"modified","patch":null,"additions":2,"deletions":1}]]"#)).unwrap();
+        assert!(!snap.complete);
+        assert!(snap.warnings.iter().any(|w| w.contains("did not match")));
+    }
+
+    #[test]
+    fn api_omitted_file_cannot_validate_aggregate() {
+        let snap = snapshot_for_diff(
+            "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-x\n+y\n",
+            Ok("[[]]"),
+        )
+        .unwrap();
+        assert!(snap.files.is_empty());
+        assert!(!snap.complete);
+        assert!(snap.warnings.iter().any(|w| w.contains("did not match")));
+    }
+
+    #[test]
+    fn missing_manifest_entry_requests_recovery_even_with_complete_api_patch() {
+        let snap = snapshot_for_diff(
+            "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-x\n+y\n",
+            Ok(r#"[[{"filename":"a.rs","status":"modified","patch":"@@ -1 +1 @@\n-x\n+y","additions":1,"deletions":1}]]"#),
+        )
+        .unwrap();
+        assert!(snap.files[0].patch_complete);
+        assert!(needs_recovery(&snap.files, 1, Some(2)));
+        assert!(!needs_recovery(&snap.files, 1, Some(1)));
+    }
+
+    #[test]
+    fn recovered_extras_require_expected_count_and_exact_manifest_entries() {
+        let manifest: Vec<GhApiFile> = serde_json::from_str(
+            r#"[{"filename":"a.rs","status":"modified","additions":1,"deletions":1}]"#,
+        )
+        .unwrap();
+        let diff = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-x\n+y\ndiff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n@@ -1 +1 @@\n-old\n+new\n";
+        let files = crate::diff::parse_unified(diff, "head1", &Limits::default()).files;
+        assert!(validated_aggregate(&files, &manifest, Some(2), true));
+        assert!(!validated_aggregate(&files, &manifest, Some(2), false));
+        assert!(!validated_aggregate(&files, &manifest, Some(3), true));
+        assert!(!validated_aggregate(&files, &manifest, None, true));
+        let wrong_manifest: Vec<GhApiFile> = serde_json::from_str(
+            r#"[{"filename":"a.rs","status":"added","additions":1,"deletions":1}]"#,
+        )
+        .unwrap();
+        assert!(!validated_aggregate(&files, &wrong_manifest, Some(2), true));
+        assert!(!validated_aggregate(&files[1..], &manifest, Some(1), true));
+        assert!(!validated_aggregate(
+            &[files[0].clone(), files[0].clone()],
+            &manifest,
+            Some(2),
+            true
+        ));
+    }
+
+    #[test]
+    fn manifest_failure_fails_closed() {
+        let err = snapshot_for_diff(
+            "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-x\n+y\n",
+            Err("API unavailable"),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("manifest"));
+    }
+
+    #[test]
+    fn missing_diff_uses_api_patch() {
+        let snap = snapshot_for_diff("", Ok(r#"[[{"filename":"a.rs","status":"modified","patch":"@@ -1 +1 @@\n-x\n+y","additions":1,"deletions":1}]]"#)).unwrap();
+        assert_eq!(snap.files[0].hunks.len(), 1);
+        assert!(snap.warnings.iter().any(|w| w.contains("did not match")));
     }
 
     #[test]
