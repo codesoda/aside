@@ -4,7 +4,7 @@ A responsive, single-page marketing site for **Aside**, the local-first PR revie
 
 ## Preview
 
-Run `pnpm web` from the repository root to preview the site at `http://127.0.0.1:4173/`, including the agent setup guide at `/agents.md`. The homepage can also be opened directly as `index.html`; styles, scripts and illustrations are included in the file. Before production deployment, replace the `https://asidedomain/agents.md` placeholder in the hero prompt with the actual production domain and serve `agents.md` at that domain's `/agents.md` path.
+Run `pnpm web` from the repository root to preview the site at `http://127.0.0.1:4173/`, including the agent setup guide at `/agents.md`. The homepage can also be opened directly as `index.html`; styles, scripts and illustrations are included in the file. The hero prompt points to `https://asidecode.dev/agents.md`; deploy `agents.md` at that path before publishing the site.
 
 The embedded PR review illustration is interactive:
 
@@ -13,7 +13,13 @@ The embedded PR review illustration is interactive:
 - Mark a file reviewed; the mock remembers local choices using browser storage when supported.
 - Reset the demo state.
 
-The PR details, analysis signals and GitHub comments are example data only. This is a product landing-page concept, **not the shipped Aside CLI**. The setup prompt points to the separate agent guide; do not use its placeholder domain as a live URL.
+The PR details, analysis signals and GitHub comments are example data only. This is a product landing-page concept, **not the shipped Aside CLI**. The setup prompt points to the separate agent guide on asidecode.dev; make sure it is deployed before sharing the prompt.
+
+## Deploy on GitHub Pages
+
+`.github/workflows/pages.yml` uploads the static `web/` directory and deploys it on pushes to `main` that change `web/` (or the workflow itself). You can also run it manually. Pull requests do not deploy.
+
+One-time repository setup is required before the first deployment: in **Settings → Pages**, select **GitHub Actions** as the build source and set the custom domain to `asidecode.dev`. Verify ownership of the domain and configure the apex DNS records according to [GitHub's custom-domain instructions](https://docs.github.com/en/pages/configuring-a-custom-domain-for-your-github-pages-site/managing-a-custom-domain-for-your-github-pages-site); enable HTTPS once GitHub offers it. A custom Actions workflow does not use a `CNAME` file to configure the domain. Until the Pages source, domain, and DNS are configured, the workflow alone does not make `https://asidecode.dev/agents.md` reachable.
 
 ## Design direction
 

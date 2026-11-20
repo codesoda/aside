@@ -4,7 +4,7 @@
   <h1>Aside</h1>
   <p>A local-first workspace for reviewing GitHub pull requests with a human and a coding agent.</p>
   <p>
-    <a href="aside-prd.md"><strong>Product requirements »</strong></a>
+    <a href="docs/plans/aside-prd.md"><strong>Product requirements »</strong></a>
     · <a href="https://github.com/codesoda/aside/issues">Report a bug</a>
     · <a href="https://github.com/codesoda/aside/issues">Request a feature</a>
   </p>
@@ -43,7 +43,7 @@ This project is under active development. The backend and API are still being in
 
 ### Install with an agent
 
-Give your coding agent the setup prompt on the [Aside website](web/index.html), then follow the [agent setup guide](web/agents.md). The prompt's `https://asidedomain/agents.md` is a placeholder; the website deployer must replace `asidedomain` with the actual production domain and serve the guide at `/agents.md`. Supported release targets are Mac ARM, Windows x86-64/ARM64, and Linux x86-64. The guide uses official install scripts only after download, inspection, and your consent. Ask before running the offline demo. The installer also installs the built-in `aside skill` for agents.
+Give your coding agent the setup prompt on the [Aside website](web/index.html), then follow the [agent setup guide](web/agents.md). The prompt points to `https://asidecode.dev/agents.md`; the guide must be deployed there before the prompt is shared publicly. Supported release targets are Mac ARM, Windows x86-64/ARM64, and Linux x86-64. The guide uses official install scripts only after download, inspection, and your consent. Ask before running the offline demo. The installer also installs the built-in `aside skill` for agents.
 
 For live PRs, install and authenticate [GitHub CLI (`gh`)](https://cli.github.com/) with `gh auth login`. The offline demo does not need `gh` or GitHub authentication. If the official scripts or release artifacts have not been published, build from source instead.
 
@@ -92,7 +92,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-The CLI's Svelte frontend lives in `app/`; the standalone website lives in `web/`. Run `pnpm web` from the repository root to preview the website at `http://127.0.0.1:4173/` (set `ASIDE_WEB_PORT` to override the port). For a hot-reloaded CLI frontend backed by the server, run `pnpm -C app dev:aside` from the repository root. It builds and launches the demo server, starts Vite, and prints a private frontend login URL. Pass a full GitHub PR URL after `dev:aside` to test a live review. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for prerequisites, manual startup, port overrides, and shutdown instructions. The Rust backend is grouped by responsibility: `src/model/` defines the API contract, `src/diff/` parses patches, `src/github/` talks to `gh`, `src/store/` persists state, and `src/server/` serves authenticated routes. PRs run a Linux build and an [aislop](https://github.com/scanaislop/aislop) quality gate. Tags matching `v*` trigger the cross-platform release workflow. See [`aside-prd.md`](aside-prd.md) for contracts, security requirements, and acceptance criteria.
+The CLI's Svelte frontend lives in `app/`; the standalone website lives in `web/`. Run `pnpm web` from the repository root to preview the website at `http://127.0.0.1:4173/` (set `ASIDE_WEB_PORT` to override the port). For a hot-reloaded CLI frontend backed by the server, run `pnpm -C app dev:aside` from the repository root. It builds and launches the demo server, starts Vite, and prints a private frontend login URL. Pass a full GitHub PR URL after `dev:aside` to test a live review. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for prerequisites, manual startup, port overrides, and shutdown instructions. The Rust backend is grouped by responsibility: `src/model/` defines the API contract, `src/diff/` parses patches, `src/github/` talks to `gh`, `src/store/` persists state, and `src/server/` serves authenticated routes. PRs run a Linux build and an [aislop](https://github.com/scanaislop/aislop) quality gate. Tags matching `v*` trigger the cross-platform release workflow. See [`aside-prd.md`](docs/plans/aside-prd.md) for contracts, security requirements, and acceptance criteria.
 
 <p align="right"><a href="#readme-top">Back to top</a></p>
 
