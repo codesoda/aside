@@ -43,7 +43,11 @@ This project is under active development. The backend and API are still being in
 
 ### Install with an agent
 
-Give your coding agent the setup prompt on the [Aside website](web/index.html), then follow the [agent setup guide](web/agents.md). The prompt points to `https://asidecode.dev/agents.md`; the guide must be deployed there before the prompt is shared publicly. Supported release targets are Mac ARM, Windows x86-64/ARM64, and Linux x86-64. The guide uses official install scripts only after download, inspection, and your consent. Ask before running the offline demo. The installer also installs the built-in `aside skill` for agents.
+Paste this into your coding agent:
+
+```text
+From now on I want to use Aside whenever we work on pull requests. Set Aside up for me by following the instructions at https://asidecode.dev/agents.md and guide me through the steps.
+```
 
 For live PRs, install and authenticate [GitHub CLI (`gh`)](https://cli.github.com/) with `gh auth login`. The offline demo does not need `gh` or GitHub authentication.
 
