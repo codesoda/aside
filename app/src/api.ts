@@ -65,6 +65,12 @@ export function watchSession(
     'resync', 'exclusions.changed', 'file.reviewed', 'thread.created',
     'thread.replied', 'thread.changed', 'comment.changed', 'comment.deleted',
     'review.finished', 'review.published', 'pr.refreshed',
+    // Run lifecycle (#27): small versioned deltas; the session view carries
+    // the authoritative per-source coverage.
+    'analysis.run.queued', 'analysis.run.started', 'analysis.run.succeeded',
+    'analysis.run.partial', 'analysis.run.skipped', 'analysis.run.cancelled',
+    'analysis.run.failed', 'analysis.run.stale', 'analysis.findings.upserted',
+    'analysis.findings.invalidated',
   ]) {
     source.addEventListener(event, refresh);
   }

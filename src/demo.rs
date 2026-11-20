@@ -48,6 +48,7 @@ pub fn snapshot(version: usize) -> PrSnapshot {
         files: parsed.files,
         github_threads: intelligence::github_threads(),
         github_threads_completeness: crate::model::Completeness::Complete,
+        github_threads_problems: Vec::new(),
         reviews: intelligence::reviews(),
         issue_comments: intelligence::issue_comments(),
         warnings: parsed.warnings,

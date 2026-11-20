@@ -11,6 +11,7 @@ mod analysis;
 mod finding;
 #[allow(dead_code)]
 mod imported;
+mod lifecycle;
 mod review;
 mod rules;
 mod snapshot;
@@ -44,6 +45,13 @@ pub use finding::{
 pub use imported::{
     AnnotationLevel, ImportedCheckAnnotation, ImportedCheckRun, ImportedCommitStatus,
     NativeSourceKey, NativeSourceRef,
+};
+
+#[allow(unused_imports)]
+pub use lifecycle::{
+    AnalysisKey, AnalysisSummary, FINDINGS_INVALIDATED, FINDINGS_UPSERTED, Invalidation,
+    InvalidationReason, LIFECYCLE_EVENT_VERSION, OverallCoverage, SourceCoverage, SourceState,
+    classify, overall, run_event_type,
 };
 
 #[cfg(test)]

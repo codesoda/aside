@@ -14,7 +14,10 @@ pub use provider::{
     ProviderKind, ProviderLimits, ProviderOutput,
 };
 #[allow(unused_imports)]
-pub use scheduler::{Clock, RunHandle, RunReport, Scheduler, SchedulerConfig, SystemClock, reason};
+pub use scheduler::{
+    Clock, RunEvent, RunHandle, RunObserver, RunReport, Scheduler, SchedulerConfig, SystemClock,
+    reason,
+};
 
 use std::sync::Arc;
 
