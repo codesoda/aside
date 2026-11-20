@@ -5,4 +5,21 @@ import type { Side } from "./Side";
 /**
  * A review thread as fetched from GitHub, before it is merged into local state.
  */
-export type GithubThread = { nodeId: string, path: string, side: Side | null, line: number | null, startLine: number | null, originalLine: number | null, isOutdated: boolean, isResolved: boolean, comments: Array<GithubComment>, };
+export type GithubThread = { nodeId: string, path: string, side: Side | null, line: number | null, startLine: number | null, originalLine: number | null, isOutdated: boolean, isResolved: boolean, comments: Array<GithubComment>, 
+/**
+ * Permalink to the thread (GitHub has no thread URL; this is the root
+ * comment's URL).
+ */
+url?: string, originalStartLine?: number, 
+/**
+ * Raw `startDiffSide`.
+ */
+startSide?: string, 
+/**
+ * Raw `subjectType` (`LINE` or `FILE`).
+ */
+subjectType?: string, 
+/**
+ * Login of whoever resolved the thread.
+ */
+resolvedBy?: string, viewerCanReply?: boolean, viewerCanResolve?: boolean, viewerCanUnresolve?: boolean, };
