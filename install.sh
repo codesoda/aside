@@ -67,16 +67,26 @@ install_binary() {
   ln -sfn "$BINARY" "$LINK"
 }
 
+case "$#" in
+  0) ;;
+  1) [ "$1" = --from-source ] || fail 'usage: install.sh [--from-source]' ;;
+  *) fail 'usage: install.sh [--from-source]' ;;
+esac
+
 require uname
 require install
 require mktemp
 TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/aside-install.XXXXXXXX") || fail 'cannot create temporary directory'
 
-# A downloaded script has no local Cargo.toml; a checkout can build without a release.
-if [ -f "$0" ] && [ -f "$(dirname "$0")/Cargo.toml" ] && [ -f "$(dirname "$0")/skills/aside/SKILL.md" ]; then
+# Download the latest verified release by default, even from inside a checkout.
+# Building from source requires an explicit choice and the complete Aside tree.
+if [ "${1:-}" = --from-source ]; then
+  [ -f "$0" ] || fail 'source install requires install.sh from the Aside checkout'
+  root=$(CDPATH='' cd "$(dirname "$0")" && pwd -P)
+  [ -f "$root/Cargo.toml" ] && [ -f "$root/skills/aside/SKILL.md" ] && [ -f "$root/app/package.json" ] \
+    || fail 'source install requires the Aside checkout with app/ and skills/aside/'
   require cargo
   require pnpm
-  root=$(CDPATH='' cd "$(dirname "$0")" && pwd -P)
   pnpm -C "$root/app" install --frozen-lockfile || fail 'frontend dependency install failed'
   pnpm -C "$root/app" build || fail 'frontend build failed'
   (cd "$root" && cargo build --locked --release) || fail 'source build failed'

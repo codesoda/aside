@@ -64,10 +64,10 @@ esac
         digest = checksum or hashlib.sha256(archive.read_bytes()).hexdigest()
         (self.fixtures / 'checksums-sha256.txt').write_text(f'{digest}  {self.asset}\n')
 
-    def run_installer(self):
+    def run_installer(self, *args):
         env = dict(os.environ, HOME=str(self.home), FIXTURES=str(self.fixtures),
                    PATH=str(self.bin) + os.pathsep + os.environ['PATH'])
-        return subprocess.run(['sh', str(self.script)], input='', text=True,
+        return subprocess.run(['sh', str(self.script), *args], input='', text=True,
                               capture_output=True, env=env, timeout=30)
 
     def test_verified_install_skill_and_noninteractive_demo(self):
@@ -113,6 +113,9 @@ esac
         skill = self.root / 'skills/aside/SKILL.md'
         skill.parent.mkdir(parents=True)
         skill.write_text('name: aside\n')
+        app = self.root / 'app/package.json'
+        app.parent.mkdir(parents=True)
+        app.write_text('{"name":"aside-web"}')
         target = self.root / 'target/release'
         target.mkdir(parents=True)
         source = target / 'aside'
@@ -121,9 +124,27 @@ esac
         self.mock('cargo', '#!/bin/sh\n[ "$*" = "build --locked --release" ]\n')
         self.mock('pnpm', '#!/bin/sh\nexit 0\n')
         self.mock('curl', '#!/bin/sh\nexit 99\n')
+        result = self.run_installer('--from-source')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.home / 'calls').read_text(), '--version\nskill\n')
+
+    def test_checkout_still_downloads_latest_by_default(self):
+        (self.root / 'Cargo.toml').write_text('[package]\nname="aside"\n')
+        skill = self.root / 'skills/aside/SKILL.md'
+        skill.parent.mkdir(parents=True)
+        skill.write_text('name: aside\n')
+        app = self.root / 'app/package.json'
+        app.parent.mkdir(parents=True)
+        app.write_text('{"name":"aside-web"}')
+        self.mock('cargo', '#!/bin/sh\nexit 99\n')
         result = self.run_installer()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.home / 'calls').read_text(), '--version\nskill\n')
+
+    def test_explicit_source_requires_checkout(self):
+        result = self.run_installer('--from-source')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('requires the Aside checkout', result.stderr)
 
     def test_symlinked_install_directory_rejected(self):
         (self.home / '.aside').symlink_to(self.root, target_is_directory=True)

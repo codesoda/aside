@@ -5,12 +5,12 @@ Aside is a local-first workspace for reviewing pull requests. This guide is for 
 ## Check the machine and ask first
 
 1. Explain what Aside does and ask which machine/OS and architecture the person uses. Supported release targets are **macOS ARM**, **Windows x86-64 and ARM64**, and **Linux x86-64**. Do not suggest a release installer for another target; refer to [building from source](https://github.com/codesoda/aside#install-from-source) instead.
-2. Ask for the person's consent before downloading or running an installer. Download the official script to a local file, **inspect it with the person**, and run it only after they approve what it does. Do not pipe network code into a shell or run an uninspected script. If the scripts or matching release artifacts are not yet published, stop and explain the blocker; do not substitute an unofficial installer.
+2. Ask for the person's consent before downloading or running an installer. Download the official script to a local file, **inspect it with the person**, and run it only after they approve what it does. Do not pipe network code into a shell or run an uninspected script. If no stable release or matching asset is available, stop and explain the blocker; offer the source-build instructions instead of substituting an unofficial installer.
 3. For a live pull request, check that [GitHub CLI (`gh`)](https://cli.github.com/) is installed and authenticated (`gh auth status`). If needed, guide the person through `gh auth login` themselves. Do not ask them to share credentials. The bundled demo runs offline without `gh` or GitHub authentication.
 
 ## Install after inspection and consent
 
-The official scripts are hosted in the [Aside repository](https://github.com/codesoda/aside):
+The official scripts are hosted in the [Aside repository](https://github.com/codesoda/aside). With no version argument, each script resolves the [latest stable release](https://github.com/codesoda/aside/releases/latest) and downloads its matching asset and published SHA-256 checksums, even when run inside a checkout. Do not pin a release tag. Building and installing from a checkout is an explicit alternative (`sh install.sh --from-source` or `./install.ps1 -FromSource`), not the default:
 
 - macOS ARM or Linux x86-64 (shell): `https://raw.githubusercontent.com/codesoda/aside/main/install.sh`
 

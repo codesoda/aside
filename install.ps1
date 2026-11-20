@@ -1,3 +1,5 @@
+param([switch] $FromSource)
+
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Net.Http
 Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -117,8 +119,14 @@ function Install-FromRelease {
 }
 
 try {
-    if ($PSScriptRoot -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'Cargo.toml') -PathType Leaf) -and
-        (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'skills/aside/SKILL.md') -PathType Leaf)) {
+    # Even when run from the repository checkout, install the latest release by default.
+    if ($FromSource) {
+        if (-not $PSScriptRoot -or
+            -not (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'Cargo.toml') -PathType Leaf) -or
+            -not (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'skills/aside/SKILL.md') -PathType Leaf) -or
+            -not (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'app/package.json') -PathType Leaf)) {
+            throw '-FromSource requires the Aside checkout with app/ and skills/aside/'
+        }
         Install-FromSource
     } else {
         Install-FromRelease

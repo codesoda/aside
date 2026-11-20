@@ -45,7 +45,29 @@ This project is under active development. The backend and API are still being in
 
 Give your coding agent the setup prompt on the [Aside website](web/index.html), then follow the [agent setup guide](web/agents.md). The prompt points to `https://asidecode.dev/agents.md`; the guide must be deployed there before the prompt is shared publicly. Supported release targets are Mac ARM, Windows x86-64/ARM64, and Linux x86-64. The guide uses official install scripts only after download, inspection, and your consent. Ask before running the offline demo. The installer also installs the built-in `aside skill` for agents.
 
-For live PRs, install and authenticate [GitHub CLI (`gh`)](https://cli.github.com/) with `gh auth login`. The offline demo does not need `gh` or GitHub authentication. If the official scripts or release artifacts have not been published, build from source instead.
+For live PRs, install and authenticate [GitHub CLI (`gh`)](https://cli.github.com/) with `gh auth login`. The offline demo does not need `gh` or GitHub authentication.
+
+### Install the latest stable release
+
+On macOS ARM or Linux x86-64, first approve the download, then inspect the official installer and run it only after you approve its actions:
+
+```sh
+curl -fL https://raw.githubusercontent.com/codesoda/aside/main/install.sh -o aside-install.sh
+less aside-install.sh
+# Only after inspecting and approving the script:
+sh aside-install.sh
+```
+
+On Windows x86-64 or ARM64, follow the same consent and inspection steps in PowerShell:
+
+```powershell
+Invoke-WebRequest https://raw.githubusercontent.com/codesoda/aside/main/install.ps1 -OutFile aside-install.ps1
+Get-Content .\aside-install.ps1
+# Only after inspecting and approving the script:
+.\aside-install.ps1
+```
+
+The installers resolve the [latest stable release](https://github.com/codesoda/aside/releases/latest) and download the matching asset and published SHA-256 checksums; they do not pin a version or use the GitHub API. Do not pipe a remote script into a shell. If no stable release or matching asset is available yet, use the source-build instructions below instead. The installers use the release even when run inside a checkout; a source install requires an explicit `sh install.sh --from-source` or `./install.ps1 -FromSource` from the checkout.
 
 ### Prerequisites for building from source
 
@@ -62,7 +84,7 @@ pnpm -C app build
 cargo build --locked --release
 ```
 
-Run `target/release/aside` from the checkout, or put the executable on your `PATH`. Building the frontend first embeds the real UI into the binary; otherwise the build script creates a placeholder page. Tagged releases are intended to include prebuilt archives for Mac ARM, Windows x86/ARM, and Linux when the release workflow passes.
+Run `target/release/aside` from the checkout, or put the executable on your `PATH`. Building the frontend first embeds the real UI into the binary; otherwise the build script creates a placeholder page. The release workflow builds prebuilt archives for Mac ARM, Windows x86-64/ARM64, and Linux x86-64 when it passes.
 
 <p align="right"><a href="#readme-top">Back to top</a></p>
 
