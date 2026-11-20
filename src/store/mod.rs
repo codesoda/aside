@@ -3,9 +3,6 @@
 //! The database lives in the OS data directory (never in a repository).
 //! Set `ASIDE_DATA_DIR` to override. Demo sessions use an in-memory database.
 
-// Analysis persistence (#18). Consumers land in #22 (scheduler) and #33 (API);
-// until then parts of the API are unused in this binary.
-#[allow(dead_code)]
 mod analysis;
 mod publication;
 mod repositories;
@@ -15,6 +12,7 @@ mod schema;
 pub(crate) mod snapshots;
 mod threads;
 
+// TODO(#33): the remaining re-exports are consumed by the analysis API.
 #[allow(unused_imports)]
 pub use analysis::{
     ANALYSIS_SNAPSHOT_RETENTION, AnalysisBatch, BatchOutcome, ImportBatch, ImportedSourceWrite,
