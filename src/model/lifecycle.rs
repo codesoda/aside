@@ -91,7 +91,7 @@ pub struct AnalysisSummary {
     pub historical_findings: u32,
     /// Current findings whose file is excluded by repository rules. Exclusion
     /// edits change this without rerunning analysis.
-    /// TODO(#30): full scope-aware counts and priority buckets.
+    /// Full scope-aware counts and the review queue: `crate::priority` (#30).
     pub current_findings_excluded: u32,
 }
 
