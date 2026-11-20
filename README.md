@@ -41,19 +41,24 @@ This project is under active development. The backend and API are still being in
 
 ## Getting started
 
-### Prerequisites
+### Install with an agent
+
+Give your coding agent the setup prompt on the [Aside website](web/index.html), then follow the [agent setup guide](web/agents.md). The prompt's `https://asidedomain/agents.md` is a placeholder; the website deployer must replace `asidedomain` with the actual production domain and serve the guide at `/agents.md`. Supported release targets are Mac ARM, Windows x86-64/ARM64, and Linux x86-64. The guide uses official install scripts only after download, inspection, and your consent. Ask before running the offline demo. The installer also installs the built-in `aside skill` for agents.
+
+For live PRs, install and authenticate [GitHub CLI (`gh`)](https://cli.github.com/) with `gh auth login`. The offline demo does not need `gh` or GitHub authentication. If the official scripts or release artifacts have not been published, build from source instead.
+
+### Prerequisites for building from source
 
 - A current Rust toolchain (edition 2024 support) and Cargo.
 - Node.js 24 and pnpm 10 or later to build the frontend.
-- `gh` installed and authenticated with `gh auth login` for live PRs. The offline demo does not need GitHub authentication.
 
 ### Install from source
 
 ```sh
 git clone https://github.com/codesoda/aside.git
 cd aside
-pnpm -C web install --frozen-lockfile
-pnpm -C web build
+pnpm -C app install --frozen-lockfile
+pnpm -C app build
 cargo build --locked --release
 ```
 
@@ -80,14 +85,14 @@ For unattended updates, `aside update --yes` is an explicit install confirmation
 ## Development
 
 ```sh
-pnpm -C web check
-pnpm -C web build
+pnpm -C app check
+pnpm -C app build
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-For frontend development, start Aside with `ASIDE_DEV_ORIGIN=http://localhost:5173 cargo run -- demo --no-open`. Set `ASIDE_URL` to the exact `url` in its `session.started` event, then run `pnpm -C web dev`. The Vite config proxies `/api` and `/auth`; use the private `/auth?token=…` path from stderr on the Vite origin to sign in. Never guess the backend port or share the token. PRs run a Linux build and an [aislop](https://github.com/scanaislop/aislop) quality gate. Tags matching `v*` trigger the cross-platform release workflow. See [`aside-prd.md`](aside-prd.md) for contracts, security requirements, and acceptance criteria.
+The CLI's Svelte frontend lives in `app/`; the standalone website lives in `web/`. Run `pnpm web` from the repository root to preview the website at `http://127.0.0.1:4173/` (set `ASIDE_WEB_PORT` to override the port). For a hot-reloaded CLI frontend backed by the server, run `pnpm -C app dev:aside` from the repository root. It builds and launches the demo server, starts Vite, and prints a private frontend login URL. Pass a full GitHub PR URL after `dev:aside` to test a live review. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for prerequisites, manual startup, port overrides, and shutdown instructions. The Rust backend is grouped by responsibility: `src/model/` defines the API contract, `src/diff/` parses patches, `src/github/` talks to `gh`, `src/store/` persists state, and `src/server/` serves authenticated routes. PRs run a Linux build and an [aislop](https://github.com/scanaislop/aislop) quality gate. Tags matching `v*` trigger the cross-platform release workflow. See [`aside-prd.md`](aside-prd.md) for contracts, security requirements, and acceptance criteria.
 
 <p align="right"><a href="#readme-top">Back to top</a></p>
 
@@ -103,7 +108,7 @@ Track work and known issues in [GitHub Issues](https://github.com/codesoda/aside
 
 ## Contributing
 
-Open an issue to discuss a change, then submit a pull request. Run the development checks above and do not include private PR content or session credentials in test fixtures or logs.
+Open an issue to discuss a change, then submit a pull request. Sign off each commit with `git commit -s` and follow the setup and checks in [`CONTRIBUTING.md`](CONTRIBUTING.md). Do not include private PR content or session credentials in fixtures or logs.
 
 ## License
 

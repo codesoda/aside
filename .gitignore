@@ -1,2 +1,4 @@
 /target
 .aislop/session.jsonl
+.aislop/hook.lock
+/node_modules/
