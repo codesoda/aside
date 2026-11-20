@@ -94,6 +94,16 @@ fn publication_lock() -> &'static tokio::sync::Mutex<()> {
     LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
+/// Wait for this process's send or reconcile in progress, so shutting down never
+/// cancels one mid-call and frees its locks while `gh` may still be posting.
+pub async fn wait_for_publication() {
+    let busy = publication_lock().try_lock().is_err();
+    if busy {
+        eprintln!("Waiting for the GitHub publication in progress to finish ...");
+    }
+    drop(publication_lock().lock().await);
+}
+
 /// Lock this PR's publication against other Aside processes sharing the database,
 /// until the returned file is dropped. The OS releases the lock if the process dies,
 /// so a crash never leaves the PR locked. Callers hold `publication_lock` first.

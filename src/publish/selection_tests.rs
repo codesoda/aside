@@ -112,17 +112,17 @@ fn comment(
 
 /// Thread t1 on a.rs: draft c1 and its draft reply c2. Thread t2 on b.rs: draft c3.
 pub(super) fn session(fake: &Arc<FakeGh>) -> Arc<Session> {
-    session_with(fake, Store::open_in_memory().unwrap())
+    session_with(fake.clone(), Store::open_in_memory().unwrap())
 }
 
 /// `session` on a given store, such as one on disk that processes could share.
-pub(super) fn session_with(fake: &Arc<FakeGh>, store: Store) -> Arc<Session> {
+pub(super) fn session_with(gh: Arc<dyn GhRunner>, store: Store) -> Arc<Session> {
     let pr = PrRef {
         owner: "o".into(),
         repo: "r".into(),
         number: 1,
     };
-    let session = Session::new(snapshot(), store, Some(fake.clone()), Some(pr)).unwrap();
+    let session = Session::new(snapshot(), store, Some(gh), Some(pr)).unwrap();
     {
         let mut store = session.store.lock().unwrap();
         let pr_id = session.pr_id.clone();

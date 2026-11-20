@@ -256,6 +256,7 @@ async fn start_session(
     let result = axum::serve(listener, server::router(state))
         .with_graceful_shutdown(shutdown_signal())
         .await;
+    publish::wait_for_publication().await;
     forward.abort();
     result.context("Aside server failed")
 }

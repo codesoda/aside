@@ -144,11 +144,12 @@ async fn publish_confirm(
     }
     // A send keeps its locks until it ends, even if the browser drops this request.
     let session = state.session.clone();
-    let send =
-        tokio::spawn(
-            async move { publish::publish(&session, &input.plan_id, input.confirm).await },
-        );
-    let outcome = send
+    let send = tokio::spawn(async move {
+        let outcome = publish::publish(&session, &input.plan_id, input.confirm).await?;
+        let event = session.notify("review.published", json!({"outcome":outcome}));
+        anyhow::Ok((outcome, event.sequence))
+    });
+    let (outcome, sequence) = send
         .await
         .map_err(|_| ApiError::internal())?
         .map_err(|error| {
@@ -161,10 +162,7 @@ async fn publish_confirm(
                 "publication failed or changed; refresh and preview before retrying",
             )
         })?;
-    let event = state
-        .session
-        .notify("review.published", json!({"outcome":outcome}));
-    Ok(Json(json!({"outcome":outcome,"sequence":event.sequence})))
+    Ok(Json(json!({"outcome":outcome,"sequence":sequence})))
 }
 /// The PR's unresolved publication attempt, if any, with the drafts it has not published.
 async fn publish_unresolved(

@@ -167,7 +167,7 @@ async fn another_process_publishing_the_pr_holds_off_reconcile_and_publish() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(&dir.path().join("aside.db")).unwrap();
     let fake = lost_connection();
-    let s = session_with(&fake, store);
+    let s = session_with(fake.clone(), store);
     select(&s, &["c3"], false).unwrap();
     let plan = preview(&s).unwrap();
     let outcome = publish(&s, &plan.plan_id, true).await.unwrap();
@@ -204,4 +204,52 @@ async fn another_process_publishing_the_pr_holds_off_reconcile_and_publish() {
     drop(held);
     let outcome = publish(&s, &plan.plan_id, true).await.unwrap();
     assert_eq!(outcome.status, "succeeded", "{:?}", outcome.error);
+}
+
+/// A GitHub that, during each POST, records whether another process could take the
+/// PR's publication lock.
+struct LockProbe {
+    gh: Arc<FakeGh>,
+    lock: std::sync::OnceLock<std::path::PathBuf>,
+    free_during_post: std::sync::Mutex<Vec<bool>>,
+}
+
+impl GhRunner for LockProbe {
+    fn run(&self, args: &[&str], stdin: Option<&[u8]>) -> Result<Vec<u8>> {
+        if args.contains(&"POST") {
+            let other = std::fs::File::open(self.lock.get().unwrap())?;
+            let free = other.try_lock().is_ok();
+            self.free_during_post.lock().unwrap().push(free);
+        }
+        self.gh.run(args, stdin)
+    }
+}
+
+#[tokio::test]
+async fn a_send_holds_the_lock_until_it_ends() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("aside.db")).unwrap();
+    let probe = Arc::new(LockProbe {
+        gh: github(),
+        lock: std::sync::OnceLock::new(),
+        free_during_post: std::sync::Mutex::new(Vec::new()),
+    });
+    let s = session_with(probe.clone(), store);
+    let path = lock_store(&s)
+        .unwrap()
+        .publication_lock_path(&s.pr_id)
+        .unwrap();
+    probe.lock.set(path.clone()).unwrap();
+    select(&s, &["c3"], false).unwrap();
+    let plan = preview(&s).unwrap();
+    let outcome = publish(&s, &plan.plan_id, true).await.unwrap();
+    assert_eq!(outcome.status, "succeeded", "{:?}", outcome.error);
+    let free = probe.free_during_post.lock().unwrap().clone();
+    assert_eq!(
+        free,
+        [false, false],
+        "the review and the reply were sent locked"
+    );
+    let after = std::fs::File::open(&path).unwrap();
+    after.try_lock().expect("released once the send ends");
 }
