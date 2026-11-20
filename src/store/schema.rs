@@ -136,4 +136,15 @@ pub(super) const MIGRATIONS: &[&str] = &[
         attempt_id TEXT NOT NULL REFERENCES publication_attempts(id)
     );
     ",
+    // v3: optional GitHub metadata. NULL means GitHub did not provide the value.
+    "
+    ALTER TABLE review_threads ADD COLUMN original_line INTEGER;
+    ALTER TABLE review_threads ADD COLUMN original_start_line INTEGER;
+    ALTER TABLE review_threads ADD COLUMN start_side TEXT;
+    ALTER TABLE review_threads ADD COLUMN viewer_can_resolve INTEGER;
+    ALTER TABLE review_threads ADD COLUMN viewer_can_unresolve INTEGER;
+    ALTER TABLE review_comments ADD COLUMN author_node_id TEXT;
+    ALTER TABLE review_comments ADD COLUMN author_type TEXT;
+    ALTER TABLE review_comments ADD COLUMN github_updated_at TEXT;
+    ",
 ];
