@@ -23,6 +23,7 @@ pub(super) struct FileBuilder {
     position: u32,
     line_count: usize,
     truncated: bool,
+    malformed: bool,
     old_left: u32,
     new_left: u32,
     old_no: u32,
@@ -73,6 +74,14 @@ impl FileBuilder {
     }
 
     fn push_line(&mut self, kind: LineKind, text: &str, limits: &Limits) {
+        // A side may reach zero before the other; further lines on that side
+        // cannot be part of this hunk even when another side is still open.
+        if (matches!(kind, LineKind::Context | LineKind::Deletion) && self.old_left == 0)
+            || (matches!(kind, LineKind::Context | LineKind::Addition) && self.new_left == 0)
+        {
+            self.malformed = true;
+            return;
+        }
         self.position += 1;
         let (old_line, new_line) = match kind {
             LineKind::Context => {
@@ -128,6 +137,10 @@ impl FileBuilder {
                 "{path}: diff truncated after the per-file line limit"
             ));
         }
+        let incomplete_hunk = self.old_left != 0 || self.new_left != 0;
+        if self.malformed || incomplete_hunk {
+            warnings.push(format!("{path}: malformed or incomplete diff hunk"));
+        }
         let id = file_id(&path);
         let mut hunks = self.hunks;
         let (mut additions, mut deletions) = (0, 0);
@@ -155,7 +168,7 @@ impl FileBuilder {
             content_digest: self.blob,
             diff_digest: String::new(),
             fingerprint_version: FINGERPRINT_VERSION,
-            patch_complete: !self.truncated,
+            patch_complete: !self.truncated && !self.malformed && !incomplete_hunk,
             hunks,
         };
         file.diff_digest = fingerprint(&file, head_sha);
@@ -204,6 +217,11 @@ pub fn parse_unified(text: &str, head_sha: &str, limits: &Limits) -> ParsedDiff 
         }
 
         if file.in_hunk() {
+            if line.starts_with("@@") {
+                file.malformed = true;
+                file.start_hunk(line);
+                continue;
+            }
             match line.as_bytes().first() {
                 Some(b' ') => file.push_line(LineKind::Context, &line[1..], limits),
                 Some(b'+') => file.push_line(LineKind::Addition, &line[1..], limits),
@@ -211,14 +229,20 @@ pub fn parse_unified(text: &str, head_sha: &str, limits: &Limits) -> ParsedDiff 
                 Some(b'\\') => file.push_line(LineKind::Meta, line, limits),
                 // Some tools strip the single space from empty context lines.
                 None => file.push_line(LineKind::Context, "", limits),
-                _ => {}
+                _ => file.malformed = true,
             }
             continue;
         }
         if line.starts_with('\\') && !file.hunks.is_empty() {
             file.push_line(LineKind::Meta, line, limits);
         } else if line.starts_with("@@") {
-            file.start_hunk(line);
+            if !file.start_hunk(line) {
+                file.malformed = true;
+            }
+        } else if !file.hunks.is_empty() {
+            // Once a hunk has ended, only a new hunk or a newline marker
+            // may precede the next file. Do not silently discard extra lines.
+            file.malformed = true;
         } else {
             parse_extended_header(file, line, &mut skipping_binary_patch);
         }
@@ -476,6 +500,65 @@ new mode 100755
         assert_eq!(d.files[4].path, "run.sh");
         assert_eq!(d.files[4].new_mode.as_deref(), Some("100755"));
         assert!(d.files[4].hunks.is_empty());
+    }
+
+    #[test]
+    fn unfinished_hunks_fail_at_eof_and_file_boundary() {
+        let prefix = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-a\n+b\n";
+        let eof = parse(prefix);
+        assert!(!eof.files[0].patch_complete);
+        assert_eq!(eof.warnings.len(), 1);
+
+        let boundary = parse(&format!(
+            "{prefix}diff --git a/y b/y\nold mode 100644\nnew mode 100755\n"
+        ));
+        assert!(!boundary.files[0].patch_complete);
+        assert!(boundary.files[1].patch_complete);
+        assert_eq!(boundary.warnings.len(), 1);
+    }
+
+    #[test]
+    fn premature_or_malformed_hunk_boundaries_fail_closed() {
+        let cases = [
+            "@@ -1,2 +1,2 @@\n-a\n@@ -4 +4 @@\n-b\n+c\n",
+            "@@ -1,2 +1,2 @@\n-a\n@@ broken\n+b\n",
+            "@@ broken\n",
+            "@@ -1 +1 @@\n-a\n+b\n@@ broken\n",
+            "@@ -1,2 +1,2 @@\n-a\n?unexpected\n+b\n",
+        ];
+        for patch in cases {
+            let diff = parse(&format!("diff --git a/x b/x\n--- a/x\n+++ b/x\n{patch}"));
+            assert!(!diff.files[0].patch_complete, "accepted {patch:?}");
+            assert!(!diff.warnings.is_empty());
+        }
+    }
+
+    #[test]
+    fn overconsumed_hunk_sides_fail_closed() {
+        for patch in [
+            "@@ -1 +1,2 @@\n-a\n-b\n+b\n+c\n",
+            "@@ -1,2 +1 @@\n+a\n+b\n-a\n-b\n",
+            "@@ -1 +1 @@\n-a\n+b\n+c\n",
+            "@@ -1,0 +1 @@\n context\n+a\n",
+        ] {
+            let diff = parse(&format!("diff --git a/x b/x\n{patch}"));
+            assert!(!diff.files[0].patch_complete, "accepted {patch:?}");
+        }
+    }
+
+    #[test]
+    fn valid_empty_binary_rename_and_mode_only_patches_remain_complete() {
+        let diff = parse(SAMPLE);
+        assert!(diff.files.iter().all(|file| file.patch_complete));
+        let empty = parse(
+            "diff --git a/empty b/empty\nnew file mode 100644\nindex 0000000..e69de29\n--- /dev/null\n+++ b/empty\n",
+        );
+        assert!(empty.files[0].patch_complete);
+        assert!(empty.files[0].hunks.is_empty());
+        let binary = parse(
+            "diff --git a/image b/image\nGIT binary patch\nliteral 1\nA\ndiff --git a/mode b/mode\nold mode 100644\nnew mode 100755\n",
+        );
+        assert!(binary.files.iter().all(|file| file.patch_complete));
     }
 
     #[test]
