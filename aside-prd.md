@@ -23,11 +23,13 @@ Aside is inspired by the PR review functionality in [`codesoda/discuss-cli`](htt
 
 The defining workflow is:
 
-> **Open PR → Define review scope → Resume or perform review → Discuss findings → Finish review → Optionally publish to GitHub.**
+> **Open PR → Review (adjust scope as you go) → Discuss findings → Finish review → Optionally publish to GitHub.**
+
+Launching Aside drops the reviewer straight into the review. There is no separate pre-review screen or **Start review** step: saved exclusions and prior progress are applied automatically, and scope is edited in place from the review's file tree.
 
 Two features are particularly important:
 
-1. **Repository-wide review exclusions:** from a **pre-review changed-file tree**, users can ignore or re-include individual files, whole folder subtrees, and path patterns. These rules persist locally and apply automatically to future reviews of **any PR in the same repository**.
+1. **Repository-wide review exclusions:** from the review's **changed-file tree**, users can ignore or re-include individual files, whole folder subtrees, and path patterns. These rules persist locally and apply automatically to future reviews of **any PR in the same repository**.
 2. **Version-aware review progress:** reopening the same PR preserves which files were already reviewed. Progress is tied to the reviewed version of the **effective file diff** (alongside file content and commit identities), so unrelated new commits do not make the entire PR unreviewed, while changed files become explicitly eligible for re-review.
 
 An `aside` agent skill documents how coding agents invoke and interact with the CLI, observe human review feedback, and reply through supported local interfaces. The Rust process—not the agent or browser—owns PR ingestion, review state, persistence, and publishing safeguards.
@@ -40,7 +42,7 @@ An `aside` agent skill documents how coding agents invoke and interact with the 
 - Production frontend must be a **static build embedded in and served by the Rust CLI binary**.
 - `aside <pr_url>` must invoke the required `gh` commands internally, retrieve PR data/diffs, and normalise those into a typed object model served to the frontend.
 - Ship an **`aside` agent skill** explaining CLI invocation and agent review workflows.
-- The **pre-review file tree** must support adding, removing and editing file/folder exclusions, including recursive and pattern-based exclusions.
+- The review's **file tree** must support adding, removing and editing file/folder exclusions, including recursive and pattern-based exclusions.
 - Exclusions must **persist by repository**, without modifying `.gitignore` or the repository itself.
 - Repeated reviews of the same PR must **restore review state only for matching file/diff versions** and identify files that changed since review.
 
@@ -48,7 +50,8 @@ An `aside` agent skill documents how coding agents invoke and interact with the 
 
 - **Human judgement first:** agents assist; they do not silently approve or publish reviews.
 - **Private first:** locally drafted comments do not appear on GitHub until explicit publication.
-- **Scope before detail:** make it easy to exclude generated, vendored or noisy changes before reading diffs.
+- **Straight into the review:** no setup step between launch and reading diffs. Saved scope applies automatically.
+- **Scope in place:** make it easy to exclude generated, vendored or noisy changes from the file tree at any point during the review.
 - **Resume intelligently:** avoid re-reviewing unchanged work.
 - **One local executable:** no background service or frontend runtime dependency needed in normal use.
 - **Transparent state:** explain why a file is ignored, considered reviewed, or needs re-review.
@@ -102,19 +105,18 @@ GitHub's PR review workflow is workable but becomes inefficient for large, noisy
 
 1. Reviewer runs `aside https://github.com/acme/widget/pull/42`.
 2. CLI validates the URL and local `gh` installation/authentication, fetches metadata and diff, and starts a local UI server.
-3. Browser opens the **Pre-review** screen: title, author, status, change counts, hierarchical file tree and scope summary.
-4. Reviewer ignores `src/generated/` recursively, `Cargo.lock`, and `**/*.snap`.
-5. Affected files dim or move to the ignored group; counts immediately update. The reviewer can inspect why a file is ignored.
+3. Browser opens directly on the **Review** screen: PR header, hierarchical changed-file tree and the diff for the first in-scope file.
+4. From the file tree, reviewer ignores `src/generated/` recursively, `Cargo.lock`, and `**/*.snap`.
+5. Affected files dim or move to the ignored group and leave the diff list; counts immediately update. The reviewer can inspect why a file is ignored.
 6. Rules are saved against the repository identity; no manual Save step is required beyond successful persistence feedback.
-7. Reviewer selects **Start review** and opens the diff screen for in-scope files.
-8. Reviewer reads, comments, marks files viewed, and optionally finishes/publishes the review.
+7. Reviewer reads, comments, marks files viewed, and optionally finishes/publishes the review.
 
 ### UJ-02: New PR, same repository
 
 1. Reviewer launches Aside for PR #57 in `acme/widget`.
 2. Existing repository exclusion rules are loaded automatically.
-3. Pre-review tree reflects the rules—including newly added files within ignored directories.
-4. Reviewer can revise the repository rules from the tree before proceeding.
+3. The review opens with the rules already applied—including newly added files within ignored directories.
+4. Reviewer can revise the repository rules from the file tree at any point.
 5. Previously reviewed statuses from PR #42 **do not carry into PR #57**; only repository exclusions do.
 
 ### UJ-03: Resume same PR after more commits
@@ -129,7 +131,7 @@ GitHub's PR review workflow is workable but becomes inefficient for large, noisy
 
 ### UJ-04: Exclude folder, re-include one file
 
-1. Reviewer excludes `src/generated/**` from the pre-review tree.
+1. Reviewer excludes `src/generated/**` from the review's file tree.
 2. Reviewer expands the dimmed folder and selects **Include this file** for `src/generated/manual.rs`.
 3. Aside persists a specific exception *after* the broader exclude rule.
 4. `manual.rs` appears in scope; sibling generated files remain ignored.
@@ -183,26 +185,26 @@ aside --version
 
 The release should not require a local checkout of the target repository. Temporary Git operations may be used internally where needed for complete/accurate diffs.
 
-### 4.2 Pre-review screen (primary review-scope editor)
+### 4.2 Review file tree and scope editing
 
-This is a **mandatory first-class screen**, not a settings dialog shown only after entering the diff.
+There is **no pre-review screen**. `aside <pr_url>` opens the Review screen directly with saved scope and progress applied. The review's changed-file tree is the primary place to view and edit scope, and it is always available during the review.
 
 | ID | Priority | Requirement |
 |---|---|---|
-| PRE-01 | P0 | Display PR metadata, file counts, additions/deletions and hierarchical tree of changed files. |
-| PRE-02 | P0 | Apply saved **repository-wide** ignore/include rules before drawing the tree. |
-| PRE-03 | P0 | Provide per-file context-menu actions: **Ignore file**, **Include file**, and **Remove explicit rule** where applicable. |
-| PRE-04 | P0 | Provide per-directory actions: **Ignore folder and descendants**, **Include folder and descendants**, and rule removal. |
-| PRE-05 | P0 | Provide a pattern entry/editor (e.g. `**/*.snap`, `generated/**`) reachable from the tree. |
-| PRE-06 | P0 | Support re-including an individual file under an excluded parent directory. |
-| PRE-07 | P0 | Show ignored files on demand, with subdued styling, exclusion reason and matching rule. |
-| PRE-08 | P0 | Update in-scope/ignored counts immediately as rules change. |
-| PRE-09 | P0 | Save changes automatically to the repository's local configuration; show success/error state. |
-| PRE-10 | P0 | **Start review** opens the diff interface with scope applied; no data is deleted by filtering. |
-| PRE-11 | P1 | Show resumable review states on the tree: reviewed at current diff, changed since reviewed, not reviewed. |
-| PRE-12 | P1 | Provide a searchable/filterable tree and a **Manage exclusions** interface for reordering, enabling, editing and removing rules. |
-| PRE-13 | P1 | Allow returning from the diff screen to scope configuration without losing review progress or drafts. |
-| PRE-14 | P2 | Optional per-PR override scope, visually distinct from repository defaults. |
+| SCP-01 | P0 | Display PR metadata, file counts, additions/deletions and hierarchical tree of changed files alongside the diff. |
+| SCP-02 | P0 | Apply saved **repository-wide** ignore/include rules before drawing the tree and diff list. |
+| SCP-03 | P0 | Provide per-file context-menu actions: **Ignore file**, **Include file**, and **Remove explicit rule** where applicable. |
+| SCP-04 | P0 | Provide per-directory actions: **Ignore folder and descendants**, **Include folder and descendants**, and rule removal. |
+| SCP-05 | P0 | Provide a pattern entry/editor (e.g. `**/*.snap`, `generated/**`) reachable from the tree. |
+| SCP-06 | P0 | Support re-including an individual file under an excluded parent directory. |
+| SCP-07 | P0 | Show ignored files on demand, with subdued styling, exclusion reason and matching rule. |
+| SCP-08 | P0 | Update in-scope/ignored counts and the diff list immediately as rules change. |
+| SCP-09 | P0 | Save changes automatically to the repository's local configuration; show success/error state. |
+| SCP-10 | P0 | Launch opens the Review screen directly with scope applied; there is no Start review step. No data is deleted by filtering. |
+| SCP-11 | P1 | Show resumable review states on the tree: reviewed at current diff, changed since reviewed, not reviewed. |
+| SCP-12 | P1 | Provide a searchable/filterable tree and a **Manage exclusions** interface for reordering, enabling, editing and removing rules. |
+| SCP-13 | P1 | Scope edits during a review never lose review progress or drafts. |
+| SCP-14 | P2 | Optional per-PR override scope, visually distinct from repository defaults. |
 
 **Expected context-menu behaviour:**
 
@@ -213,7 +215,7 @@ This is a **mandatory first-class screen**, not a settings dialog shown only aft
 - A file may be affected by several rules; the UI must show the **effective rule** and permit access to the full matching-rule list.
 - Disabled rules are retained but not applied.
 
-**Recommended UI:** GitHub-style changed-files sidebar on the left, tri-state scope indicators and contextual `...` controls, plus a central pre-review summary. Include a clear **Show ignored** toggle and a **Needs attention** count. A folder with mixed included/ignored descendants shows an indeterminate state; acting on the folder must be explicit about recursive scope.
+**Recommended UI:** GitHub-style changed-files sidebar on the left, tri-state scope indicators and contextual `...` controls next to the diff. Include a clear **Show ignored** toggle and a **Needs attention** count. A folder with mixed included/ignored descendants shows an indeterminate state; acting on the folder must be explicit about recursive scope.
 
 ### 4.3 Ignore rules and matching semantics
 
@@ -343,21 +345,18 @@ Recommended skill content:
 
 ### 5.1 Screens
 
-1. **Pre-review / Set scope** — initial screen on launch; changed-file hierarchy, persisted ignore rules, explicit include/exclude controls, review history indicators and **Start review**.
-2. **Review** — PR header, left changed-file tree, main diff viewer, inline comments and navigation/actions.
-3. **Finish review** — verdict, editable summary, selected drafts and exact publication preview.
-4. **Manage exclusions** — entry from pre-review tree; list/edit/reorder rules and inspect matches (may be a drawer/dialog rather than a route).
-5. **Demo** — same surfaces populated from fixtures and labelled synthetic data.
+1. **Review** — initial screen on launch; PR header, left changed-file tree with include/exclude controls and review-state indicators, main diff viewer, inline comments and navigation/actions.
+2. **Finish review** — verdict, editable summary, selected drafts and exact publication preview.
+3. **Manage exclusions** — entry from the review file tree; list/edit/reorder rules and inspect matches (may be a drawer/dialog rather than a route).
+4. **Demo** — same surfaces populated from fixtures and labelled synthetic data.
 
 ### 5.2 Layout details
 
 **PR header:** repository, PR number/title, author, branch names, base/head SHAs (short), changed-file count, review progress and GitHub link.
 
-**Pre-review left panel:** expandable directory tree with file icons, changed-file count badges, review-state badges, three-dot context menu and effective exclusion indication. Excluded files should remain discoverable. A folder with mixed exclusions uses an indeterminate indicator.
+**Review left panel:** expandable directory tree with file icons, changed-file count badges, review-state badges, three-dot context menu and effective exclusion indication. Excluded files should remain discoverable. A folder with mixed exclusions uses an indeterminate indicator. Quick filters, the glob editor (with live matching preview) and **Manage exclusions** are reached from this panel.
 
-**Pre-review main panel:** explanation of remembered exclusions, progress summary, quick filters, optional glob editor with live matching preview, last-reviewed information and primary Start/Resume review control.
-
-**Review left panel:** same tree shared with the pre-review experience; scope changes accessible via **Edit review scope**, not duplicated bespoke UI logic.
+**Remembered state:** when saved exclusions or prior progress apply, show a short, dismissible notice above the diff (for example, "12 files ignored by repository rules · 5 already reviewed") instead of a separate screen.
 
 **Diff panel:** GitHub-inspired typography/spacing, line gutters, syntax highlighting, changed-line backgrounds, comment targets, file headers, viewed control, thread stacks, unified/split toggle and next-needs-attention navigation.
 
@@ -602,7 +601,7 @@ A rule editor should display effective match counts and warn when a newly added 
 
 ### 7.3 Edge-case requirements
 
-- **All files ignored:** Start review may still be possible, but present an explicit message that no files are in scope; do not imply all code was reviewed.
+- **All files ignored:** the Review screen still opens, but presents an explicit message that no files are in scope; do not imply all code was reviewed.
 - **Empty PR / no textual diff:** show metadata and explanatory empty state.
 - **Binary or mode-only file:** show file entry and non-commentable metadata; allow scoped acknowledgement if supported, but not invented inline anchors.
 - **File deleted:** show deletions, with valid old-side anchors if publication supports them.
@@ -633,13 +632,13 @@ A rule editor should display effective match counts and warn when a newly added 
 
 **Exit criteria:** frontend build starts locally; Rust serves a placeholder/static shell; mock fixture and Rust contract agree.
 
-### Milestone 1 — interactive mocked pre-review and PR UI (**first visible deliverable**)
+### Milestone 1 — interactive mocked review UI (**first visible deliverable**)
 
 **Goal:** fully interactable GitHub-style review UX without GitHub connectivity.
 
 - PR header, file tree, context menus and central review surface.
 - File, folder and glob exclusions with ordered include exceptions.
-- Pre-review counts, reason indicators, toggle ignored, start/resume review.
+- Scope counts, reason indicators, toggle ignored, resume state applied on launch.
 - Reviewed/changed/unreviewed status fixture scenarios.
 - Diff navigation, syntax highlighting, comment drafts, thread replies and review controls.
 - Mock adapter and deterministic refresh scenarios.
@@ -663,7 +662,7 @@ A rule editor should display effective match counts and warn when a newly added 
 **Goal:** make Aside genuinely useful across sessions and PRs.
 
 - SQLite migrations and repository identity handling.
-- Repository-level exclusion CRUD from the pre-review file tree.
+- Repository-level exclusion CRUD from the review file tree.
 - Ordered include/exclude semantics and live recalculation.
 - File-version acknowledgements with diff fingerprint history.
 - PR reopen, refreshed-head comparison, stale indicator logic and concurrency checks.
@@ -701,8 +700,8 @@ A rule editor should display effective match counts and warn when a newly added 
 ### 9.1 Product behaviour
 
 1. **CLI launch:** with authenticated `gh`, `aside <pr_url>` opens a working localhost UI showing the correct PR; `--no-open` does not launch a browser.
-2. **Offline demo:** `aside demo` exercises mocked pre-review and review workflows without `gh` or network calls.
-3. **Recursive exclusion:** excluding `vendor/` from the pre-review tree hides/excludes all current descendant files and future descendants in a later PR.
+2. **Offline demo:** `aside demo` exercises mocked review workflows without `gh` or network calls.
+3. **Recursive exclusion:** excluding `vendor/` from the review file tree hides/excludes all current descendant files and future descendants in a later PR.
 4. **File exception:** after excluding `vendor/`, including `vendor/README.md` leaves only that file in scope within the subtree.
 5. **Pattern exclusion:** entering `**/*.snap` excludes matching nested snapshot files; the UI shows the matching rule and affected count.
 6. **Rule reversal:** deleting or disabling a rule immediately restores affected files to their derived scope, subject to other rules.
@@ -747,7 +746,7 @@ A rule editor should display effective match counts and warn when a newly added 
 Suggested **initial engineering targets**, to be validated rather than treated as established facts:
 
 - No dependency on Node/npm to use a packaged release.
-- Typical mock PR pre-review surface interactive shortly after app load.
+- Typical mock PR review surface interactive shortly after app load.
 - Large PR handling avoids unbounded synchronous main-thread rendering.
 - Repository exclusion writes confirmed after durable storage succeeds.
 - No PR publication occurs during demo or while only browsing/reviewing locally.
@@ -783,7 +782,8 @@ Suggested **initial engineering targets**, to be validated rather than treated a
 - `gh` handles GitHub access; Rust parses its output into a PR object model.
 - Agent-facing `aside` skill.
 - First frontend implementation is interactive and fixture/mock driven.
-- Pre-review file tree is the primary place to modify exclusions.
+- Launch drops straight into the review; there is no pre-review screen or Start review step.
+- The review file tree is the primary place to modify exclusions.
 - Exclude individual files, whole directory subtrees, and glob patterns; allow reversal/exception.
 - Exclusions persist **per repository** across future PRs.
 - Reviewed state persists **per PR and per file/diff version** across repeated reviews.
@@ -817,7 +817,7 @@ Suggested **initial engineering targets**, to be validated rather than treated a
 
 ## 13. Definition of done
 
-Aside v1 is complete when a reviewer can install **one executable**, run `aside <real_pr_url>`, see a GitHub-familiar PR interface, set and edit repository-wide file/folder/pattern exclusions **directly from the pre-review tree**, perform and finish a review, close/reopen the PR later, retain reviewed status for unchanged effective file diffs, identify files requiring re-review, collaborate with an agent through the documented `aside` skill, and explicitly publish selected feedback to GitHub only after seeing exactly what will be sent.
+Aside v1 is complete when a reviewer can install **one executable**, run `aside <real_pr_url>`, see a GitHub-familiar PR interface, set and edit repository-wide file/folder/pattern exclusions **directly from the review file tree**, perform and finish a review, close/reopen the PR later, retain reviewed status for unchanged effective file diffs, identify files requiring re-review, collaborate with an agent through the documented `aside` skill, and explicitly publish selected feedback to GitHub only after seeing exactly what will be sent.
 
 The **first implementation deliverable** is narrower: a polished, interactive, mocked frontend demonstrating all core scope-selection and reviewed-state interactions using contract-valid fixtures, before completing GitHub integration and publication.
 

@@ -44,7 +44,7 @@
 
       <section class="mt-6 rounded-md border border-[#d1d9e0]">
         <div class="flex items-center justify-between border-b border-[#d1d9e0] bg-[#f6f8fa] px-4 py-2 text-sm">
-          <span class="font-semibold">Pre-review · {session.files.length} changed files</span>
+          <span class="font-semibold">{session.files.length} changed files</span>
           <span>
             <span class="text-[#1a7f37]">+{totals.add}</span>
             <span class="text-[#d1242f]">−{totals.del}</span>
@@ -62,14 +62,6 @@
           {/each}
         </ul>
       </section>
-
-      <button
-        class="mt-4 rounded-md bg-[#1f883d] px-4 py-1.5 text-sm font-medium text-white hover:bg-[#1a7f37] disabled:opacity-50"
-        disabled
-        title="Not built yet"
-      >
-        Start review
-      </button>
     </main>
   {/if}
 </div>
