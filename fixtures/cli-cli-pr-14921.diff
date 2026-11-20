@@ -1,0 +1,3790 @@
+diff --git a/api/identity_gateway_test.go b/api/identity_gateway_test.go
+new file mode 100644
+index 00000000000..ba5073a368e
+--- /dev/null
++++ b/api/identity_gateway_test.go
+@@ -0,0 +1,64 @@
++package api
++
++import (
++	"net/http"
++	"os/exec"
++	"path/filepath"
++	"testing"
++
++	ghconfig "github.com/cli/cli/v2/internal/config"
++	"github.com/cli/cli/v2/internal/identity"
++	"github.com/cli/cli/v2/pkg/httpmock"
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++)
++
++func TestIdentityGatewayFallbackRespectsDestinationEnvironmentCredential(t *testing.T) {
++	for _, tt := range []struct{ name, environment, expected string }{
++		{"uncredentialed gateway", "", "alice-token"},
++		{"gateway owns an environment credential", "destination-token", "destination-token"},
++	} {
++		t.Run(tt.name, func(t *testing.T) {
++			// Given a configured gateway without registered users and an optional destination credential
++			isolateIdentityAPI(t)
++			cfg, _ := ghconfig.NewIsolatedTestConfig(t, `
++hosts:
++  github.com:
++    api_host: gateway.example
++    user: alice
++    users:
++      alice:
++        oauth_token: alice-token
++`)
++			home := t.TempDir()
++			require.NoError(t, exec.Command("git", "init", "-q", home).Run())
++			t.Chdir(home)
++			t.Chdir(home)
++			t.Setenv("HOME", home)
++			t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(home, ".gitconfig"))
++			t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
++			t.Setenv("GH_ENTERPRISE_TOKEN", tt.environment)
++			t.Setenv("GIT_SSH_COMMAND", "")
++			t.Setenv("GIT_SSH", "")
++			s, err := identity.Open()
++			require.NoError(t, err)
++			require.NoError(t, s.Save(identity.Identity{Name: "work", Host: "github.com", Account: "alice"}, false))
++			require.NoError(t, s.Bind(identity.Binding{Identity: "work", Directory: home}, "/path/to/gh"))
++			reg := &httpmock.Registry{}
++			defer reg.Verify(t)
++			reg.Register(httpmock.REST("GET", "repos/company/project"), func(req *http.Request) (*http.Response, error) {
++				assert.Equal(t, "gateway.example", req.URL.Host)
++				assert.Equal(t, "token "+tt.expected, req.Header.Get("Authorization"))
++				return httpmock.StringResponse("{}")(req)
++			})
++			client := &http.Client{Transport: AddAuthTokenHeaderWithRefresh(reg, cfg.Authentication())}
++
++			// When a request reaches the gateway
++			response, err := client.Get("https://gateway.example/repos/company/project")
++
++			// Then canonical identity fallback only supplies otherwise missing destination credentials
++			require.NoError(t, err)
++			response.Body.Close()
++		})
++	}
++}
+diff --git a/api/identity_test.go b/api/identity_test.go
+new file mode 100644
+index 00000000000..58c94b31c2c
+--- /dev/null
++++ b/api/identity_test.go
+@@ -0,0 +1,121 @@
++package api
++
++import (
++	"net/http"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"runtime"
++	"testing"
++
++	ghconfig "github.com/cli/cli/v2/internal/config"
++	"github.com/cli/cli/v2/internal/identity"
++	"github.com/cli/cli/v2/pkg/httpmock"
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++)
++
++func TestRefreshAwareAuthenticationUsesBoundIdentity(t *testing.T) {
++	isolateIdentityAPI(t)
++	// Given a repository binding and an otherwise globally active account
++	home := t.TempDir()
++	require.NoError(t, exec.Command("git", "init", "-q", home).Run())
++	t.Chdir(home)
++	t.Setenv("HOME", home)
++	t.Setenv("GH_CONFIG_DIR", filepath.Join(home, "gh"))
++	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(home, ".gitconfig"))
++	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
++	t.Setenv("GH_TOKEN", "")
++	t.Setenv("GITHUB_TOKEN", "")
++	t.Setenv("GIT_SSH_COMMAND", "")
++	t.Setenv("GIT_SSH", "")
++	store, err := identity.Open()
++	require.NoError(t, err)
++	require.NoError(t, store.Save(identity.Identity{Name: "work", Host: "github.com", Account: "alice"}, false))
++	require.NoError(t, store.Bind(identity.Binding{Identity: "work", Directory: home}, "/path/to/gh"))
++	registry := &httpmock.Registry{}
++	defer registry.Verify(t)
++	registry.Register(httpmock.REST("GET", "repos/company/project"), func(req *http.Request) (*http.Response, error) {
++		assert.Equal(t, "token github.com/alice-token", req.Header.Get("Authorization"))
++		return httpmock.JSONResponse(map[string]string{"name": "project"})(req)
++	})
++	cfg := ghconfig.NewMockConfigFromString(`
++hosts:
++  github.com:
++    user: bob
++    oauth_token: globally-active-token
++    users:
++      alice:
++        oauth_token: github.com/alice-token
++`)
++	client := &http.Client{Transport: AddAuthTokenHeaderWithResolver(registry, identity.TokenResolver(cfg.Authentication()))}
++
++	// When a client uses gh's common authentication transport
++	response, err := client.Get("https://api.github.com/repos/company/project")
++
++	// Then identity selection happens before the legacy active-token fallback
++	require.NoError(t, err)
++	response.Body.Close()
++}
++
++func TestPersistentIdentityUsesCanonicalGatewayCredentials(t *testing.T) {
++	isolateIdentityAPI(t)
++	// Given an independently authenticated destination that is also configured as another host's API gateway
++	cfg, _ := ghconfig.NewIsolatedTestConfig(t, `
++hosts:
++  github.com:
++    api_host: gateway.example
++    user: alice
++    users:
++      alice:
++        oauth_token: alice-token
++  gateway.example:
++    user: bob
++    oauth_token: bob-token
++    users:
++      bob:
++        oauth_token: bob-token
++`)
++	home := t.TempDir()
++	require.NoError(t, exec.Command("git", "init", "-q", home).Run())
++	t.Chdir(home)
++	t.Chdir(home)
++	t.Setenv("HOME", home)
++	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(home, ".gitconfig"))
++	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
++	t.Setenv("GIT_SSH_COMMAND", "")
++	t.Setenv("GIT_SSH", "")
++	t.Setenv("GIT_SSH_VARIANT", "")
++	store, err := identity.Open()
++	require.NoError(t, err)
++	require.NoError(t, store.Save(identity.Identity{Name: "work", Host: "github.com", Account: "alice"}, false))
++	require.NoError(t, store.Bind(identity.Binding{Identity: "work", Directory: home}, "/path/to/gh"))
++	reg := &httpmock.Registry{}
++	defer reg.Verify(t)
++	reg.Register(httpmock.REST("GET", "repos/company/project"), func(req *http.Request) (*http.Response, error) {
++		assert.Equal(t, "gateway.example", req.URL.Host)
++		assert.Equal(t, "token alice-token", req.Header.Get("Authorization"))
++		return httpmock.StringResponse("{}")(req)
++	})
++	client := &http.Client{Transport: AddAuthTokenHeaderWithResolver(reg, identity.TokenResolver(cfg.Authentication()))}
++
++	// When requesting the independently authenticated API destination
++	response, err := client.Get("https://gateway.example/repos/company/project")
++
++	// Then the explicit API mapping selects the canonical host's persistent identity
++	require.NoError(t, err)
++	response.Body.Close()
++}
++
++func isolateIdentityAPI(t *testing.T) {
++	t.Helper()
++	if runtime.GOOS == "windows" {
++		t.Skip("persistent identities are not supported on Windows")
++	}
++	t.Chdir(t.TempDir())
++	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
++	for _, name := range []string{"GIT_CONFIG", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_SYSTEM", "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_SSH_VARIANT"} {
++		t.Setenv(name, "")
++		require.NoError(t, os.Unsetenv(name))
++	}
++}
+diff --git a/git/client.go b/git/client.go
+index 1edf04cbc86..96d6b29dfbf 100644
+--- a/git/client.go
++++ b/git/client.go
+@@ -185,6 +185,14 @@ func (c *Client) AuthenticatedCommand(ctx context.Context, credentialPattern Cre
+ 	cmd.Env = append(cmd.Environ(), auth.Environment...)
+ 	if auth.UseSSHHelper {
+ 		// Route SSH through gh rather than an unrelated key; declare OpenSSH argument syntax.
++		for _, entry := range cmd.Environ() {
++			if value, ok := strings.CutPrefix(entry, "GIT_SSH_COMMAND="); ok {
++				cmd.Env = append(cmd.Env, "GH_IDENTITY_SSH_COMMAND="+value)
++			}
++			if value, ok := strings.CutPrefix(entry, "GIT_SSH_VARIANT="); ok {
++				cmd.Env = append(cmd.Env, "GH_IDENTITY_SSH_VARIANT="+value)
++			}
++		}
+ 		cmd.Env = append(cmd.Env, "GIT_SSH_COMMAND="+shellquote.Join(c.GhPath, "auth", "git-ssh"), "GIT_SSH_VARIANT=ssh")
+ 	}
+ 	return cmd, nil
+diff --git a/internal/config/config.go b/internal/config/config.go
+index 477b33b8c61..3745210052a 100644
+--- a/internal/config/config.go
++++ b/internal/config/config.go
+@@ -11,6 +11,7 @@ import (
+ 	"sync"
+ 
+ 	"github.com/cli/cli/v2/internal/gh"
++	"github.com/cli/cli/v2/internal/identity"
+ 	"github.com/cli/cli/v2/internal/keyring"
+ 	o "github.com/cli/cli/v2/pkg/option"
+ 	ghauth "github.com/cli/go-gh/v2/pkg/auth"
+@@ -309,6 +310,28 @@ func (c *AuthConfig) selectedAccount(host string) string {
+ 	return ""
+ }
+ 
++// ResolveToken applies invocation selection before persistent repository identities and defaults.
++func (c *AuthConfig) ResolveToken(host, owner, dir string) (gh.Credential, error) {
++	if c.selectedAccount(host) == "" {
++		store, err := identity.Open()
++		if err != nil {
++			return gh.Credential{}, err
++		}
++		selected, err := store.Resolve(host, owner, dir)
++		if err != nil {
++			return gh.Credential{}, err
++		}
++		if selected != nil {
++			return identity.CredentialFor(c, selected)
++		}
++	}
++	credential, _, err := c.ActiveTokenWithRefresh(host)
++	if credential.Token != "" {
++		err = nil // Refresh is best effort while a usable credential remains.
++	}
++	return credential, err
++}
++
+ // ResolveGitCredential resolves the effective account for Git's actual destination.
+ // The helper only formats the result; account precedence and username constraints live here.
+ func (c *AuthConfig) ResolveGitCredential(host, requestedUser string) (string, gh.Credential, gh.RefreshStatus, error) {
+@@ -328,7 +351,27 @@ func (c *AuthConfig) ResolveGitCredential(host, requestedUser string) (string, g
+ 	var status gh.RefreshStatus
+ 	var err error
+ 	user := gistAccount
+-	if gistAccount != "" && c.selectedAccount(host) == "" {
++	var selected *identity.Identity
++	if c.selectedAccount(host) == "" {
++		store, openErr := identity.Open()
++		if openErr != nil {
++			return "", gh.Credential{}, status, openErr
++		}
++		selected, err = store.Resolve(host, "", "")
++		if err != nil {
++			return "", gh.Credential{}, status, err
++		}
++	}
++	if selected != nil {
++		credential, err = identity.CredentialFor(c, selected)
++		if err != nil {
++			return "", gh.Credential{}, status, err
++		}
++		user = selected.Account
++		if requestedUser != "" && !strings.EqualFold(requestedUser, user) {
++			return "", gh.Credential{}, status, fmt.Errorf("requested Git username %q conflicts with identity %q (%s)", requestedUser, selected.Name, user)
++		}
++	} else if gistAccount != "" && c.selectedAccount(host) == "" {
+ 		// An independently configured gist host owns its saved credential, rather than
+ 		// inheriting the parent host's selection or environment-token normalization.
+ 		credential, status, err = c.TokenForUserWithRefresh(host, gistAccount)
+diff --git a/internal/gh/gh.go b/internal/gh/gh.go
+index 68bdd6adc31..f2dfbdac2a1 100644
+--- a/internal/gh/gh.go
++++ b/internal/gh/gh.go
+@@ -217,6 +217,9 @@ type TokenRefresher interface {
+ // with knowledge on how to access encrypted storage when necessary.
+ // Behavior is scoped to authentication specific tasks.
+ type AuthConfig interface {
++	// ResolveToken selects credentials using invocation, repository, and host context.
++	ResolveToken(host, owner, dir string) (Credential, error)
++
+ 	// SetAccountOverride selects a saved account for this invocation without changing persistent configuration.
+ 	// Empty hostname and account values clear the override.
+ 	SetAccountOverride(hostname, account string)
+diff --git a/internal/identity/account_status.go b/internal/identity/account_status.go
+new file mode 100644
+index 00000000000..3b188a48536
+--- /dev/null
++++ b/internal/identity/account_status.go
+@@ -0,0 +1,23 @@
++package identity
++
++import (
++	"fmt"
++	"slices"
++	"strings"
++)
++
++// SavedAccounts enumerates local account registrations without reading credentials.
++type SavedAccounts interface {
++	UsersForHost(string) []string
++}
++
++// AccountWarning explains a missing account without changing an identity or checking tokens.
++func AccountWarning(accounts SavedAccounts, id *Identity) string {
++	if id == nil || slices.ContainsFunc(accounts.UsersForHost(id.Host), func(user string) bool {
++		return strings.EqualFold(user, id.Account)
++	}) {
++		return ""
++	}
++	return fmt.Sprintf("identity %q: account %q on %s is not signed in. Run 'gh auth login --hostname %s' to sign back in, 'gh auth identity edit %s --account <login>' to change accounts, or 'gh auth identity delete %s' to remove this identity and its bindings.",
++		id.Name, id.Account, id.Host, id.Host, id.Name, id.Name)
++}
+diff --git a/internal/identity/account_test.go b/internal/identity/account_test.go
+new file mode 100644
+index 00000000000..8b728f866d1
+--- /dev/null
++++ b/internal/identity/account_test.go
+@@ -0,0 +1,93 @@
++package identity
++
++import (
++	"testing"
++
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++)
++
++func TestSSHAccountOverrideUsesUniqueRouteWithoutChangingIdentity(t *testing.T) {
++	// Given an alice directory identity and two bob profiles sharing one SSH alias
++	s := isolatedStore(t)
++	dir := t.TempDir()
++	runGit(t, dir, "init", "-q")
++	for _, id := range []Identity{
++		{Name: "alice", Host: "github.com", Account: "alice", SSHHost: "alice-ssh"},
++		{Name: "bob-work", Host: "github.com", Account: "bob", SSHHost: "bob-ssh"},
++		{Name: "bob-personal", Host: "github.com", Account: "bob", SSHHost: "bob-ssh"},
++	} {
++		require.NoError(t, s.Save(id, false))
++	}
++
++	require.NoError(t, s.Bind(Binding{Identity: "alice", Directory: dir}, "/path/to/gh"))
++
++	// When gh launches Git with an authentication-only override
++	got, err := s.SSHArgumentsForAccount([]string{"-p", "22", "cert-user@github.com", "git-receive-pack 'company/project.git'"}, dir, "github.com", "bob")
++
++	// Then the declared bob route is used while the SSH user and persistent identity stay unchanged
++	require.NoError(t, err)
++	assert.Equal(t, []string{"-p", "22", "cert-user@bob-ssh", "git-receive-pack 'company/project.git'"}, got)
++	selected, err := s.Resolve("github.com", "company", dir)
++	require.NoError(t, err)
++	assert.Equal(t, "alice", selected.Account)
++}
++
++func TestSSHAccountOverrideRejectsConflictingAliasDeclarations(t *testing.T) {
++	// Given the same alias has been declared for different accounts
++	s := isolatedStore(t)
++	for _, id := range []Identity{
++		{Name: "alice", Host: "github.com", Account: "alice", SSHHost: "shared-alias"},
++		{Name: "bob", Host: "github.com", Account: "bob", SSHHost: "shared-alias"},
++	} {
++		require.NoError(t, s.Save(id, false))
++	}
++
++	// When bob is explicitly requested
++	_, err := s.SSHArgumentsForAccount([]string{"git@github.com", "git-upload-pack 'company/project.git'"}, t.TempDir(), "github.com", "bob")
++
++	// Then a contradictory declaration cannot masquerade as an unambiguous route
++	require.ErrorContains(t, err, "declared for multiple accounts")
++}
++
++func TestSSHAccountOverrideRecognizesAnExistingDeclaredAlias(t *testing.T) {
++	// Given a remote or Git URL rewrite already names alice's declared alias
++	s := isolatedStore(t)
++	require.NoError(t, s.Save(Identity{Name: "alice", Host: "github.com", Account: "alice", SSHHost: "alice-ssh"}, false))
++	require.NoError(t, s.Save(Identity{Name: "bob", Host: "github.com", Account: "bob", SSHHost: "bob-ssh"}, false))
++
++	// When this invocation explicitly chooses bob on the same logical host
++	got, err := s.SSHArgumentsForAccount([]string{"git@alice-ssh", "git-upload-pack 'company/project.git'"}, t.TempDir(), "github.com", "bob")
++
++	// Then the actual SSH destination is replaced without changing the repository target
++	require.NoError(t, err)
++	assert.Equal(t, []string{"git@bob-ssh", "git-upload-pack 'company/project.git'"}, got)
++}
++
++func TestSSHAccountOverrideFailsWithoutAnUnambiguousRoute(t *testing.T) {
++	for _, tt := range []struct {
++		name   string
++		routes []Identity
++		want   string
++	}{
++		{name: "missing", want: "no declared SSH route"},
++		{name: "ambiguous", routes: []Identity{
++			{Name: "personal", Host: "github.com", Account: "bob", SSHHost: "personal-ssh"},
++			{Name: "company", Host: "github.com", Account: "bob", SSHHost: "company-ca"},
++		}, want: "multiple SSH routes"},
++	} {
++		t.Run(tt.name, func(t *testing.T) {
++			// Given no contextual choice can supply one SSH route for bob
++			s := isolatedStore(t)
++			for _, id := range tt.routes {
++				require.NoError(t, s.Save(id, false))
++			}
++
++			// When Git authentication requests bob
++			_, err := s.SSHArgumentsForAccount([]string{"git@github.com", "git-upload-pack 'company/project.git'"}, t.TempDir(), "github.com", "bob")
++
++			// Then gh fails rather than falling back to ordinary SSH authentication
++			require.ErrorContains(t, err, tt.want)
++		})
++	}
++}
+diff --git a/internal/identity/credentials.go b/internal/identity/credentials.go
+index 1912f5c4c47..611f70aa9a3 100644
+--- a/internal/identity/credentials.go
++++ b/internal/identity/credentials.go
+@@ -1,7 +1,10 @@
+ package identity
+ 
+ import (
++	"errors"
+ 	"fmt"
++	"os"
++	"strings"
+ 
+ 	"github.com/cli/cli/v2/internal/gh"
+ )
+@@ -13,7 +16,7 @@ type Credentials interface {
+ 
+ type accountConfig interface {
+ 	HostForAPIHost(string) (string, bool)
+-	ActiveTokenWithRefresh(string) (gh.Credential, gh.RefreshStatus, error)
++	ResolveToken(host, owner, dir string) (gh.Credential, error)
+ }
+ 
+ // TokenResolver resolves effective credentials for the logical host named by api_host.
+@@ -23,12 +26,46 @@ func TokenResolver(auth accountConfig) func(string) (string, error) {
+ 		if canonical, ok := auth.HostForAPIHost(host); ok {
+ 			host = canonical
+ 		}
+-		credential, _, err := auth.ActiveTokenWithRefresh(host)
+-		if err != nil && credential.Token == "" {
+-			return "", err
++		credential, err := auth.ResolveToken(host, "", "")
++		return credential.Token, err
++	}
++}
++
++// CredentialFor resolves a bound credential, refusing environment overrides and missing accounts.
++func CredentialFor(auth interface {
++	Credentials
++	SavedAccounts
++}, id *Identity) (gh.Credential, error) {
++	if err := CheckEnvironment(id.Host); err != nil {
++		return gh.Credential{}, err
++	}
++	if warning := AccountWarning(auth, id); warning != "" {
++		return gh.Credential{}, errors.New(warning)
++	}
++	credential, status, err := auth.TokenForUserWithRefresh(id.Host, id.Account)
++	if err != nil {
++		return gh.Credential{}, fmt.Errorf("identity %q: %w; sign in with 'gh auth login --hostname %s', or change the identity with 'gh auth identity edit %s --account <login>'", id.Name, err, id.Host, id.Name)
++	}
++	if status == gh.RefreshStatusExpired || credential.Token == "" {
++		return gh.Credential{}, fmt.Errorf("identity %q has no usable credential for %s on %s; run 'gh auth login'", id.Name, id.Account, id.Host)
++	}
++	return credential, nil
++}
++
++// CheckEnvironment refuses token variables whose account cannot be matched to the identity.
++func CheckEnvironment(host string) error {
++	var names []string
++	if host == "github.com" || strings.HasSuffix(host, ".ghe.com") {
++		names = []string{"GH_TOKEN", "GITHUB_TOKEN"}
++	} else {
++		names = []string{"GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"}
++	}
++	for _, name := range names {
++		if os.Getenv(name) != "" {
++			return fmt.Errorf("%s overrides saved accounts; unset it to use a bound identity", name)
+ 		}
+-		return credential.Token, nil
+ 	}
++	return nil
+ }
+ 
+ // CredentialForAccount resolves an explicitly requested saved account, never the active or environment token.
+diff --git a/internal/identity/credentials_test.go b/internal/identity/credentials_test.go
+index 5182c3ecbc5..f30d5fe732c 100644
+--- a/internal/identity/credentials_test.go
++++ b/internal/identity/credentials_test.go
+@@ -1,11 +1,16 @@
+-package identity
++package identity_test
+ 
+ import (
+ 	"net/http"
++	"os/exec"
++	"path/filepath"
++	"runtime"
+ 	"testing"
+ 
+ 	"github.com/cli/cli/v2/api"
+ 	"github.com/cli/cli/v2/internal/config"
++	"github.com/cli/cli/v2/internal/gh"
++	"github.com/cli/cli/v2/internal/identity"
+ 	"github.com/stretchr/testify/assert"
+ 	"github.com/stretchr/testify/require"
+ )
+@@ -44,7 +49,7 @@ hosts:
+ 	require.NoError(t, err)
+ 
+ 	// When resolving effective authentication for the gateway destination
+-	_, err = api.AddAuthTokenHeaderWithResolver(base, TokenResolver(cfg.Authentication())).RoundTrip(req)
++	_, err = api.AddAuthTokenHeaderWithResolver(base, identity.TokenResolver(cfg.Authentication())).RoundTrip(req)
+ 
+ 	// Then the explicit API host mapping determines which host supplies authentication
+ 	require.NoError(t, err)
+@@ -97,7 +102,7 @@ hosts:
+ 			})
+ 
+ 			// When authentication is attached for the selected saved account
+-			_, err = api.AddAuthTokenHeaderWithResolver(base, TokenResolver(auth)).RoundTrip(req)
++			_, err = api.AddAuthTokenHeaderWithResolver(base, identity.TokenResolver(auth)).RoundTrip(req)
+ 
+ 			// Then only eligible requests get the saved account, without changing persistent selection
+ 			require.NoError(t, err)
+@@ -109,3 +114,55 @@ hosts:
+ 		})
+ 	}
+ }
++
++func TestBoundIdentityRefusesEnvironmentToken(t *testing.T) {
++	// Given a bound identity and an environment token of unknown account
++	cfg, s := isolatedAccounts(t)
++	dir := t.TempDir()
++	runGit(t, dir, "init", "-q")
++	require.NoError(t, s.Save(identity.Identity{Name: "work", Host: "github.com", Account: "alice"}, false))
++	require.NoError(t, s.Bind(identity.Binding{Identity: "work", Directory: dir}, "/path/to/gh"))
++	t.Chdir(dir)
++	t.Setenv("GH_TOKEN", "unknown-account-token")
++	base := roundTripFunc(func(req *http.Request) (*http.Response, error) {
++		t.Fatal("a conflicting identity must fail before any network request")
++		return nil, nil
++	})
++	client := &http.Client{Transport: api.AddAuthTokenHeaderWithResolver(base, identity.TokenResolver(cfg.Authentication()))}
++
++	// When the request would otherwise use the bound identity
++	_, err := client.Get("https://api.github.com/repos/company/project")
++
++	// Then it refuses the override rather than claiming account agreement
++	require.ErrorContains(t, err, "GH_TOKEN overrides saved accounts")
++}
++
++func isolatedAccounts(t *testing.T) (gh.Config, *identity.Store) {
++	t.Helper()
++	if runtime.GOOS == "windows" {
++		t.Skip("persistent identities are not supported on Windows")
++	}
++	cfg, _ := config.NewIsolatedTestConfig(t, `
++hosts:
++  github.com:
++    user: alice
++    oauth_token: alice-token
++    users:
++      alice:
++        oauth_token: alice-token
++`)
++	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(t.TempDir(), "gitconfig"))
++	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
++	store, err := identity.Open()
++	require.NoError(t, err)
++	return cfg, store
++}
++
++func runGit(t *testing.T, dir string, args ...string) string {
++	t.Helper()
++	cmd := exec.Command("git", args...)
++	cmd.Dir = dir
++	out, err := cmd.CombinedOutput()
++	require.NoError(t, err, "%s", out)
++	return string(out)
++}
+diff --git a/internal/identity/delete.go b/internal/identity/delete.go
+new file mode 100644
+index 00000000000..7a6d18aec0d
+--- /dev/null
++++ b/internal/identity/delete.go
+@@ -0,0 +1,194 @@
++package identity
++
++import (
++	"errors"
++	"fmt"
++	"os"
++	"path/filepath"
++	"slices"
++	"strings"
++
++	"github.com/kballard/go-shellquote"
++)
++
++type stagedFile struct{ original, temporary string }
++
++func stageRemoval(path string) (stagedFile, error) {
++	f, err := os.CreateTemp(filepath.Dir(path), ".gh-identity-delete-*")
++	if err != nil {
++		return stagedFile{}, err
++	}
++	if err := f.Close(); err != nil {
++		return stagedFile{}, errors.Join(err, os.Remove(f.Name()))
++	}
++	if err := os.Rename(path, f.Name()); err != nil {
++		return stagedFile{}, errors.Join(err, os.Remove(f.Name()))
++	}
++	return stagedFile{path, f.Name()}, nil
++}
++
++func restoreFiles(files []stagedFile) error {
++	var errs []error
++	for _, f := range files {
++		if err := os.Rename(f.temporary, f.original); err != nil {
++			errs = append(errs, fmt.Errorf("restore %s from %s: %w", f.original, f.temporary, err))
++		}
++	}
++	return errors.Join(errs...)
++}
++
++func ownedFile(path, marker string) error {
++	info, err := os.Lstat(path)
++	if err != nil {
++		return err
++	}
++
++	if !info.Mode().IsRegular() {
++		return fmt.Errorf("refusing to delete non-regular managed file %s; inspect it manually", path)
++	}
++	data, err := os.ReadFile(path)
++	if err != nil {
++		return err
++	}
++	if !strings.HasPrefix(string(data), marker+"\n") {
++		return fmt.Errorf("cannot confirm gh owns %s; inspect it manually before removing it", path)
++	}
++	return nil
++}
++
++func (s *Store) validateManagedIntegration() error {
++	path := s.authConfigPath()
++	if err := ownedFile(path, "# Managed by gh auth use. Do not edit."); err != nil {
++		return err
++	}
++	out, err := gitOutput("", "config", "--file", path, "--no-includes", "--null", "--list")
++	if err != nil {
++		return err
++	}
++	for entry := range strings.SplitSeq(strings.TrimSuffix(out, "\x00"), "\x00") {
++		if entry == "" {
++			continue
++		}
++		key, value, _ := strings.Cut(entry, "\n")
++		managed := false
++		switch {
++		case strings.HasPrefix(key, "gh-auth-binding."):
++			managed = true // Bindings validates the supported metadata fields.
++		case key == "core.sshcommand":
++			args, err := shellquote.Split(value)
++			managed = err == nil && isSSHDispatcher(args)
++		case key == "ssh.variant":
++			managed = value == "ssh"
++		case strings.HasPrefix(key, "credential.https://"):
++			if strings.HasSuffix(key, ".usehttppath") {
++				managed = value == "true"
++			} else if strings.HasSuffix(key, ".helper") {
++				if value == "" {
++					managed = true
++				} else if strings.HasPrefix(value, "!") {
++					args, err := shellquote.Split(value[1:])
++					managed = err == nil && len(args) == 3 && args[1] == "auth" && args[2] == "git-credential"
++				}
++			}
++		case strings.HasPrefix(key, "includeif.") && strings.HasSuffix(key, ".path"):
++			managed = filepath.IsAbs(value) && filepath.Clean(filepath.Dir(value)) == filepath.Clean(s.Dir) && strings.HasSuffix(value, ".gitconfig")
++		}
++		if !managed {
++			return fmt.Errorf("%s contains settings not managed by gh (%s); move those settings to your own Git configuration before retrying cleanup", path, key)
++		}
++	}
++	return nil
++}
++
++// DeleteIdentities removes the named identities and their bindings. All also
++// removes orphaned bindings and unused managed integration. Credentials are untouched.
++func (s *Store) DeleteIdentities(names []string, all bool, executable string) error {
++	bindings, err := s.Bindings()
++	if err != nil {
++		return err
++	}
++	for _, name := range names {
++		if _, err := s.Load(name); err != nil {
++			return err
++		}
++		if err := ownedFile(s.IdentityPath(name), "# Managed by gh auth identity. Manual changes may be overwritten."); err != nil {
++			return err
++		}
++	}
++	remaining := slices.DeleteFunc(slices.Clone(bindings), func(b Binding) bool {
++		return all || slices.Contains(names, b.Identity)
++	})
++	// Validate before staging identities so configuration errors leave them in place.
++	if _, err := os.Stat(s.authConfigPath()); err == nil {
++		if err := s.validateManagedIntegration(); err != nil {
++			return err
++		}
++	} else if !errors.Is(err, os.ErrNotExist) {
++		return err
++	}
++	var staged []stagedFile
++	for _, name := range names {
++		file, err := stageRemoval(s.IdentityPath(name))
++		if err != nil {
++			return errors.Join(err, restoreFiles(staged))
++		}
++		staged = append(staged, file)
++	}
++	if len(remaining) == 0 {
++		err = s.clearBindings()
++	} else if len(remaining) != len(bindings) {
++		err = s.writeBindings(remaining, executable)
++	}
++	if err != nil {
++		return errors.Join(err, restoreFiles(staged))
++	}
++	var errs []error
++	for _, file := range staged {
++		if err := os.Remove(file.temporary); err != nil {
++			errs = append(errs, fmt.Errorf("identity removed, but temporary file %s could not be deleted: %w", file.temporary, err))
++		}
++	}
++	if len(errs) > 0 {
++		return errors.Join(errs...)
++	}
++	entries, err := os.ReadDir(s.Dir)
++	if errors.Is(err, os.ErrNotExist) {
++		return nil
++	}
++	if err != nil {
++		return err
++	}
++	if len(entries) == 0 {
++		return os.Remove(s.Dir)
++	}
++	return nil
++}
++
++func (s *Store) clearBindings() error {
++	path := s.authConfigPath()
++	var staged []stagedFile
++	if err := s.validateManagedIntegration(); err == nil {
++		file, err := stageRemoval(path)
++		if err != nil {
++			return err
++		}
++		staged = append(staged, file)
++	} else if !errors.Is(err, os.ErrNotExist) {
++		return err
++	}
++	paths, err := gitOptional("", "config", "--global", "--get-all", "include.path")
++	if err != nil {
++		return errors.Join(err, restoreFiles(staged))
++	}
++	if slices.Contains(strings.Split(paths, "\n"), path) {
++		if _, err := gitOutput("", "config", "--global", "--fixed-value", "--unset-all", "include.path", path); err != nil {
++			return errors.Join(err, restoreFiles(staged))
++		}
++	}
++	for _, file := range staged {
++		if err := os.Remove(file.temporary); err != nil {
++			return fmt.Errorf("Git integration detached, but could not remove %s: %w", file.temporary, err)
++		}
++	}
++	return nil
++}
+diff --git a/internal/identity/hardening_test.go b/internal/identity/hardening_test.go
+new file mode 100644
+index 00000000000..a169b89e38a
+--- /dev/null
++++ b/internal/identity/hardening_test.go
+@@ -0,0 +1,96 @@
++package identity
++
++import (
++	"os"
++	"path/filepath"
++	"testing"
++
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++)
++
++func TestPersistentIdentityRefusesBareRepositoryWithoutChangingConfig(t *testing.T) {
++	// Given a bare repository where the working-tree identity contract cannot apply
++	s := isolatedStore(t)
++	dir := t.TempDir()
++	runGit(t, dir, "init", "--bare", "-q")
++	require.NoError(t, s.Save(Identity{Name: "work", Host: "github.com", Account: "alice"}, false))
++
++	// When attempting a directory binding there
++	err := s.Bind(Binding{Identity: "work", Directory: dir}, "/path/to/gh")
++
++	// Then it fails before installing any global integration
++	require.ErrorContains(t, err, "bare repositories")
++	bindings, err := s.Bindings()
++	require.NoError(t, err)
++	assert.Empty(t, bindings)
++}
++
++func TestPersistentIdentityDoesNotReplaceCustomCredentialHelpers(t *testing.T) {
++	// Given a user's existing HTTPS credential helper for the selected host
++	s := isolatedStore(t)
++	dir := t.TempDir()
++	runGit(t, dir, "init", "-q")
++	runGit(t, dir, "config", "--global", "credential.https://github.com.helper", "company-credential-helper")
++	require.NoError(t, s.Save(Identity{Name: "work", Host: "github.com", Account: "alice"}, false))
++
++	// When applying an identity would override the existing helper chain
++	err := s.Bind(Binding{Identity: "work", Directory: dir}, "/path/to/gh")
++
++	// Then the prototype refuses rather than taking ownership of that helper
++	require.ErrorContains(t, err, "existing HTTPS credential helper")
++	assert.Equal(t, "company-credential-helper\n", runGit(t, dir, "config", "--global", "credential.https://github.com.helper"))
++}
++
++func TestCredentialHelperResetAllowsExistingGhSetup(t *testing.T) {
++	// Given a system keychain helper already reset by the user's gh setup
++	s := isolatedStore(t)
++	dir := t.TempDir()
++	runGit(t, dir, "init", "-q")
++	system := filepath.Join(dir, "system.gitconfig")
++	require.NoError(t, os.WriteFile(system, []byte("[credential]\nhelper = osxkeychain\n"), 0o600))
++	t.Setenv("GIT_CONFIG_SYSTEM", system)
++	t.Setenv("GIT_CONFIG_NOSYSTEM", "0")
++	runGit(t, dir, "config", "--global", "--add", "credential.https://github.com.helper", "")
++	runGit(t, dir, "config", "--global", "--add", "credential.https://github.com.helper", "!gh auth git-credential")
++	require.NoError(t, s.Save(Identity{Name: "work", Host: "github.com", Account: "alice"}, false))
++
++	// When applying an identity using the already-gh-managed credential setup
++	err := s.Bind(Binding{Identity: "work", Directory: dir}, "/path/to/gh")
++
++	// Then the inactive system helper does not make a valid setup unusable
++	require.NoError(t, err)
++}
++
++func TestPersistentIdentityRefusesSeparateGitDirectory(t *testing.T) {
++	// Given a checkout whose Git metadata is outside the directory tree
++	s := isolatedStore(t)
++	dir := t.TempDir()
++	gitDir := filepath.Join(t.TempDir(), "metadata")
++	runGit(t, dir, "init", "--separate-git-dir", gitDir, "-q")
++	require.NoError(t, s.Save(Identity{Name: "work", Host: "github.com", Account: "alice"}, false))
++
++	// When binding the checkout would not activate its native Git include
++	err := s.Bind(Binding{Identity: "work", Directory: dir}, "/path/to/gh")
++
++	// Then the unsupported layout is rejected instead of giving gh and Git different settings
++	require.ErrorContains(t, err, "separate Git directories")
++}
++
++func TestPersistentIdentityRefusesRepositoryUsingSubmodulesAtSetup(t *testing.T) {
++	// Given a standalone repository whose Git operations may recurse into submodules
++	s := isolatedStore(t)
++	dir := t.TempDir()
++	runGit(t, dir, "init", "-q")
++	require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitmodules"), []byte("[submodule \"library\"]\npath = vendor/library\nurl = https://github.com/example/library.git\n"), 0o600))
++	require.NoError(t, s.Save(Identity{Name: "work", Host: "github.com", Account: "alice"}, false))
++
++	// When applying an identity to that repository
++	err := s.Bind(Binding{Identity: "work", Directory: dir}, "/path/to/gh")
++
++	// Then incompatibility is reported at setup instead of during a later submodule fetch
++	require.ErrorContains(t, err, "repositories that use submodules")
++	bindings, err := s.Bindings()
++	require.NoError(t, err)
++	assert.Empty(t, bindings)
++}
+diff --git a/internal/identity/ssh.go b/internal/identity/ssh.go
+new file mode 100644
+index 00000000000..a11047586a6
+--- /dev/null
++++ b/internal/identity/ssh.go
+@@ -0,0 +1,157 @@
++package identity
++
++import (
++	"errors"
++	"fmt"
++	"strings"
++
++	"github.com/kballard/go-shellquote"
++)
++
++// SSHArguments routes a Git SSH invocation through its selected identity's declared alias.
++// It does not authenticate the key or mutate remote URLs or SSH configuration.
++func (s *Store) SSHArguments(args []string, dir string) ([]string, error) {
++	return s.sshArguments(args, dir, "", "")
++}
++
++// SSHArgumentsForAccount selects a declared route for an invocation-local account override.
++// The override applies only to its host and does not change Git attribution or saved choices.
++func (s *Store) SSHArgumentsForAccount(args []string, dir, overrideHost, account string) ([]string, error) {
++	return s.sshArguments(args, dir, overrideHost, account)
++}
++
++func (s *Store) sshArguments(args []string, dir, overrideHost, account string) ([]string, error) {
++	hostIndex := -1
++	for i := 0; i < len(args); i++ {
++		arg := args[i]
++		if arg == "--" {
++			if i+1 < len(args) {
++				hostIndex = i + 1
++			}
++			break
++		}
++		if !strings.HasPrefix(arg, "-") {
++			hostIndex = i
++			break
++		}
++		if len(arg) == 2 && strings.ContainsAny(arg[1:], "BbcDEeFIiJLlmOoPpQRSWw") {
++			i++
++			if i == len(args) {
++				return nil, fmt.Errorf("SSH option %s requires a value", arg)
++			}
++		}
++	}
++	if hostIndex < 0 {
++		return nil, errors.New("Git SSH invocation is missing its host")
++	}
++	destination := args[hostIndex]
++	user, host, hasUser := strings.Cut(destination, "@")
++	if !hasUser {
++		host = destination
++	}
++	owner := ""
++	if len(args) > hostIndex+1 {
++		command, err := shellquote.Split(args[hostIndex+1])
++		if err != nil {
++			return nil, fmt.Errorf("parse Git SSH command: %w", err)
++		}
++		if len(command) >= 2 {
++			owner, _, _ = strings.Cut(strings.TrimPrefix(command[len(command)-1], "/"), "/")
++		}
++	}
++	var id *Identity
++	var err error
++	if account != "" {
++		id, err = s.accountSSHRoute(host, owner, dir, overrideHost, account)
++	} else {
++		id, err = s.Resolve(host, owner, dir)
++	}
++	if err != nil {
++		return nil, err
++	}
++	if id == nil {
++		return args, nil
++	}
++	if account == "" || !strings.EqualFold(id.Host, overrideHost) {
++		if err := CheckEnvironment(id.Host); err != nil {
++			return nil, err
++		}
++	}
++	if id.SSHHost == "" {
++		return nil, fmt.Errorf("identity %q has no SSH route; run 'gh auth identity edit %s --ssh-host <alias>'", id.Name, id.Name)
++	}
++	result := append([]string(nil), args...)
++	result[hostIndex] = id.SSHHost
++	if hasUser {
++		result[hostIndex] = user + "@" + id.SSHHost
++	}
++	return result, nil
++}
++
++func (s *Store) accountSSHRoute(host, owner, dir, overrideHost, account string) (*Identity, error) {
++	ids, err := s.List()
++	if err != nil {
++		return nil, err
++	}
++	canonical := host
++	known := strings.EqualFold(host, overrideHost)
++	for _, id := range ids {
++		if strings.EqualFold(id.Host, host) {
++			known = true
++		}
++		if !strings.EqualFold(id.SSHHost, host) {
++			continue
++		}
++		if known && !strings.EqualFold(canonical, id.Host) {
++			return nil, fmt.Errorf("SSH host %q is declared for multiple hosts", host)
++		}
++		canonical, known = id.Host, true
++	}
++	if !known {
++		return nil, fmt.Errorf("cannot apply --account to undeclared SSH host %q; declare its route with 'gh auth identity create' or 'gh auth identity edit'", host)
++	}
++	if !strings.EqualFold(canonical, overrideHost) {
++		return s.Resolve(canonical, owner, dir)
++	}
++	routes := map[string]Identity{}
++	candidates := map[string]bool{}
++	for _, id := range ids {
++		if !strings.EqualFold(id.Host, overrideHost) || !strings.EqualFold(id.Account, account) || id.SSHHost == "" {
++			continue
++		}
++		routes[strings.ToLower(id.SSHHost)] = id
++		candidates[id.Name] = true
++	}
++	for _, id := range ids {
++		if _, ok := routes[strings.ToLower(id.SSHHost)]; ok &&
++			(!strings.EqualFold(id.Host, overrideHost) || !strings.EqualFold(id.Account, account)) {
++			return nil, fmt.Errorf("SSH host %q is declared for multiple accounts or hosts; use distinct aliases in 'gh auth identity edit'", id.SSHHost)
++		}
++	}
++	if len(routes) == 0 {
++		return nil, fmt.Errorf("account %q has no declared SSH route on %s; declare one with 'gh auth identity create' or 'gh auth identity edit'", account, host)
++	}
++	if len(routes) == 1 {
++		for _, id := range routes {
++			return &id, nil
++		}
++	}
++	bindings, err := s.Bindings()
++	if err != nil {
++		return nil, err
++	}
++	var matching []Binding
++	for _, binding := range bindings {
++		if candidates[binding.Identity] {
++			matching = append(matching, binding)
++		}
++	}
++	resolution, err := s.resolveBindings(overrideHost, owner, dir, matching)
++	if err != nil {
++		return nil, err
++	}
++	if resolution.Identity != nil {
++		return resolution.Identity, nil
++	}
++	return nil, fmt.Errorf("multiple SSH routes are declared for account %q on %s; apply the intended identity with 'gh auth use'", account, host)
++}
+diff --git a/internal/identity/ssh_command.go b/internal/identity/ssh_command.go
+new file mode 100644
+index 00000000000..23a0840e4d5
+--- /dev/null
++++ b/internal/identity/ssh_command.go
+@@ -0,0 +1,86 @@
++package identity
++
++import (
++	"errors"
++	"fmt"
++	"os"
++	"path/filepath"
++	"strings"
++
++	"github.com/kballard/go-shellquote"
++)
++
++// SSHCommand resolves the user's connection command underneath gh's managed
++// dispatcher. Override reads the original environment captured by --account.
++// Only the default OpenSSH command is supported; custom connection commands are refused.
++func (s *Store) SSHCommand(dir string, override bool) ([]string, error) {
++	commandEnv, variantEnv := "GIT_SSH_COMMAND", "GIT_SSH_VARIANT"
++	if override {
++		commandEnv, variantEnv = "GH_IDENTITY_SSH_COMMAND", "GH_IDENTITY_SSH_VARIANT"
++	}
++	if os.Getenv(commandEnv) != "" || os.Getenv("GIT_SSH") != "" {
++		return nil, errors.New("custom SSH commands are not supported for identity routing; your SSH configuration has not been changed")
++	}
++	if variant := os.Getenv(variantEnv); variant != "" && variant != "ssh" {
++		return nil, errors.New("custom SSH variants are not supported for identity routing")
++	}
++	for _, key := range []string{"core.sshCommand", "ssh.variant"} {
++		value, err := s.underlyingGitValue(dir, key)
++		if err != nil {
++			return nil, err
++		}
++		if value != "" {
++			return nil, fmt.Errorf("custom %s is not supported for identity routing; your SSH configuration has not been changed", key)
++		}
++	}
++	return []string{"ssh"}, nil
++}
++
++func isSSHDispatcher(command []string) bool {
++	return len(command) == 3 && command[1] == "auth" && command[2] == "git-ssh"
++}
++
++func (s *Store) underlyingGitValue(dir, key string) (string, error) {
++	out, err := gitOptional(dir, "config", "--includes", "--show-origin", "--null", "--get-all", key)
++	if err != nil {
++		return "", err
++	}
++	if out == "" {
++		return "", nil
++	}
++	fields := strings.Split(strings.TrimSuffix(out, "\x00"), "\x00")
++	if len(fields)%2 != 0 {
++		return "", fmt.Errorf("Git did not report origins for %s", key)
++	}
++	value := ""
++	for i := 0; i < len(fields); i += 2 {
++		if sameConfigFile(strings.TrimPrefix(fields[i], "file:"), s.authConfigPath()) {
++			switch key {
++			case "core.sshCommand":
++				command, err := shellquote.Split(fields[i+1])
++				if err != nil || !isSSHDispatcher(command) {
++					return "", errors.New("gh's managed SSH command has been edited; refusing to replace it")
++				}
++			case "ssh.variant":
++				if fields[i+1] != "ssh" {
++					return "", errors.New("gh's managed SSH variant has been edited; refusing to replace it")
++				}
++			}
++			continue
++		}
++		value = fields[i+1]
++	}
++	return value, nil
++}
++
++func sameConfigFile(a, b string) bool {
++	if filepath.Clean(a) == filepath.Clean(b) {
++		return true
++	}
++	first, err := os.Stat(a)
++	if err != nil {
++		return false
++	}
++	second, err := os.Stat(b)
++	return err == nil && os.SameFile(first, second)
++}
+diff --git a/internal/identity/ssh_test.go b/internal/identity/ssh_test.go
+new file mode 100644
+index 00000000000..2e07c49d592
+--- /dev/null
++++ b/internal/identity/ssh_test.go
+@@ -0,0 +1,57 @@
++package identity
++
++import (
++	"testing"
++
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++)
++
++func TestSSHUsesRepositoryIdentityWithoutChangingRemote(t *testing.T) {
++	// Given an repository identity with an SSH alias
++	s := isolatedStore(t)
++	dir := t.TempDir()
++	runGit(t, dir, "init", "-q")
++	require.NoError(t, s.Save(Identity{Name: "work", Host: "github.com", Account: "alice", SSHHost: "github-work"}, false))
++	require.NoError(t, s.Bind(Binding{Identity: "work", Directory: dir}, "/path/to/gh"))
++	original := []string{"-o", "SendEnv=GIT_PROTOCOL", "git@github.com", "git-upload-pack 'company/project.git'"}
++
++	// When independently invoked Git dispatches its SSH connection
++	got, err := s.SSHArguments(original, dir)
++
++	// Then only the invocation's SSH host changes, not the canonical URL or input
++	require.NoError(t, err)
++	assert.Equal(t, []string{"-o", "SendEnv=GIT_PROTOCOL", "git@github-work", "git-upload-pack 'company/project.git'"}, got)
++	assert.Equal(t, "git@github.com", original[2])
++}
++
++func TestMissingSSHRouteFailsRatherThanUsingDefaultKey(t *testing.T) {
++	// Given an HTTPS-capable identity without an SSH route
++	s := isolatedStore(t)
++	dir := t.TempDir()
++	runGit(t, dir, "init", "-q")
++	require.NoError(t, s.Save(Identity{Name: "work", Host: "github.com", Account: "alice"}, false))
++	require.NoError(t, s.Bind(Binding{Identity: "work", Directory: dir}, "/path/to/gh"))
++
++	// When Git attempts an SSH operation in that repository
++	_, err := s.SSHArguments([]string{"git@github.com", "git-upload-pack 'company/repo.git'"}, dir)
++
++	// Then routing fails explicitly instead of trying an unrelated default key
++	require.ErrorContains(t, err, "has no SSH route")
++}
++
++func TestSSHPreservesCertificateAuthorityUser(t *testing.T) {
++	// Given an repository identity and GitHub's organization-specific SSH certificate user
++	s := isolatedStore(t)
++	dir := t.TempDir()
++	runGit(t, dir, "init", "-q")
++	require.NoError(t, s.Save(Identity{Name: "work", Host: "github.com", Account: "alice", SSHHost: "github-work"}, false))
++	require.NoError(t, s.Bind(Binding{Identity: "work", Directory: dir}, "/path/to/gh"))
++
++	// When Git connects using the server-supplied SSH URL
++	got, err := s.SSHArguments([]string{"org-1234@github.com", "git-upload-pack 'company/project.git'"}, dir)
++
++	// Then identity routing changes the host without changing the SSH certificate user
++	require.NoError(t, err)
++	assert.Equal(t, "org-1234@github-work", got[0])
++}
+diff --git a/internal/identity/store.go b/internal/identity/store.go
+new file mode 100644
+index 00000000000..a64cee5ad03
+--- /dev/null
++++ b/internal/identity/store.go
+@@ -0,0 +1,822 @@
++// Package identity manages experimental, reusable GitHub and Git identities.
++package identity
++
++import (
++	"bytes"
++	"errors"
++	"fmt"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"regexp"
++	"runtime"
++	"slices"
++	"sort"
++	"strconv"
++	"strings"
++	"unicode/utf8"
++
++	"github.com/cli/cli/v2/git"
++	ghconfig "github.com/cli/go-gh/v2/pkg/config"
++	"github.com/kballard/go-shellquote"
++)
++
++var safeName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
++
++// Identity is a saved account reference and optional Git preferences, never credentials.
++type Identity struct {
++	Name    string `json:"name"`
++	Host    string `json:"host"`
++	Account string `json:"account"`
++	SSHHost string `json:"sshHost,omitempty"`
++}
++
++// Binding applies an identity to a repository family.
++type Binding struct {
++	Identity   string `json:"identity"`
++	Host       string `json:"host"`
++	Directory  string `json:"directory,omitempty"`
++	Repository string `json:"repository,omitempty"` // Canonical common Git directory.
++}
++
++// Store owns the generated identity files and the scoped references to them.
++type Store struct {
++	Dir string
++}
++
++// Open locates identity storage without creating files or changing Git configuration.
++func Open() (*Store, error) {
++	dir, err := filepath.Abs(filepath.Join(ghconfig.ConfigDir(), "identities"))
++	if err != nil {
++		return nil, err
++	}
++	return &Store{Dir: dir}, nil
++}
++
++// IdentityPath returns the managed Git config path for a validated identity name.
++func (s *Store) IdentityPath(name string) string {
++	return filepath.Join(s.Dir, name+".gitconfig")
++}
++
++func validValue(value string) bool {
++	return utf8.ValidString(value) && !strings.ContainsAny(value, "\x00\r\n")
++}
++
++func gitQuote(value string) string {
++	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`, "\t", `\t`, "\b", `\b`).Replace(value) + `"`
++}
++
++// Save creates or replaces a managed identity file. Editing preserves its references.
++func (s *Store) Save(id Identity, replace bool) error {
++	if !safeName.MatchString(id.Name) || !safeName.MatchString(id.Host) || !safeName.MatchString(id.Account) {
++		return errors.New("identity name, hostname, and account must contain only letters, digits, dots, underscores, and hyphens, starting with a letter or digit")
++	}
++	if id.SSHHost != "" && !safeName.MatchString(id.SSHHost) {
++		return errors.New("SSH host must be an existing SSH host name or alias, not a URL or command")
++	}
++	path := s.IdentityPath(id.Name)
++	if _, err := os.Stat(path); err == nil && !replace {
++		return fmt.Errorf("identity %q already exists; use 'gh auth identity edit'", id.Name)
++	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
++		return err
++	}
++	if replace {
++		old, err := s.Load(id.Name)
++		if err != nil {
++			return err
++		}
++		if old.Host != id.Host {
++			return errors.New("an identity's hostname cannot change; create another identity")
++		}
++	}
++
++	var b strings.Builder
++	fmt.Fprintln(&b, "# Managed by gh auth identity. Manual changes may be overwritten.")
++	fmt.Fprintf(&b, "[gh-identity %s]\n", gitQuote(id.Host))
++	for _, field := range []struct{ key, value string }{
++		{"name", id.Name}, {"account", id.Account}, {"sshHost", id.SSHHost},
++	} {
++		fmt.Fprintf(&b, "\t%s = %s\n", field.key, gitQuote(field.value))
++	}
++
++	fmt.Fprintf(&b, "[credential %s]\n\tusername = %s\n", gitQuote("https://"+id.Host), gitQuote(id.Account))
++	return atomicWrite(path, []byte(b.String()))
++}
++
++// Load reads only the supported identity fields from its managed Git config.
++func (s *Store) Load(name string) (*Identity, error) {
++	if !safeName.MatchString(name) {
++		return nil, fmt.Errorf("invalid identity name %q", name)
++	}
++	path := s.IdentityPath(name)
++	if _, err := os.Stat(path); err != nil {
++		return nil, fmt.Errorf("identity %q: %w", name, err)
++	}
++	out, err := gitOutput("", "config", "--no-includes", "--file", path, "--null", "--list")
++	if err != nil {
++		return nil, err
++	}
++	id := &Identity{}
++	for entry := range strings.SplitSeq(out, "\x00") {
++		key, value, ok := strings.Cut(entry, "\n")
++		if !ok || !strings.HasPrefix(key, "gh-identity.") {
++			continue
++		}
++		field := strings.LastIndexByte(key, '.')
++		if field <= len("gh-identity.") {
++			continue
++		}
++		host := key[len("gh-identity."):field]
++		if id.Host != "" && id.Host != host {
++			return nil, fmt.Errorf("identity %q contains multiple host definitions", name)
++		}
++		id.Host = host
++		switch key[field+1:] {
++		case "name":
++			id.Name = value
++		case "account":
++			id.Account = value
++		case "sshhost":
++			id.SSHHost = value
++
++		}
++	}
++	if id.Name != name || !safeName.MatchString(id.Host) || !safeName.MatchString(id.Account) {
++		return nil, fmt.Errorf("invalid managed identity file %s", path)
++	}
++	return id, nil
++}
++
++// List returns all managed identities in name order.
++func (s *Store) List() ([]Identity, error) {
++	paths, err := filepath.Glob(filepath.Join(s.Dir, "*.gitconfig"))
++	if err != nil {
++		return nil, err
++	}
++	ids := make([]Identity, 0, len(paths))
++	for _, path := range paths {
++		name := strings.TrimSuffix(filepath.Base(path), ".gitconfig")
++		id, err := s.Load(name)
++		if err != nil {
++			return nil, err
++		}
++		ids = append(ids, *id)
++	}
++	return ids, nil
++}
++
++// Bindings returns the persistent scope references, without resolving credentials.
++func (s *Store) Bindings() ([]Binding, error) {
++	for _, name := range []string{"bindings.json", "bindings.gitconfig"} {
++		path := filepath.Join(s.Dir, name)
++		if _, err := os.Stat(path); err == nil {
++			return nil, fmt.Errorf("old prototype scope file %s is not supported; use a fresh identity-e2e run, or remove the old scope files and their global Git include before reapplying 'gh auth use'", path)
++		} else if !errors.Is(err, os.ErrNotExist) {
++			return nil, err
++		}
++	}
++	path := s.authConfigPath()
++	_, err := os.Stat(path)
++	if errors.Is(err, os.ErrNotExist) {
++		return []Binding{}, nil
++	}
++	if err != nil {
++		return nil, err
++	}
++	out, err := gitOutput("", "config", "--no-includes", "--file", path, "--null", "--list")
++	if err != nil {
++		return nil, fmt.Errorf("read identity scopes from %s: %w", path, err)
++	}
++	bindings := []Binding{}
++	sections := map[string]int{}
++	seen := map[string]bool{}
++	for entry := range strings.SplitSeq(out, "\x00") {
++		key, value, ok := strings.Cut(entry, "\n")
++		if !ok || !strings.HasPrefix(key, "gh-auth-binding.") {
++			continue
++		}
++		dot := strings.LastIndexByte(key, '.')
++		if dot <= len("gh-auth-binding.") || seen[key] || !validValue(value) {
++			return nil, fmt.Errorf("invalid identity scope field %q in %s", key, path)
++		}
++		seen[key] = true
++		section := key[:dot]
++		index, ok := sections[section]
++		if !ok {
++			index = len(bindings)
++			sections[section] = index
++			bindings = append(bindings, Binding{})
++		}
++		b := &bindings[index]
++		switch key[dot+1:] {
++		case "identity":
++			b.Identity = value
++		case "host":
++			b.Host = value
++		case "repository":
++			b.Repository = value
++		default:
++			return nil, fmt.Errorf("unsupported identity scope field %q in %s", key, path)
++		}
++	}
++	for i, b := range bindings {
++		scopes := 0
++		for _, value := range []string{b.Directory, b.Repository} {
++			if value != "" {
++				scopes++
++			}
++		}
++		if !safeName.MatchString(b.Identity) || !safeName.MatchString(b.Host) ||
++			scopes != 1 || b.Directory != "" ||
++			(b.Directory != "" && (!filepath.IsAbs(b.Directory) || strings.ContainsAny(b.Directory, "*?[\\"))) ||
++			(b.Repository != "" && (!filepath.IsAbs(b.Repository) || !validValue(b.Repository) || filepath.Base(b.Repository) != ".git" || strings.ContainsAny(b.Repository, "*?[\\"))) {
++			return nil, fmt.Errorf("invalid identity scope %d in %s", i, path)
++		}
++		for _, other := range bindings[:i] {
++			if sameScope(b, other) {
++				return nil, fmt.Errorf("duplicate identity scope %d in %s", i, path)
++			}
++		}
++	}
++	return bindings, nil
++}
++
++func (s *Store) authConfigPath() string {
++	return filepath.Join(filepath.Dir(s.Dir), "auth.gitconfig")
++}
++
++func canonicalDirectory(dir string) (string, error) {
++	if dir == "" {
++		dir = "."
++	}
++	path, err := filepath.Abs(dir)
++	if err != nil {
++		return "", err
++	}
++	return filepath.EvalSymlinks(path)
++}
++
++func normalizeBinding(b Binding) (Binding, error) {
++	if b.Repository != "" {
++		return b, errors.New("supply a checkout directory, not an internal repository scope")
++	}
++
++	dir, err := canonicalDirectory(b.Directory)
++	if err != nil {
++		return b, err
++	}
++	b.Directory = dir
++	if _, err := os.Stat(dir); err != nil {
++		return b, err
++	}
++	root, err := workingTreeRoot(dir)
++	if err != nil {
++		return b, err
++	}
++	if root != "" {
++		if err := supportedCheckout(root); err != nil {
++			return b, err
++		}
++		b.Repository, err = commonGitDirectory(dir)
++		if err != nil {
++			return b, err
++		}
++		b.Directory = ""
++	} else {
++		bare, err := gitOptional(dir, "rev-parse", "--is-bare-repository")
++		if err != nil {
++			var exit *exec.ExitError
++			if !errors.As(err, &exit) || exit.ExitCode() != 128 || !strings.Contains(err.Error(), "not a git repository") {
++				return b, err
++			}
++		} else if bare == "true" {
++			return b, errors.New("persistent identities in bare repositories are not supported; use a standalone checkout")
++		}
++	}
++	if b.Repository == "" {
++		return b, errors.New("identity choices currently require a repository checkout")
++	}
++	path := b.Directory
++	if b.Repository != "" {
++		path = b.Repository
++	}
++	if !validValue(path) || strings.ContainsAny(path, "*?[\\") {
++		return b, errors.New("binding paths must be valid UTF-8 without newlines, NUL, or Git glob metacharacters")
++	}
++	return b, nil
++}
++
++func sameScope(a, b Binding) bool {
++	return a.Host == b.Host && a.Directory == b.Directory && a.Repository == b.Repository
++}
++
++// Bind replaces the binding for a scope and installs Git's managed configuration.
++func (s *Store) Bind(b Binding, executable string) error {
++	if runtime.GOOS == "windows" {
++		return errors.New("persistent identities are not supported on Windows by this prototype")
++	}
++	if err := supportedGitVersion(); err != nil {
++		return err
++	}
++	id, err := s.Load(b.Identity)
++	if err != nil {
++		return err
++	}
++	b.Host = id.Host
++	contextDir := b.Directory
++	contextDir, err = canonicalDirectory(contextDir)
++	if err != nil {
++		return err
++	}
++	b, err = normalizeBinding(b)
++	if err != nil {
++		return err
++	}
++	if os.Getenv("GIT_SSH_COMMAND") != "" {
++		return errors.New("GIT_SSH_COMMAND bypasses Git configuration, so persistent SSH identity routing cannot be installed; your SSH setup has not been changed")
++	}
++	contexts := []string{contextDir}
++	if b.Repository != "" {
++		contexts, err = familyDirectories(contextDir)
++		if err != nil {
++			return err
++		}
++	}
++	for _, contextDir := range contexts {
++		if b.Repository != "" {
++			if err := supportedCheckout(contextDir); err != nil {
++				return fmt.Errorf("worktree %s: %w", contextDir, err)
++			}
++		}
++		if _, err := s.SSHCommand(contextDir, false); err != nil {
++			return fmt.Errorf("context %s: %w", contextDir, err)
++		}
++		if err := s.supportedCredentialHelpers(contextDir, b.Host); err != nil {
++			return err
++		}
++		executable, err = filepath.Abs(executable)
++		if err != nil {
++			return err
++		}
++		current, err := gitOptional(contextDir, "config", "--show-scope", "--get", "core.sshCommand")
++		if err != nil {
++			return err
++		}
++		scope, command, _ := strings.Cut(current, "\t")
++		if current != "" && command != shellquote.Join(executable, "auth", "git-ssh") &&
++			(scope == "local" || scope == "worktree" || scope == "command") {
++			return fmt.Errorf("checkout %s: repository or command-level core.sshCommand would bypass gh's global SSH dispatcher; persistent identity routing is not supported for this setup, and your SSH configuration has not been changed", contextDir)
++		}
++		remotes, err := gitOptional(contextDir, "config", "--get-regexp", `^remote\..*\.url$`)
++		if err != nil {
++			return err
++		}
++		for line := range strings.SplitSeq(remotes, "\n") {
++			_, raw, ok := strings.Cut(line, " ")
++			if !ok {
++				continue
++			}
++			u, err := git.ParseURL(raw)
++			if err != nil {
++				return fmt.Errorf("parse repository remote: %w", err)
++			}
++			if u.Scheme == "ssh" && strings.EqualFold(u.Host, id.Host) && id.SSHHost == "" {
++				return fmt.Errorf("identity %q has no SSH route for this repository; edit it with --ssh-host <alias>", id.Name)
++			}
++		}
++	}
++	bindings, err := s.Bindings()
++	if err != nil {
++		return err
++	}
++	bindings = slices.DeleteFunc(bindings, func(other Binding) bool { return sameScope(b, other) })
++	bindings = append(bindings, b)
++
++	return s.writeBindings(bindings, executable)
++}
++
++func familyDirectories(dir string) ([]string, error) {
++	out, err := gitOutput(dir, "worktree", "list", "--porcelain", "-z")
++	if err != nil {
++		return nil, err
++	}
++	var directories []string
++	for field := range strings.SplitSeq(out, "\x00") {
++		path, ok := strings.CutPrefix(field, "worktree ")
++		if !ok {
++			continue
++		}
++		if info, err := os.Stat(path); err == nil && info.IsDir() {
++			directories = append(directories, path)
++		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
++			return nil, err
++		}
++	}
++	if len(directories) == 0 {
++		return nil, errors.New("Git reported no existing worktrees for this repository")
++	}
++	return directories, nil
++}
++
++func (s *Store) supportedCredentialHelpers(dir, host string) error {
++	out, err := gitOutput(dir, "config", "--includes", "--show-origin", "--null", "--list")
++	if err != nil {
++		return err
++	}
++	fields := strings.Split(strings.TrimSuffix(out, "\x00"), "\x00")
++	if out == "" {
++		return nil
++	}
++	if len(fields)%2 != 0 {
++		return errors.New("Git did not report credential helper origins")
++	}
++	var externalOrigins []string
++	for i := 0; i < len(fields); i += 2 {
++		origin := fields[i]
++		if sameConfigFile(strings.TrimPrefix(origin, "file:"), s.authConfigPath()) {
++			continue
++		}
++		key, value, _ := strings.Cut(fields[i+1], "\n")
++		if !strings.HasPrefix(key, "credential.") || !strings.HasSuffix(key, ".helper") {
++			continue
++		}
++		pathScoped := false
++		if key != "credential.helper" {
++			raw := strings.TrimSuffix(strings.TrimPrefix(key, "credential."), ".helper")
++			u, err := git.ParseURL(raw)
++			if err != nil || !strings.EqualFold(u.Hostname(), host) {
++				continue
++			}
++			pathScoped = strings.Trim(u.Path, "/") != ""
++		}
++		if value == "" {
++			if !pathScoped {
++				externalOrigins = nil
++			}
++			continue
++		}
++		args, err := shellquote.Split(strings.TrimPrefix(value, "!"))
++		if strings.HasPrefix(value, "!") && err == nil && len(args) == 3 && args[1] == "auth" && args[2] == "git-credential" {
++			continue
++		}
++		if pathScoped {
++			return fmt.Errorf("an existing HTTPS credential helper for a repository path from %s would be replaced; this prototype does not support that configuration", origin)
++		}
++		externalOrigins = append(externalOrigins, origin)
++	}
++	if len(externalOrigins) > 0 {
++		return fmt.Errorf("an existing HTTPS credential helper from %s would be replaced; no identity choice was applied. If you intend gh to manage credentials for this host, first run 'gh auth setup-git --hostname %s'", externalOrigins[0], host)
++	}
++	return nil
++}
++
++// Unbind removes only the requested scope, revealing any broader binding.
++func (s *Store) Unbind(b Binding, executable string) error {
++	bindings, err := s.Bindings()
++	if err != nil {
++		return err
++	}
++	exact := false
++	dir := b.Directory
++	if dir == "" {
++		dir = "."
++	}
++	dir, err = canonicalRemovalDirectory(dir)
++	if err != nil {
++		return err
++	}
++	if _, statErr := os.Stat(dir); statErr == nil {
++		normalized, normErr := normalizeBinding(b)
++		if normErr != nil {
++			return normErr
++		}
++		if normalized.Repository != "" {
++			for _, candidate := range bindings {
++				if sameScope(normalized, candidate) {
++					b, exact = candidate, true
++					break
++				}
++			}
++		}
++	}
++	for _, candidate := range bindings {
++		if exact {
++			break
++		}
++		if candidate.Host == b.Host && candidate.Directory == dir {
++			b, exact = candidate, true
++			break
++		}
++		if candidate.Host == b.Host && candidate.Repository != "" && filepath.Dir(candidate.Repository) == dir {
++			b, exact = candidate, true
++			break
++		}
++	}
++	if !exact {
++		b, err = normalizeBinding(b)
++		if err != nil {
++			return err
++		}
++	}
++	before := len(bindings)
++	bindings = slices.DeleteFunc(bindings, func(other Binding) bool { return sameScope(b, other) })
++	if len(bindings) == before {
++		return errors.New("no identity binding exists for this scope")
++	}
++	return s.writeBindings(bindings, executable)
++}
++
++func canonicalRemovalDirectory(dir string) (string, error) {
++	absolute, err := filepath.Abs(dir)
++	if err != nil {
++		return "", err
++	}
++	canonical, err := filepath.EvalSymlinks(absolute)
++	if err == nil {
++		return canonical, nil
++	}
++	if !errors.Is(err, os.ErrNotExist) || filepath.Dir(absolute) == absolute {
++		return "", err
++	}
++	parent, err := canonicalRemovalDirectory(filepath.Dir(absolute))
++	if err != nil {
++		return "", err
++	}
++	return filepath.Join(parent, filepath.Base(absolute)), nil
++}
++
++func (s *Store) writeBindings(bindings []Binding, executable string) error {
++	if len(bindings) == 0 {
++		return s.clearBindings()
++	}
++	executable, err := filepath.Abs(executable)
++	if err != nil {
++		return err
++	}
++	managed := s.authConfigPath()
++	sshCommand := shellquote.Join(executable, "auth", "git-ssh")
++	for _, key := range []string{"core.sshCommand", "ssh.variant"} {
++		if _, err := s.underlyingGitValue("", key); err != nil {
++			return err
++		}
++	}
++	var config strings.Builder
++	fmt.Fprintln(&config, "# Managed by gh auth use. Do not edit.")
++	for i, binding := range bindings {
++		fmt.Fprintf(&config, "[gh-auth-binding %q]\n\tidentity = %s\n\thost = %s\n",
++			strconv.Itoa(i), gitQuote(binding.Identity), gitQuote(binding.Host))
++		fmt.Fprintf(&config, "\trepository = %s\n", gitQuote(binding.Repository))
++	}
++	if len(bindings) > 0 {
++		fmt.Fprintf(&config, "[core]\n\tsshCommand = %s\n[ssh]\n\tvariant = ssh\n", gitQuote(sshCommand))
++	}
++	hosts := map[string]bool{}
++	for _, binding := range bindings {
++		hosts[binding.Host] = true
++	}
++	for _, host := range sortedKeys(hosts) {
++		helper := "!" + shellquote.Join(executable, "auth", "git-credential")
++		fmt.Fprintf(&config, "[credential %s]\n\thelper =\n\thelper = %s\n\tuseHttpPath = true\n",
++			gitQuote("https://"+host), gitQuote(helper))
++	}
++	for _, binding := range bindings {
++		path := s.IdentityPath(binding.Identity)
++		for _, pattern := range []string{filepath.ToSlash(binding.Repository), filepath.ToSlash(binding.Repository) + "/worktrees/*"} {
++			fmt.Fprintf(&config, "[includeIf %s]\n\tpath = %s\n", gitQuote("gitdir:"+pattern), gitQuote(path))
++		}
++	}
++	oldConfig, readErr := os.ReadFile(managed)
++	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
++		return readErr
++	}
++	paths, err := gitOptional("", "config", "--global", "--get-all", "include.path")
++	if err != nil {
++		return err
++	}
++	if err := atomicWrite(managed, []byte(config.String())); err != nil {
++		return err
++	}
++	addedInclude := !slices.Contains(strings.Split(paths, "\n"), managed)
++	rollback := func(cause error, removeInclude bool) error {
++		var restoreErr, includeErr error
++		if readErr == nil {
++			restoreErr = atomicWrite(managed, oldConfig)
++		} else {
++			restoreErr = os.Remove(managed)
++		}
++		if removeInclude {
++			_, includeErr = gitOptional("", "config", "--global", "--fixed-value", "--unset-all", "include.path", managed)
++		}
++		return errors.Join(cause, restoreErr, includeErr)
++	}
++	if addedInclude {
++		if _, err := gitOutput("", "config", "--global", "--add", "include.path", managed); err != nil {
++			return rollback(err, false)
++		}
++	}
++	if len(bindings) > 0 {
++		current, err := gitOptional("", "config", "--global", "--includes", "--get", "core.sshCommand")
++		if err != nil {
++			return rollback(err, addedInclude)
++		}
++		if current != sshCommand {
++			return rollback(errors.New("existing Git configuration takes precedence over gh's SSH dispatcher; the managed include must follow core.sshCommand, and no identity choice was applied"), addedInclude)
++		}
++	}
++	return nil
++}
++
++func sortedKeys(m map[string]bool) []string {
++	keys := make([]string, 0, len(m))
++	for key := range m {
++		keys = append(keys, key)
++	}
++	sort.Strings(keys)
++	return keys
++}
++
++func workingTreeRoot(dir string) (string, error) {
++	root, err := gitOptional(dir, "rev-parse", "--show-toplevel")
++	if err != nil {
++		var exit *exec.ExitError
++		if errors.As(err, &exit) && exit.ExitCode() == 128 &&
++			(strings.Contains(err.Error(), "not a git repository") || strings.Contains(err.Error(), "must be run in a work tree")) {
++			return "", nil
++		}
++		return "", err
++	}
++	return root, nil
++}
++
++// Resolve selects the identity for a repository family.
++func (s *Store) Resolve(host, owner, dir string) (*Identity, error) {
++	result, err := s.resolve(host, owner, dir)
++	if err != nil {
++		return nil, err
++	}
++	return result.Identity, nil
++}
++
++func (s *Store) resolve(host, owner, dir string) (*resolution, error) {
++	bindings, err := s.Bindings()
++	if err != nil {
++		return nil, err
++	}
++	if len(bindings) == 0 {
++		return &resolution{}, nil
++	}
++	return s.resolveBindings(host, owner, dir, bindings)
++}
++
++func (s *Store) resolveBindings(host, owner, dir string, bindings []Binding) (*resolution, error) {
++	dir, err := canonicalDirectory(dir)
++	if err != nil {
++		return nil, err
++	}
++	root, err := workingTreeRoot(dir)
++	if err != nil {
++		return nil, err
++	}
++	// An explicit GIT_DIR can select a repository outside the caller's
++	// directory. --show-toplevel alone can report the caller in that case.
++	if os.Getenv("GIT_DIR") != "" {
++		gitDir, err := gitOptional(dir, "rev-parse", "--absolute-git-dir")
++		if err != nil {
++			return nil, err
++		}
++		if filepath.Base(gitDir) == ".git" {
++			dir, err = canonicalDirectory(filepath.Dir(gitDir))
++			if err != nil {
++				return nil, err
++			}
++			root = dir
++		}
++	}
++	result := &resolution{}
++	if root != "" {
++		result.CommonGitDir, err = commonGitDirectory(dir)
++		if err != nil {
++			return nil, err
++		}
++	}
++	if len(bindings) == 0 {
++		return result, nil
++	}
++	for _, b := range bindings {
++		if strings.EqualFold(b.Host, host) && b.Repository == result.CommonGitDir {
++			result.Matches = append(result.Matches, b)
++		}
++	}
++	if len(result.Matches) == 0 {
++		return result, nil
++	}
++	if root != "" {
++		if err := supportedCheckout(root); err != nil {
++			return nil, err
++		}
++	}
++	selected := result.Matches[0]
++
++	result.Identity, err = s.Load(selected.Identity)
++	return result, err
++}
++
++func supportedCheckout(root string) error {
++	commonDir, err := commonGitDirectory(root)
++	if err != nil {
++		return err
++	}
++	if filepath.Base(commonDir) != ".git" {
++		return errors.New("persistent identities in submodules or separate Git directories are not supported by this prototype; use a standalone clone or an explicit --account for gh commands")
++	}
++	modules := filepath.Join(root, ".gitmodules")
++	if _, err := os.Stat(modules); err == nil {
++		paths, err := gitOptional(root, "config", "--no-includes", "--file", modules, "--get-regexp", `^submodule\..*\.path$`)
++		if err != nil {
++			return err
++		}
++		if paths != "" {
++			return errors.New("persistent identities in repositories that use submodules are not supported by this prototype; use a standalone repository without submodules")
++		}
++
++	} else if !errors.Is(err, os.ErrNotExist) {
++		return err
++	}
++	return nil
++}
++
++func commonGitDirectory(dir string) (string, error) {
++	common, err := gitOptional(dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
++	if err != nil {
++		return "", err
++	}
++	return canonicalDirectory(common)
++}
++
++func supportedGitVersion() error {
++	out, err := gitOptional("", "version")
++	if err != nil {
++		return err
++	}
++	version, ok := strings.CutPrefix(out, "git version ")
++	parts := strings.Split(version, ".")
++	if !ok || len(parts) < 2 {
++		return errors.New("cannot determine Git version; identities require Git 2.36 or newer")
++	}
++	major, majorErr := strconv.Atoi(parts[0])
++	minor, minorErr := strconv.Atoi(parts[1])
++	if majorErr != nil || minorErr != nil || major < 2 || (major == 2 && minor < 36) {
++		return errors.New("identities require Git 2.36 or newer for managed configuration; no identity choice was applied")
++	}
++	return nil
++}
++
++func gitOutput(dir string, args ...string) (string, error) {
++	cmd := exec.Command("git", args...)
++	cmd.Dir = dir
++	cmd.Env = append(os.Environ(), "LC_ALL=C")
++	var stderr bytes.Buffer
++	cmd.Stderr = &stderr
++	out, err := cmd.Output()
++	if err != nil {
++		return "", fmt.Errorf("git %s: %s: %w", strings.Join(args, " "), strings.TrimSpace(stderr.String()), err)
++	}
++	return string(out), nil
++}
++
++func gitOptional(dir string, args ...string) (string, error) {
++	out, err := gitOutput(dir, args...)
++	var exit *exec.ExitError
++	if errors.As(err, &exit) && exit.ExitCode() == 1 {
++		return "", nil
++	}
++	return strings.TrimSuffix(out, "\n"), err
++}
++
++func atomicWrite(path string, contents []byte) error {
++	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
++		return err
++	}
++	file, err := os.CreateTemp(filepath.Dir(path), ".identity-*")
++	if err != nil {
++		return err
++	}
++	defer os.Remove(file.Name())
++	if _, err := file.Write(contents); err != nil {
++		file.Close()
++		return err
++	}
++	if err := file.Close(); err != nil {
++		return err
++	}
++	if _, err := gitOutput("", "config", "--no-includes", "--file", file.Name(), "--list"); err != nil {
++		return fmt.Errorf("refusing to install invalid Git configuration: %w", err)
++	}
++	return os.Rename(file.Name(), path)
++}
++
++type resolution struct {
++	CommonGitDir string
++	Identity     *Identity
++	Matches      []Binding
++}
+diff --git a/internal/identity/store_test.go b/internal/identity/store_test.go
+new file mode 100644
+index 00000000000..70859eda615
+--- /dev/null
++++ b/internal/identity/store_test.go
+@@ -0,0 +1,150 @@
++package identity
++
++import (
++	"os"
++	"os/exec"
++	"path/filepath"
++	"runtime"
++	"testing"
++
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++)
++
++func isolatedStore(t *testing.T) *Store {
++	t.Helper()
++	if runtime.GOOS == "windows" {
++		t.Skip("persistent identities are not supported on Windows")
++	}
++	home := t.TempDir()
++	t.Setenv("HOME", home)
++	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
++	t.Setenv("GH_CONFIG_DIR", filepath.Join(home, "gh"))
++	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(home, ".gitconfig"))
++	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
++	for _, key := range []string{"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS", "GIT_DIR", "GIT_WORK_TREE", "GIT_SSH_COMMAND", "GIT_SSH", "GIT_SSH_VARIANT", "GH_IDENTITY_SSH_COMMAND", "GH_IDENTITY_SSH_VARIANT"} {
++		t.Setenv(key, "")
++		require.NoError(t, os.Unsetenv(key))
++	}
++	s, err := Open()
++	require.NoError(t, err)
++	return s
++}
++
++func runGit(t *testing.T, dir string, args ...string) string {
++	t.Helper()
++	cmd := exec.Command("git", args...)
++	cmd.Dir = dir
++	out, err := cmd.CombinedOutput()
++	require.NoError(t, err, "%s", out)
++	return string(out)
++}
++
++func TestIdentityBindingRequiresRepository(t *testing.T) {
++	// Given an identity and an ordinary directory outside any repository
++	s := isolatedStore(t)
++	dir := t.TempDir()
++	require.NoError(t, s.Save(Identity{Name: "work", Host: "github.com", Account: "alice"}, false))
++
++	// When attempting to apply a repository choice outside a checkout
++	err := s.Bind(Binding{Identity: "work", Directory: dir}, "/path/to/gh")
++
++	// Then no broader directory choice or global integration is silently installed
++	require.ErrorContains(t, err, "require a repository checkout")
++	assert.NoFileExists(t, s.authConfigPath())
++}
++
++func TestBasicSSHRefusesCustomConnectionCommand(t *testing.T) {
++	// Given a global SSH command that basic alias routing cannot safely preserve
++	s := isolatedStore(t)
++	dir := t.TempDir()
++	runGit(t, dir, "init", "-q")
++	runGit(t, dir, "config", "--global", "core.sshCommand", "ssh -F company.conf")
++	require.NoError(t, s.Save(Identity{Name: "work", Host: "github.com", Account: "alice"}, false))
++
++	// When applying the identity
++	err := s.Bind(Binding{Identity: "work", Directory: dir}, "/path/to/gh")
++
++	// Then setup refuses explicitly and preserves the user's connection settings
++	require.ErrorContains(t, err, "custom core.sshCommand is not supported")
++	assert.Equal(t, "ssh -F company.conf\n", runGit(t, dir, "config", "--global", "core.sshCommand"))
++	assert.NoFileExists(t, s.authConfigPath())
++}
++
++func TestRepositoryUsesLiveIdentity(t *testing.T) {
++	// Given an identity referencing an account and SSH route
++	s := isolatedStore(t)
++	repo := t.TempDir()
++	runGit(t, repo, "init", "-q")
++	id := Identity{Name: "work", Host: "github.com", Account: "alice", SSHHost: "github-work"}
++	require.NoError(t, s.Save(id, false))
++
++	// When that identity is applied to a repository and subsequently edited
++	require.NoError(t, s.Bind(Binding{Identity: "work", Directory: repo}, "/path/to/gh"))
++	id.Account = "bob"
++	require.NoError(t, s.Save(id, true))
++	got, err := s.Resolve("github.com", "", repo)
++
++	// Then both gh selection and Git see the edited shared identity
++	require.NoError(t, err)
++	require.NotNil(t, got)
++	assert.Equal(t, "bob", got.Account)
++	assert.Equal(t, "bob\n", runGit(t, repo, "config", "credential.https://github.com.username"))
++	assert.Equal(t, "work\n", runGit(t, repo, "config", "gh-identity.github.com.name"))
++	contents, err := os.ReadFile(s.IdentityPath("work"))
++	require.NoError(t, err)
++	assert.NotContains(t, string(contents), "oauth_token")
++}
++
++func TestBindingRefusesConflictingRepositorySSHCommand(t *testing.T) {
++	// Given a repository with an explicitly configured SSH command
++	s := isolatedStore(t)
++	repo := t.TempDir()
++	runGit(t, repo, "init", "-q")
++	runGit(t, repo, "config", "core.sshCommand", "ssh -i another-key")
++	require.NoError(t, s.Save(Identity{Name: "work", Host: "github.com", Account: "alice", SSHHost: "github-work"}, false))
++
++	// When applying an identity that would be bypassed by that command
++	err := s.Bind(Binding{Identity: "work", Directory: repo}, "/path/to/gh")
++
++	// Then no binding is recorded and the conflict is explicit
++	require.ErrorContains(t, err, "core.sshCommand")
++	bindings, err := s.Bindings()
++	require.NoError(t, err)
++	assert.Empty(t, bindings)
++}
++
++func TestBindingSSHRepositoryRequiresRoute(t *testing.T) {
++	// Given an SSH repository and an identity without an SSH route
++	s := isolatedStore(t)
++	repo := t.TempDir()
++	runGit(t, repo, "init", "-q")
++	runGit(t, repo, "remote", "add", "origin", "git@github.com:company/project.git")
++	require.NoError(t, s.Save(Identity{Name: "work", Host: "github.com", Account: "alice"}, false))
++
++	// When applying that identity to the repository
++	err := s.Bind(Binding{Identity: "work", Directory: repo}, "/path/to/gh")
++
++	// Then setup fails with guidance rather than claiming SSH is configured
++	require.ErrorContains(t, err, "has no SSH route")
++}
++
++func TestDirectoryChoiceFromSubdirectoryStartsAtRepositoryRoot(t *testing.T) {
++	// Given an identity applied from a subdirectory of an existing repository
++	s := isolatedStore(t)
++	repo := t.TempDir()
++	runGit(t, repo, "init", "-q")
++	child := filepath.Join(repo, "child")
++	require.NoError(t, os.Mkdir(child, 0o700))
++	require.NoError(t, s.Save(Identity{Name: "work", Host: "github.com", Account: "alice"}, false))
++	require.NoError(t, s.Bind(Binding{Identity: "work", Directory: child}, "/path/to/gh"))
++
++	// When gh is invoked from that repository subdirectory
++	selected, err := s.Resolve("github.com", "", child)
++
++	// Then both gh and Git use a directory choice starting at the repository root
++	require.NoError(t, err)
++	require.NotNil(t, selected)
++	assert.Equal(t, "work", selected.Name)
++	assert.Equal(t, "alice\n", runGit(t, repo, "config", "credential.https://github.com.username"))
++}
+diff --git a/internal/identity/worktree_transport_test.go b/internal/identity/worktree_transport_test.go
+new file mode 100644
+index 00000000000..3ee4930316a
+--- /dev/null
++++ b/internal/identity/worktree_transport_test.go
+@@ -0,0 +1,42 @@
++package identity_test
++
++import (
++	"io"
++	"net/http"
++	"path/filepath"
++	"strings"
++	"testing"
++
++	"github.com/cli/cli/v2/api"
++	"github.com/cli/cli/v2/internal/identity"
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++)
++
++func TestAPIFollowsRepositoryChoiceFromExternalWorktree(t *testing.T) {
++	// Given a repository-family choice and an external agent worktree
++	cfg, s := isolatedAccounts(t)
++	main := t.TempDir()
++	runGit(t, main, "init", "-q")
++	runGit(t, main, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
++		"-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "initial")
++	linked := filepath.Join(t.TempDir(), "agent")
++	runGit(t, main, "worktree", "add", "--detach", linked)
++	require.NoError(t, s.Save(identity.Identity{Name: "work", Host: "github.com", Account: "alice"}, false))
++	require.NoError(t, s.Bind(identity.Binding{Identity: "work", Directory: linked}, "/path/to/gh"))
++	t.Chdir(linked)
++	var auth string
++	base := roundTripFunc(func(req *http.Request) (*http.Response, error) {
++		auth = req.Header.Get("Authorization")
++		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"login":"alice"}`))}, nil
++	})
++	client := &http.Client{Transport: api.AddAuthTokenHeaderWithResolver(base, identity.TokenResolver(cfg.Authentication()))}
++
++	// When gh makes a context-only API request from the linked worktree
++	resp, err := client.Get("https://api.github.com/user")
++
++	// Then the shared repository identity supplies authentication without owner inference
++	require.NoError(t, err)
++	resp.Body.Close()
++	assert.Equal(t, "token alice-token", auth)
++}
+diff --git a/pkg/cmd/auth/auth.go b/pkg/cmd/auth/auth.go
+index 35c3371f979..6d5cd41a8a1 100644
+--- a/pkg/cmd/auth/auth.go
++++ b/pkg/cmd/auth/auth.go
+@@ -3,6 +3,7 @@ package auth
+ import (
+ 	"github.com/cli/cli/v2/internal/gh/ghtelemetry"
+ 	gitCredentialCmd "github.com/cli/cli/v2/pkg/cmd/auth/gitcredential"
++	authIdentityCmd "github.com/cli/cli/v2/pkg/cmd/auth/identity"
+ 	authLoginCmd "github.com/cli/cli/v2/pkg/cmd/auth/login"
+ 	authLogoutCmd "github.com/cli/cli/v2/pkg/cmd/auth/logout"
+ 	authRefreshCmd "github.com/cli/cli/v2/pkg/cmd/auth/refresh"
+@@ -10,6 +11,7 @@ import (
+ 	authStatusCmd "github.com/cli/cli/v2/pkg/cmd/auth/status"
+ 	authSwitchCmd "github.com/cli/cli/v2/pkg/cmd/auth/switch"
+ 	authTokenCmd "github.com/cli/cli/v2/pkg/cmd/auth/token"
++	authUseCmd "github.com/cli/cli/v2/pkg/cmd/auth/use"
+ 	"github.com/cli/cli/v2/pkg/cmdutil"
+ 	"github.com/spf13/cobra"
+ )
+@@ -34,16 +36,12 @@ func NewCmdAuth(f *cmdutil.Factory, telemetry ghtelemetry.InvocationRecorder) *c
+ 	cmd.AddCommand(authSetupGitCmd.NewCmdSetupGit(f, nil))
+ 	cmd.AddCommand(authTokenCmd.NewCmdToken(f, nil))
+ 	cmd.AddCommand(authSwitchCmd.NewCmdSwitch(f, nil))
+-
+-	// --account selects a saved API/HTTPS credential, not an SSH key. Until identities
+-	// provide explicit SSH routes in a later stack layer, Git invokes this helper to
+-	// fail rather than silently authenticate with an unrelated key from the user's SSH setup.
+-	cmd.AddCommand(&cobra.Command{
+-		Use: "git-ssh", Hidden: true, DisableFlagParsing: true,
+-		RunE: func(cmd *cobra.Command, args []string) error {
+-			return cmdutil.FlagErrorf("--account SSH routing is not supported; use HTTPS")
+-		},
+-	})
++	cmd.AddCommand(authIdentityCmd.NewCmdIdentity(f))
++	cmd.AddCommand(authIdentityCmd.NewCmdResetExperiment(f))
++	// --account selects a saved API/HTTPS credential, not an SSH key. The helper
++	// requires an explicit identity SSH route rather than silently using an unrelated key.
++	cmd.AddCommand(authIdentityCmd.NewCmdGitSSH(f))
++	cmd.AddCommand(authUseCmd.NewCmdUse(f, nil))
+ 
+ 	cmdutil.DisableTelemetryForSubcommands(cmd)
+ 
+diff --git a/pkg/cmd/auth/gitcredential/gist_identity_test.go b/pkg/cmd/auth/gitcredential/gist_identity_test.go
+index dfc28450a99..a57a8b6594d 100644
+--- a/pkg/cmd/auth/gitcredential/gist_identity_test.go
++++ b/pkg/cmd/auth/gitcredential/gist_identity_test.go
+@@ -1,13 +1,61 @@
+ package login
+ 
+ import (
++	"fmt"
+ 	"os"
++	"os/exec"
++	"path/filepath"
+ 	"runtime"
+ 	"testing"
+ 
++	ghconfig "github.com/cli/cli/v2/internal/config"
++	"github.com/cli/cli/v2/internal/identity"
++	"github.com/cli/cli/v2/pkg/iostreams"
++	"github.com/stretchr/testify/assert"
+ 	"github.com/stretchr/testify/require"
+ )
+ 
++func TestGistCredentialHelperUsesCanonicalHostIdentity(t *testing.T) {
++	isolateIdentityCredential(t)
++	// Given an Alice repository identity while Bob is globally active
++	home := t.TempDir()
++	require.NoError(t, exec.Command("git", "init", "-q", home).Run())
++	t.Chdir(home)
++	t.Chdir(home)
++	t.Setenv("HOME", home)
++	t.Setenv("GH_CONFIG_DIR", filepath.Join(home, "gh"))
++	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(home, ".gitconfig"))
++	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
++	for _, key := range []string{"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GIT_SSH_COMMAND", "GIT_SSH", "GIT_SSH_VARIANT", "GH_IDENTITY_ACCOUNT", "GH_IDENTITY_HOST"} {
++		t.Setenv(key, "")
++	}
++	s, err := identity.Open()
++	require.NoError(t, err)
++	require.NoError(t, s.Save(identity.Identity{Name: "work", Host: "github.com", Account: "alice"}, false))
++	require.NoError(t, s.Bind(identity.Binding{Identity: "work", Directory: home}, "/path/to/gh"))
++	ios, input, output, _ := iostreams.Test()
++	fmt.Fprint(input, "protocol=https\nhost=gist.github.com\npath=bob/123.git\n\n")
++	opts := &CredentialOptions{IO: ios, Operation: "get", Config: func() (config, error) {
++		return ghconfig.NewMockConfigFromString(`
++hosts:
++  github.com:
++    user: bob
++    oauth_token: bob-token
++    users:
++      alice:
++        oauth_token: alice-token
++`).Authentication(), nil
++	}}
++
++	// When Git requests a gist credential through the same helper
++	err = helperRun(opts)
++
++	// Then the canonical host identity is selected, not the other active account
++	require.NoError(t, err)
++	assert.Contains(t, output.String(), "username=alice\n")
++	assert.NotContains(t, output.String(), "bob-token")
++}
++
+ func isolateIdentityCredential(t *testing.T) {
+ 	t.Helper()
+ 	if runtime.GOOS == "windows" {
+diff --git a/pkg/cmd/auth/gitcredential/gist_production_test.go b/pkg/cmd/auth/gitcredential/gist_production_test.go
+index e18ae6d52cf..c6cc742a857 100644
+--- a/pkg/cmd/auth/gitcredential/gist_production_test.go
++++ b/pkg/cmd/auth/gitcredential/gist_production_test.go
+@@ -3,11 +3,13 @@ package login
+ import (
+ 	"bytes"
+ 	"fmt"
++	"os/exec"
+ 	"path/filepath"
+ 	"testing"
+ 
+ 	ghconfig "github.com/cli/cli/v2/internal/config"
+ 	"github.com/cli/cli/v2/internal/gh"
++	"github.com/cli/cli/v2/internal/identity"
+ 	"github.com/cli/cli/v2/pkg/cmdutil"
+ 	"github.com/cli/cli/v2/pkg/iostreams"
+ 	"github.com/stretchr/testify/assert"
+@@ -29,6 +31,8 @@ hosts:
+         oauth_token: bob-token
+ `+extraHost)
+ 	home := t.TempDir()
++	require.NoError(t, exec.Command("git", "init", "-q", home).Run())
++	t.Chdir(home)
+ 	t.Chdir(home)
+ 	t.Setenv("HOME", home)
+ 	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(home, ".gitconfig"))
+@@ -36,13 +40,32 @@ hosts:
+ 	for _, key := range []string{"GIT_SSH", "GIT_SSH_COMMAND", "GIT_SSH_VARIANT", "GH_IDENTITY_ACCOUNT", "GH_IDENTITY_HOST"} {
+ 		t.Setenv(key, "")
+ 	}
++	s, err := identity.Open()
++	require.NoError(t, err)
++	require.NoError(t, s.Save(identity.Identity{Name: "work", Host: "github.com", Account: "alice"}, false))
++	require.NoError(t, s.Bind(identity.Binding{Identity: "work", Directory: home}, "/path/to/gh"))
+ 	ios, input, output, _ := iostreams.Test()
+ 	fmt.Fprint(input, "protocol=https\nhost=gist.github.com\npath=alice/123.git\n\n")
+ 	return cfg, &cmdutil.Factory{IOStreams: ios, Config: func() (gh.Config, error) { return cfg, nil }}, output
+ }
+ 
++func TestGistWithProductionConfigUsesPersistentIdentity(t *testing.T) {
++	// Given real config normalization, Bob's active host token, and Alice's repository identity
++	_, f, output := productionGistFixture(t, "")
++	cmd := NewCmdCredential(f, nil)
++	cmd.SetArgs([]string{"get"})
++
++	// When Git requests a gist credential
++	require.NoError(t, cmd.Execute())
++
++	// Then normalization cannot mistake Bob's parent-host token for an independent gist credential
++	assert.Contains(t, output.String(), "username=alice\n")
++	assert.Contains(t, output.String(), "alice-token")
++	assert.NotContains(t, output.String(), "bob-token")
++}
++
+ func TestGistWithProductionConfigHonorsExplicitAccount(t *testing.T) {
+-	// Given saved accounts and an explicit Bob override on the parent host
++	// Given Alice's repository identity and an explicit Bob override on the parent host
+ 	_, f, output := productionGistFixture(t, "")
+ 	t.Setenv("GH_IDENTITY_HOST", "github.com")
+ 	t.Setenv("GH_IDENTITY_ACCOUNT", "bob")
+@@ -58,7 +81,7 @@ func TestGistWithProductionConfigHonorsExplicitAccount(t *testing.T) {
+ }
+ 
+ func TestGistWithIndependentRegistrationUsesExactHostAccount(t *testing.T) {
+-	// Given a genuinely separate gist registration in addition to parent-host accounts
++	// Given a genuinely separate gist registration in addition to parent-host identities
+ 	_, f, output := productionGistFixture(t, `
+   gist.github.com:
+     user: carol
+@@ -78,3 +101,20 @@ func TestGistWithIndependentRegistrationUsesExactHostAccount(t *testing.T) {
+ 	assert.Contains(t, output.String(), "gist-token")
+ 	assert.NotContains(t, output.String(), "bob-token")
+ }
++
++func TestGistMissingBoundAccountCannotFallBackToActiveAccount(t *testing.T) {
++	// Given Alice's retained identity after her credential is removed from the isolated config/keyring
++	cfg, f, output := productionGistFixture(t, "")
++	require.NoError(t, cfg.Authentication().Logout("github.com", "alice"))
++	cmd := NewCmdCredential(f, nil)
++	cmd.SilenceErrors, cmd.SilenceUsage = true, true
++	cmd.SetArgs([]string{"get"})
++
++	// When Git requests a gist credential
++	err := cmd.Execute()
++
++	// Then it fails closed rather than authenticating as Bob
++	require.ErrorContains(t, err, "is not signed in")
++	assert.Contains(t, output.String(), "quit=1")
++	assert.NotContains(t, output.String(), "bob-token")
++}
+diff --git a/pkg/cmd/auth/gitcredential/identity_test.go b/pkg/cmd/auth/gitcredential/identity_test.go
+new file mode 100644
+index 00000000000..d3367a5adac
+--- /dev/null
++++ b/pkg/cmd/auth/gitcredential/identity_test.go
+@@ -0,0 +1,60 @@
++package login
++
++import (
++	"fmt"
++	"os/exec"
++	"path/filepath"
++	"strings"
++	"testing"
++
++	ghconfig "github.com/cli/cli/v2/internal/config"
++	"github.com/cli/cli/v2/internal/identity"
++	"github.com/cli/cli/v2/pkg/iostreams"
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++)
++
++func TestCredentialHelperUsesBoundAccountRatherThanActiveAccount(t *testing.T) {
++	isolateIdentityCredential(t)
++	// Given an repository identity selecting alice while bob is globally active
++	home := t.TempDir()
++	require.NoError(t, exec.Command("git", "init", "-q", home).Run())
++	t.Chdir(home)
++	t.Setenv("HOME", home)
++	t.Setenv("GH_CONFIG_DIR", filepath.Join(home, "gh"))
++	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(home, ".gitconfig"))
++	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
++	t.Setenv("GH_TOKEN", "")
++	t.Setenv("GITHUB_TOKEN", "")
++	t.Setenv("GIT_SSH_COMMAND", "")
++	t.Setenv("GIT_SSH", "")
++	s, err := identity.Open()
++	require.NoError(t, err)
++	require.NoError(t, s.Save(identity.Identity{Name: "work", Host: "github.com", Account: "alice"}, false))
++	require.NoError(t, s.Bind(identity.Binding{Identity: "work", Directory: home}, "/path/to/gh"))
++	ios, input, output, _ := iostreams.Test()
++	fmt.Fprint(input, "protocol=https\nhost=github.com\npath=company/project.git\n\n")
++	opts := &CredentialOptions{
++		IO: ios, Operation: "get",
++		Config: func() (config, error) {
++			return ghconfig.NewMockConfigFromString(`
++hosts:
++  github.com:
++    user: bob
++    oauth_token: bob-token
++    users:
++      alice:
++        oauth_token: alice-token
++`).Authentication(), nil
++		},
++	}
++
++	// When Git requests an HTTPS credential
++	err = helperRun(opts)
++
++	// Then the helper returns alice's credential, never bob's
++	require.NoError(t, err)
++	assert.Contains(t, output.String(), "username=alice\n")
++	assert.Contains(t, output.String(), strings.Join([]string{"password=", "alice-token\n"}, ""))
++	assert.NotContains(t, output.String(), "bob-token")
++}
+diff --git a/pkg/cmd/auth/identity/delete.go b/pkg/cmd/auth/identity/delete.go
+new file mode 100644
+index 00000000000..ddc87d8fa35
+--- /dev/null
++++ b/pkg/cmd/auth/identity/delete.go
+@@ -0,0 +1,149 @@
++package identity
++
++import (
++	"fmt"
++	"os"
++	"path/filepath"
++	"slices"
++
++	"github.com/MakeNowJust/heredoc"
++	"github.com/cli/cli/v2/internal/identity"
++	"github.com/cli/cli/v2/pkg/cmdutil"
++	"github.com/spf13/cobra"
++)
++
++func newDeleteCommand(f *cmdutil.Factory) *cobra.Command {
++	return newCleanupCommand(f, false)
++}
++
++// NewCmdResetExperiment exposes the existing all-identity cleanup as a return-to-stable command.
++func NewCmdResetExperiment(f *cmdutil.Factory) *cobra.Command {
++	cmd := newCleanupCommand(f, true)
++	cmd.Use = "reset-multi-account-experiment"
++	cmd.Short = "Remove experimental identities and bindings before returning to stable gh"
++	cmd.Args = cobra.NoArgs
++	cmd.Long = heredoc.Doc(`
++		Remove all experimental identities and bindings across hosts in this gh configuration,
++		including the managed Git include, credential helpers, and SSH dispatcher.
++
++		Run this with the prerelease before replacing or uninstalling it. An older gh cannot
++		run the experimental SSH dispatcher left by an active binding.
++
++		Saved accounts, credentials, SSH keys, and your own Git/SSH settings are kept.
++		This is the same cleanup as gh auth identity delete --all. It does not uninstall gh.
++		Retype "all identities" to confirm, or pass --confirm to skip the prompt.
++		Noninteractive use requires --confirm. It is safe to repeat after successful cleanup.
++	`)
++	cmd.Example = heredoc.Doc(`
++		$ gh auth reset-multi-account-experiment
++		$ gh auth reset-multi-account-experiment --confirm
++	`)
++	return cmd
++}
++
++func newCleanupCommand(f *cmdutil.Factory, reset bool) *cobra.Command {
++	all, confirm := reset, false
++	cmd := &cobra.Command{
++		Use: "delete [<name>]", Short: "Delete identities and their repository choices",
++		Long: heredoc.Doc(`
++			Delete an identity and every repository choice that uses it.
++			Deleting a repository choice affects its main checkout and all linked worktrees.
++			Use --all to delete all identities and bindings across all hosts in this gh configuration.
++
++			Locations affected by deletion use any remaining applicable identity, or your usual
++			gh and Git settings. When no bindings remain, gh removes its managed Git include,
++			credential-helper settings, and SSH dispatcher settings.
++
++			Saved accounts, credentials, SSH keys, and your own Git and SSH settings are not deleted.
++			You will be asked to retype the identity name, or "all identities" with --all.
++			Use --confirm to confirm without prompting; it is required when not running interactively.
++		`),
++		Example: heredoc.Doc(`
++			$ gh auth identity delete work
++			$ gh auth identity delete work --confirm
++			$ gh auth identity delete --all --confirm
++		`),
++		Args: cobra.MaximumNArgs(1),
++		RunE: func(cmd *cobra.Command, args []string) error {
++			if all && len(args) > 0 {
++				return cmdutil.FlagErrorf("specify an identity name or --all, but not both")
++			}
++			if !all && len(args) == 0 {
++				return cmdutil.FlagErrorf("specify an identity name, or use --all to delete all identities and bindings")
++			}
++			if !confirm && !f.IOStreams.CanPrompt() {
++				return cmdutil.FlagErrorf("--confirm required when not running interactively")
++			}
++			s, err := identity.Open()
++			if err != nil {
++				return err
++			}
++			names := args
++			confirmation := "all identities"
++			if all {
++				ids, err := s.List()
++				if err != nil {
++					return err
++				}
++				names = make([]string, 0, len(ids))
++				for _, id := range ids {
++					names = append(names, id.Name)
++				}
++			} else {
++				if _, err := s.Load(names[0]); err != nil {
++					return err
++				}
++				confirmation = names[0]
++			}
++			bindings, err := s.Bindings()
++			if err != nil {
++				return err
++			}
++			if all {
++				fmt.Fprintln(f.IOStreams.ErrOut, "Delete all identities and bindings?")
++				for _, name := range names {
++					fmt.Fprintf(f.IOStreams.ErrOut, "  Identity %q\n", name)
++				}
++			} else {
++				fmt.Fprintf(f.IOStreams.ErrOut, "Delete identity %q and its bindings?\n", names[0])
++			}
++			for _, b := range bindings {
++				if all || slices.Contains(names, b.Identity) {
++					scope := "repository " + filepath.Dir(b.Repository) + " (all worktrees)"
++
++					fmt.Fprintf(f.IOStreams.ErrOut, "  Remove binding for %s on %s\n", scope, b.Host)
++				}
++			}
++			fmt.Fprintln(f.IOStreams.ErrOut, "Repository files, commits, and worktrees will not be deleted.")
++			fmt.Fprintln(f.IOStreams.ErrOut, "Affected locations will use remaining identity choices or your usual gh and Git settings.")
++			fmt.Fprintln(f.IOStreams.ErrOut, "Saved accounts, credentials, and SSH keys will not be removed.")
++			if !confirm {
++				fmt.Fprintln(f.IOStreams.ErrOut, "Nothing is deleted until you confirm.")
++				if err := f.Prompter.ConfirmDeletion(confirmation); err != nil {
++					return err
++				}
++			}
++			executable := f.ExecutablePath
++			if executable == "" {
++				executable, err = os.Executable()
++				if err != nil {
++					return err
++				}
++			}
++			if err := s.DeleteIdentities(names, all, executable); err != nil {
++				return err
++			}
++			if all {
++				fmt.Fprintln(f.IOStreams.ErrOut, "Deleted all identities and bindings.")
++			} else {
++				fmt.Fprintf(f.IOStreams.ErrOut, "Deleted identity %q and its bindings.\n", names[0])
++			}
++			return nil
++		},
++	}
++	if !reset {
++		cmd.Flags().BoolVar(&all, "all", false, "Delete all identities and bindings for all hosts")
++	}
++	cmd.Flags().BoolVar(&confirm, "confirm", false, "Confirm deletion without prompting")
++	return cmd
++}
+diff --git a/pkg/cmd/auth/identity/delete_test.go b/pkg/cmd/auth/identity/delete_test.go
+new file mode 100644
+index 00000000000..be864e173cc
+--- /dev/null
++++ b/pkg/cmd/auth/identity/delete_test.go
+@@ -0,0 +1,214 @@
++package identity
++
++import (
++	"os"
++	"os/exec"
++	"path/filepath"
++	"testing"
++
++	identities "github.com/cli/cli/v2/internal/identity"
++	"github.com/cli/cli/v2/internal/prompter"
++	"github.com/cli/cli/v2/pkg/cmdutil"
++	"github.com/cli/cli/v2/pkg/iostreams"
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++)
++
++func TestResetExperimentUsesTypedAllIdentitiesConfirmation(t *testing.T) {
++	// Given an existing experiment and an interactive user who cancels
++	f := identityFactory(t)
++	t.Chdir(t.TempDir())
++	require.NoError(t, exec.Command("git", "init", "-q").Run())
++	runIdentity(t, f, "create", "work", "--account", "alice")
++	f.IOStreams.SetStdinTTY(true)
++	f.IOStreams.SetStdoutTTY(true)
++	f.Prompter = &prompter.PrompterMock{ConfirmDeletionFunc: func(value string) error {
++		assert.Equal(t, "all identities", value)
++		return cmdutil.CancelError
++	}}
++	cmd := NewCmdResetExperiment(f)
++	cmd.SilenceErrors, cmd.SilenceUsage = true, true
++
++	// When the dedicated reset command asks for the same confirmation as bulk deletion
++	err := cmd.Execute()
++
++	// Then cancellation preserves the identity
++	require.ErrorIs(t, err, cmdutil.CancelError)
++	assert.Contains(t, runIdentity(t, f, "view", "work"), `"name": "work"`)
++}
++
++func TestDeleteIdentityRequiresExplicitConfirmation(t *testing.T) {
++	// Given a saved identity and no terminal
++	f := identityFactory(t)
++	t.Chdir(t.TempDir())
++	require.NoError(t, exec.Command("git", "init", "-q").Run())
++	runIdentity(t, f, "create", "work", "--account", "alice")
++	cmd := NewCmdIdentity(f)
++	cmd.SilenceErrors, cmd.SilenceUsage = true, true
++	cmd.SetArgs([]string{"delete", "work"})
++
++	// When deletion has not been confirmed
++	err := cmd.Execute()
++
++	// Then it fails without removing the identity
++	require.ErrorContains(t, err, "--confirm required when not running interactively")
++	assert.Contains(t, runIdentity(t, f, "view", "work"), `"name": "work"`)
++}
++
++func TestDeleteIdentityCascadesOnlyItsOwnBindings(t *testing.T) {
++	// Given two identities bound to different repositories
++	f := identityFactory(t)
++	t.Chdir(t.TempDir())
++	require.NoError(t, exec.Command("git", "init", "-q").Run())
++	s, err := identities.Open()
++	require.NoError(t, err)
++	for _, name := range []string{"work", "personal"} {
++		require.NoError(t, exec.Command("git", "init", "-q", name).Run())
++		runIdentity(t, f, "create", name, "--account", "alice")
++		require.NoError(t, s.Bind(identities.Binding{Identity: name, Directory: name}, f.ExecutablePath))
++	}
++	ios, _, stdout, stderr := iostreams.Test()
++	ios.SetStdinTTY(true)
++	ios.SetStdoutTTY(true)
++	f.IOStreams = ios
++	f.Prompter = &prompter.PrompterMock{ConfirmDeletionFunc: func(value string) error {
++		assert.Equal(t, "work", value)
++		assert.Contains(t, stderr.String(), "repository ")
++		assert.Contains(t, stderr.String(), "Saved accounts")
++		return nil
++	}}
++	cmd := NewCmdIdentity(f)
++	cmd.SetArgs([]string{"delete", "work"})
++
++	// When the user retypes the identity name to confirm deletion
++	require.NoError(t, cmd.Execute())
++
++	// Then only that identity and its bindings are removed
++	assert.Empty(t, stdout.String())
++	assert.NoFileExists(t, s.IdentityPath("work"))
++	assert.FileExists(t, s.IdentityPath("personal"))
++	bindings, err := s.Bindings()
++	require.NoError(t, err)
++	require.Len(t, bindings, 1)
++	assert.Equal(t, "personal", bindings[0].Identity)
++}
++
++func TestDeleteAllCleansManagedIntegrationAndPreservesUserSettings(t *testing.T) {
++	// Given managed identities alongside unrelated configuration and files
++	f := identityFactory(t)
++	t.Chdir(t.TempDir())
++	require.NoError(t, exec.Command("git", "init", "-q").Run())
++	s, err := identities.Open()
++	require.NoError(t, err)
++	global := os.Getenv("GIT_CONFIG_GLOBAL")
++	require.NoError(t, os.WriteFile(global, []byte("[user]\nname = Original\n"), 0o600))
++	runIdentity(t, f, "create", "work", "--account", "alice")
++	require.NoError(t, s.Bind(identities.Binding{Identity: "work", Directory: "."}, f.ExecutablePath))
++	unrelated := filepath.Join(s.Dir, "notes.txt")
++	require.NoError(t, os.WriteFile(unrelated, []byte("keep me"), 0o600))
++	beforeUser, err := f.Config()
++	require.NoError(t, err)
++	users := beforeUser.Authentication().UsersForHost("github.com")
++
++	// When all identity configuration is explicitly deleted
++	runIdentity(t, f, "delete", "--all", "--confirm")
++
++	// Then no managed integration remains, and the user's original settings/accounts survive
++	assert.JSONEq(t, "[]", runIdentity(t, f, "list"))
++	assert.NoFileExists(t, filepath.Join(filepath.Dir(s.Dir), "auth.gitconfig"))
++	assert.FileExists(t, unrelated)
++	out, err := exec.Command("git", "config", "--global", "--get", "user.name").Output()
++	require.NoError(t, err)
++	assert.Equal(t, "Original\n", string(out))
++	out, err = exec.Command("git", "config", "--global", "--get-all", "include.path").Output()
++	require.Error(t, err)
++	assert.Empty(t, string(out))
++	assert.Equal(t, users, beforeUser.Authentication().UsersForHost("github.com"))
++	runIdentity(t, f, "delete", "--all", "--confirm")
++}
++
++func TestCancelledIdentityDeletionKeepsBindings(t *testing.T) {
++	// Given a bound identity and a cancelled typed confirmation
++	f := identityFactory(t)
++	t.Chdir(t.TempDir())
++	require.NoError(t, exec.Command("git", "init", "-q").Run())
++	s, err := identities.Open()
++	require.NoError(t, err)
++	runIdentity(t, f, "create", "work", "--account", "alice")
++	require.NoError(t, s.Bind(identities.Binding{Identity: "work", Directory: "."}, f.ExecutablePath))
++	f.IOStreams.SetStdinTTY(true)
++	f.IOStreams.SetStdoutTTY(true)
++	f.Prompter = &prompter.PrompterMock{ConfirmDeletionFunc: func(value string) error {
++		assert.Equal(t, "all identities", value)
++		return cmdutil.CancelError
++	}}
++	cmd := NewCmdIdentity(f)
++	cmd.SilenceErrors, cmd.SilenceUsage = true, true
++	cmd.SetArgs([]string{"delete", "--all"})
++
++	// When the user does not confirm
++	err = cmd.Execute()
++
++	// Then no identity or scope is removed
++	require.ErrorIs(t, err, cmdutil.CancelError)
++	assert.FileExists(t, s.IdentityPath("work"))
++	bindings, err := s.Bindings()
++	require.NoError(t, err)
++	assert.Len(t, bindings, 1)
++}
++
++func TestDeleteAllRollsBackWhenGitConfigurationIsLocked(t *testing.T) {
++	// Given a bound identity and a Git config locked by another writer
++	f := identityFactory(t)
++	t.Chdir(t.TempDir())
++	require.NoError(t, exec.Command("git", "init", "-q").Run())
++	s, err := identities.Open()
++	require.NoError(t, err)
++	runIdentity(t, f, "create", "work", "--account", "alice")
++	require.NoError(t, s.Bind(identities.Binding{Identity: "work", Directory: "."}, f.ExecutablePath))
++	require.NoError(t, os.WriteFile(os.Getenv("GIT_CONFIG_GLOBAL")+".lock", nil, 0o600))
++	cmd := NewCmdIdentity(f)
++	cmd.SilenceErrors, cmd.SilenceUsage = true, true
++	cmd.SetArgs([]string{"delete", "--all", "--confirm"})
++
++	// When cleanup cannot detach the managed Git include
++	err = cmd.Execute()
++
++	// Then the identity and its configuration are restored, not left pointing at a missing file
++	require.ErrorContains(t, err, "could not lock config file")
++	assert.FileExists(t, s.IdentityPath("work"))
++	assert.FileExists(t, filepath.Join(filepath.Dir(s.Dir), "auth.gitconfig"))
++	bindings, err := s.Bindings()
++	require.NoError(t, err)
++	require.Len(t, bindings, 1)
++	assert.Equal(t, "work", bindings[0].Identity)
++}
++
++func TestDeleteAllPreservesUnexpectedSettingsInManagedFile(t *testing.T) {
++	// Given someone has added unrelated settings to the generated file
++	f := identityFactory(t)
++	t.Chdir(t.TempDir())
++	require.NoError(t, exec.Command("git", "init", "-q").Run())
++	s, err := identities.Open()
++	require.NoError(t, err)
++	runIdentity(t, f, "create", "work", "--account", "alice")
++	require.NoError(t, s.Bind(identities.Binding{Identity: "work", Directory: "."}, f.ExecutablePath))
++	path := filepath.Join(filepath.Dir(s.Dir), "auth.gitconfig")
++	contents, err := os.ReadFile(path)
++	require.NoError(t, err)
++	contents = append(contents, []byte("\n[user]\nname = Do not delete\n")...)
++	require.NoError(t, os.WriteFile(path, contents, 0o600))
++	cmd := NewCmdIdentity(f)
++	cmd.SilenceUsage, cmd.SilenceErrors = true, true
++	cmd.SetArgs([]string{"delete", "--all", "--confirm"})
++
++	// When bulk cleanup encounters settings it does not own
++	err = cmd.Execute()
++
++	// Then it explains the conflict and keeps the configuration and identity intact
++	require.ErrorContains(t, err, "settings not managed by gh")
++	after, err := os.ReadFile(path)
++	require.NoError(t, err)
++	assert.Equal(t, contents, after)
++	assert.FileExists(t, s.IdentityPath("work"))
++}
+diff --git a/pkg/cmd/auth/identity/identity.go b/pkg/cmd/auth/identity/identity.go
+new file mode 100644
+index 00000000000..b5aae963130
+--- /dev/null
++++ b/pkg/cmd/auth/identity/identity.go
+@@ -0,0 +1,144 @@
++package identity
++
++import (
++	"encoding/json"
++	"fmt"
++	"slices"
++	"strings"
++
++	"github.com/MakeNowJust/heredoc"
++	"github.com/cli/cli/v2/internal/identity"
++	"github.com/cli/cli/v2/pkg/cmdutil"
++	"github.com/spf13/cobra"
++)
++
++// NewCmdIdentity manages experimental reusable account and Git identities.
++func NewCmdIdentity(f *cmdutil.Factory) *cobra.Command {
++	cmd := &cobra.Command{
++		Use:   "identity <command>",
++		Short: "Manage reusable account and SSH identities (experimental)",
++		Long: heredoc.Doc(`
++			Save reusable account and Git settings under an identity name.
++			An identity references an account you have already signed in to; it does not store tokens.
++			Several identities can use the same account with different SSH aliases.
++			Creating an identity does not apply it. Use gh auth use NAME to choose where it applies.
++			Use these commands to edit generated files; manual edits are unsupported.
++			An SSH alias is a connection name. gh does not check which account its key signs in as.
++		`),
++	}
++	cmd.AddCommand(newSaveCommand(f, false), newSaveCommand(f, true))
++	cmd.AddCommand(&cobra.Command{
++		Use: "list", Short: "List reusable identities as JSON", Args: cobra.NoArgs,
++		RunE: func(cmd *cobra.Command, args []string) error {
++			s, err := identity.Open()
++			if err != nil {
++				return err
++			}
++			ids, err := s.List()
++			if err != nil {
++				return err
++			}
++
++			return writeJSON(f, ids)
++		},
++	})
++	cmd.AddCommand(&cobra.Command{
++		Use: "view <name>", Short: "Show an identity as JSON", Args: cobra.ExactArgs(1),
++		RunE: func(cmd *cobra.Command, args []string) error {
++			s, err := identity.Open()
++			if err != nil {
++				return err
++			}
++			id, err := s.Load(args[0])
++			if err != nil {
++				return err
++			}
++
++			return writeJSON(f, id)
++		},
++	})
++	cmd.AddCommand(newDeleteCommand(f))
++	return cmd
++}
++
++func newSaveCommand(f *cmdutil.Factory, edit bool) *cobra.Command {
++	id := identity.Identity{}
++	verb := "create"
++	if edit {
++		verb = "edit"
++	}
++	cmd := &cobra.Command{
++		Use: verb + " <name>", Short: strings.ToUpper(verb[:1]) + verb[1:] + " a reusable identity", Args: cobra.ExactArgs(1),
++		RunE: func(cmd *cobra.Command, args []string) error {
++			s, err := identity.Open()
++			if err != nil {
++				return err
++			}
++			if edit {
++				existing, err := s.Load(args[0])
++				if err != nil {
++					return err
++				}
++				if !cmd.Flags().Changed("account") {
++					id.Account = existing.Account
++				}
++				id.Host = existing.Host
++				if !cmd.Flags().Changed("ssh-host") {
++					id.SSHHost = existing.SSHHost
++				}
++
++			}
++
++			id.Name = args[0]
++			id.Host = strings.ToLower(id.Host)
++			cfg, err := f.Config()
++			if err != nil {
++				return err
++			}
++			users := cfg.Authentication().UsersForHost(id.Host)
++			if !slices.ContainsFunc(users, func(user string) bool { return strings.EqualFold(user, id.Account) }) {
++				return fmt.Errorf("account %q is not saved for %s; run 'gh auth login --hostname %s' first", id.Account, id.Host, id.Host)
++			}
++			for _, user := range users {
++				if strings.EqualFold(user, id.Account) {
++					id.Account = user
++				}
++			}
++			if err := s.Save(id, edit); err != nil {
++				return err
++			}
++			fmt.Fprintf(f.IOStreams.ErrOut, "Saved identity %q in %s\n", id.Name, s.IdentityPath(id.Name))
++
++			if id.SSHHost != "" {
++				fmt.Fprintf(f.IOStreams.ErrOut, "SSH host %q is a connection name; gh has not checked which account its key signs in as.\n", id.SSHHost)
++			}
++			return nil
++		},
++	}
++	cmd.Long = "Save a reference to an existing saved account. Creating does not apply it. Use gh auth use NAME in a checkout to select its repository family. SSH aliases are connection names, not account verification. Editing preserves omitted values and cannot change the hostname."
++	cmd.Example = "$ gh auth identity " + verb + " work --account alice --ssh-host github-work"
++	cmd.Flags().StringVar(&id.Account, "account", "", "Saved account `login` to reference (required when creating)")
++	if !edit {
++		cmd.Flags().StringVar(&id.Host, "hostname", "github.com", "GitHub hostname")
++		_ = cmd.MarkFlagRequired("account")
++	}
++	cmd.Flags().StringVar(&id.SSHHost, "ssh-host", "", "SSH host or alias `name` to use; existence and account are not checked")
++
++	return cmd
++}
++
++func writeJSON(f *cmdutil.Factory, value any) error {
++	encoder := json.NewEncoder(f.IOStreams.Out)
++	encoder.SetIndent("", "  ")
++	return encoder.Encode(value)
++}
++
++// NewCmdGitSSH is Git's persistent SSH dispatcher for independently invoked commands.
++func NewCmdGitSSH(f *cmdutil.Factory) *cobra.Command {
++	return &cobra.Command{
++		Use: "git-ssh", Hidden: true, DisableFlagParsing: true,
++		RunE: func(cmd *cobra.Command, args []string) error {
++			return runSSH(f, args)
++		},
++	}
++}
+diff --git a/pkg/cmd/auth/identity/identity_test.go b/pkg/cmd/auth/identity/identity_test.go
+new file mode 100644
+index 00000000000..2957405012e
+--- /dev/null
++++ b/pkg/cmd/auth/identity/identity_test.go
+@@ -0,0 +1,49 @@
++package identity
++
++import (
++	"os"
++	"path/filepath"
++	"runtime"
++	"testing"
++
++	"github.com/cli/cli/v2/internal/config"
++	"github.com/cli/cli/v2/internal/gh"
++	"github.com/cli/cli/v2/pkg/cmdutil"
++	"github.com/cli/cli/v2/pkg/iostreams"
++	"github.com/stretchr/testify/require"
++)
++
++func identityFactory(t *testing.T) *cmdutil.Factory {
++	t.Helper()
++	if runtime.GOOS == "windows" {
++		t.Skip("persistent identities are not supported on Windows")
++	}
++	home := t.TempDir()
++	t.Setenv("HOME", home)
++	t.Setenv("GH_CONFIG_DIR", filepath.Join(home, "gh"))
++	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(home, ".gitconfig"))
++	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
++	for _, name := range []string{"GH_TOKEN", "GITHUB_TOKEN", "GIT_CONFIG", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS", "GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_SSH", "GIT_SSH_COMMAND"} {
++		t.Setenv(name, "")
++		require.NoError(t, os.Unsetenv(name))
++	}
++	cfg := config.NewMockConfigFromString("hosts:\n  github.com:\n    users:\n      alice:\n")
++	ios, _, _, _ := iostreams.Test()
++	return &cmdutil.Factory{
++		IOStreams: ios, ExecutablePath: "/path/to/gh",
++		Config: func() (gh.Config, error) { return cfg, nil },
++	}
++}
++
++func runIdentity(t *testing.T, f *cmdutil.Factory, args ...string) string {
++	t.Helper()
++	ios, _, stdout, stderr := iostreams.Test()
++	factory := *f
++	factory.IOStreams = ios
++	cmd := NewCmdIdentity(&factory)
++	cmd.SetOut(stderr)
++	cmd.SetErr(stderr)
++	cmd.SetArgs(args)
++	require.NoError(t, cmd.Execute(), "%s", stderr.String())
++	return stdout.String()
++}
+diff --git a/pkg/cmd/auth/identity/ssh.go b/pkg/cmd/auth/identity/ssh.go
+new file mode 100644
+index 00000000000..0f225a94e83
+--- /dev/null
++++ b/pkg/cmd/auth/identity/ssh.go
+@@ -0,0 +1,37 @@
++package identity
++
++import (
++	"os"
++	"os/exec"
++
++	"github.com/cli/cli/v2/internal/identity"
++	"github.com/cli/cli/v2/pkg/cmdutil"
++	"github.com/cli/safeexec"
++)
++
++func runSSH(f *cmdutil.Factory, args []string) error {
++	s, err := identity.Open()
++	if err != nil {
++		return err
++	}
++	account, host := os.Getenv("GH_IDENTITY_ACCOUNT"), os.Getenv("GH_IDENTITY_HOST")
++	command, err := s.SSHCommand("", account != "")
++	if err != nil {
++		return err
++	}
++	if account != "" {
++		args, err = s.SSHArgumentsForAccount(args, "", host, account)
++	} else {
++		args, err = s.SSHArguments(args, "")
++	}
++	if err != nil {
++		return err
++	}
++	ssh, err := safeexec.LookPath(command[0])
++	if err != nil {
++		return err
++	}
++	child := exec.Command(ssh, append(command[1:], args...)...)
++	child.Stdin, child.Stdout, child.Stderr = f.IOStreams.In, f.IOStreams.Out, f.IOStreams.ErrOut
++	return child.Run()
++}
+diff --git a/pkg/cmd/auth/use/use.go b/pkg/cmd/auth/use/use.go
+new file mode 100644
+index 00000000000..9af47f225e1
+--- /dev/null
++++ b/pkg/cmd/auth/use/use.go
+@@ -0,0 +1,134 @@
++package use
++
++import (
++	"encoding/json"
++	"fmt"
++	"os"
++	"slices"
++	"strings"
++
++	"github.com/cli/cli/v2/internal/identity"
++	"github.com/cli/cli/v2/pkg/cmdutil"
++	"github.com/spf13/cobra"
++)
++
++// UseOptions holds the scope and identity chosen by auth use.
++type UseOptions struct {
++	Identity  string
++	Directory string
++	Host      string
++	Unset     bool
++	List      bool
++	View      bool
++}
++
++// NewCmdUse applies or removes an experimental persistent identity binding.
++func NewCmdUse(f *cmdutil.Factory, runF func(*UseOptions) error) *cobra.Command {
++	opts := &UseOptions{}
++	cmd := &cobra.Command{
++		Use: "use [identity]", Short: "Use an identity for this repository and its worktrees (experimental)",
++		Long: "Choose an identity for this repository's main checkout and all current and future worktrees. This installs a global Git include, HTTPS helper, and SSH dispatcher. Keep this gh executable in place until the last choice is removed. --view shows the selected identity as JSON; --list shows choices; --unset removes this scope. The saved active account and credentials remain unchanged. Token environment variables block persistent identity use. Unsupported SSH setups, non-gh credential helpers, bare repositories, submodules, and separate Git directories are refused without changing configuration.",
++		Args: cobra.MaximumNArgs(1),
++		RunE: func(cmd *cobra.Command, args []string) error {
++			if len(args) > 0 {
++				opts.Identity = args[0]
++			}
++			if opts.View && (opts.Identity != "" || opts.Unset || opts.List) {
++				return cmdutil.FlagErrorf("--view cannot be combined with an identity, --unset, --list")
++			}
++			if opts.Identity != "" && cmd.Flags().Changed("hostname") {
++				return cmdutil.FlagErrorf("--hostname is for inspection or --unset; a named identity supplies its own hostname")
++			}
++
++			if opts.Host == "" {
++				return cmdutil.FlagErrorf("--hostname cannot be empty")
++			}
++
++			if opts.Unset && opts.Identity != "" {
++				return cmdutil.FlagErrorf("--unset does not take an identity")
++			}
++
++			if opts.List && (opts.Identity != "" || opts.Unset || opts.Directory != "") {
++				return cmdutil.FlagErrorf("--list cannot be combined with a binding scope or identity")
++			}
++			if runF != nil {
++				return runF(opts)
++			}
++			return useRun(f, opts)
++		},
++	}
++	cmd.Flags().StringVar(&opts.Directory, "directory", "", "Target checkout; selects its whole repository family")
++	cmd.Flags().StringVar(&opts.Host, "hostname", "github.com", "Host to inspect or unset; does not follow GH_HOST or remotes (a named identity supplies its host)")
++	cmd.Flags().BoolVar(&opts.Unset, "unset", false, "Remove this repository-family choice")
++	cmd.Flags().BoolVar(&opts.List, "list", false, "Show all bindings as JSON")
++	cmd.Flags().BoolVar(&opts.View, "view", false, "Show the selected identity as JSON (the default with no arguments)")
++	return cmd
++}
++
++func useRun(f *cmdutil.Factory, opts *UseOptions) error {
++	opts.Host = strings.ToLower(opts.Host)
++	s, err := identity.Open()
++	if err != nil {
++		return err
++	}
++	encoder := json.NewEncoder(f.IOStreams.Out)
++	encoder.SetIndent("", "  ")
++
++	if opts.List {
++		bindings, err := s.Bindings()
++		if err != nil {
++			return err
++		}
++
++		return encoder.Encode(bindings)
++	}
++	if opts.Identity == "" && !opts.Unset {
++		id, err := s.Resolve(opts.Host, "", opts.Directory)
++		if err != nil {
++			return err
++		}
++
++		return encoder.Encode(id)
++	}
++	binding := identity.Binding{
++		Identity: opts.Identity, Host: opts.Host, Directory: opts.Directory,
++	}
++	executable := f.ExecutablePath
++	if executable == "" {
++		executable, err = os.Executable()
++		if err != nil {
++			return err
++		}
++	}
++	if opts.Unset {
++		if err := s.Unbind(binding, executable); err != nil {
++			return err
++		}
++		fmt.Fprintln(f.IOStreams.ErrOut, "Removed identity binding")
++		return nil
++	}
++	id, err := s.Load(opts.Identity)
++	if err != nil {
++		return err
++	}
++	if err := identity.CheckEnvironment(id.Host); err != nil {
++		return err
++	}
++	cfg, err := f.Config()
++	if err != nil {
++		return err
++	}
++	if !slices.ContainsFunc(cfg.Authentication().UsersForHost(id.Host), func(user string) bool { return strings.EqualFold(user, id.Account) }) {
++		return fmt.Errorf("account %q is no longer saved for %s; run 'gh auth login --hostname %s'", id.Account, id.Host, id.Host)
++	}
++	if err := s.Bind(binding, executable); err != nil {
++		return err
++	}
++	fmt.Fprintf(f.IOStreams.ErrOut, "Using identity %q (%s on %s) for this scope\n", id.Name, id.Account, id.Host)
++	fmt.Fprintln(f.IOStreams.ErrOut, "Git now uses gh's global include, HTTPS helper and SSH dispatcher. Keep this executable in place until the last choice is removed.")
++	fmt.Fprintln(f.IOStreams.ErrOut, "Your saved active account is unchanged.")
++	if id.SSHHost != "" {
++		fmt.Fprintf(f.IOStreams.ErrOut, "SSH host %q is a connection name; gh has not checked which account its key signs in as.\n", id.SSHHost)
++	}
++	return nil
++}
+diff --git a/pkg/cmd/auth/use/use_test.go b/pkg/cmd/auth/use/use_test.go
+new file mode 100644
+index 00000000000..03f4a7bf784
+--- /dev/null
++++ b/pkg/cmd/auth/use/use_test.go
+@@ -0,0 +1,113 @@
++package use
++
++import (
++	"os"
++	"path/filepath"
++	"runtime"
++	"strings"
++	"testing"
++
++	"github.com/cli/cli/v2/internal/config"
++	"github.com/cli/cli/v2/internal/gh"
++	"github.com/cli/cli/v2/internal/identity"
++	"github.com/cli/cli/v2/pkg/cmdutil"
++	"github.com/cli/cli/v2/pkg/iostreams"
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++)
++
++func TestUseDoesNotSaveScopeWhenGlobalIncludeCannotBeInstalled(t *testing.T) {
++	// Given a saved identity and another writer holding Git's global config lock
++	store, f := useFixture(t)
++	require.NoError(t, store.Save(identity.Identity{Name: "work", Host: "github.com", Account: "alice"}, false))
++	t.Chdir(t.TempDir())
++	familyGit(t, ".", "init", "-q")
++	require.NoError(t, os.WriteFile(os.Getenv("GIT_CONFIG_GLOBAL")+".lock", nil, 0o600))
++	cmd := NewCmdUse(f, nil)
++	cmd.SetOut(f.IOStreams.ErrOut)
++	cmd.SetErr(f.IOStreams.ErrOut)
++	cmd.SetArgs([]string{"work"})
++
++	// When applying the identity without being able to configure independently invoked Git
++	err := cmd.Execute()
++
++	// Then setup fails and no gh-only scope is left behind
++	require.ErrorContains(t, err, "could not lock config file")
++	assert.NoFileExists(t, filepath.Join(os.Getenv("GH_CONFIG_DIR"), "auth.gitconfig"))
++	choices, err := store.Bindings()
++	require.NoError(t, err)
++	assert.Empty(t, choices)
++}
++
++func useFixture(t *testing.T) (*identity.Store, *cmdutil.Factory) {
++	t.Helper()
++	if runtime.GOOS == "windows" {
++		t.Skip("persistent identities are not supported on Windows")
++	}
++	home := t.TempDir()
++	t.Setenv("HOME", home)
++	t.Setenv("GH_CONFIG_DIR", filepath.Join(home, "gh"))
++	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(home, ".gitconfig"))
++	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
++	for _, key := range []string{"GH_TOKEN", "GITHUB_TOKEN", "GIT_DIR", "GIT_WORK_TREE", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_SSH_VARIANT", "GH_IDENTITY_SSH_COMMAND", "GH_IDENTITY_SSH_VARIANT", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"} {
++		t.Setenv(key, "")
++		require.NoError(t, os.Unsetenv(key))
++	}
++	cfg := config.NewMockConfigFromString("hosts:\n  github.com:\n    users:\n      alice:\n      bob:\n")
++	ios, _, _, _ := iostreams.Test()
++	store, err := identity.Open()
++	require.NoError(t, err)
++	return store, &cmdutil.Factory{
++		IOStreams: ios, ExecutablePath: "/path/to/gh",
++		Config: func() (gh.Config, error) { return cfg, nil },
++	}
++}
++
++func runUse(t *testing.T, f *cmdutil.Factory, args ...string) string {
++	t.Helper()
++	ios, _, stdout, stderr := iostreams.Test()
++	factory := *f
++	factory.IOStreams = ios
++	cmd := NewCmdUse(&factory, nil)
++	cmd.SetOut(stderr)
++	cmd.SetErr(stderr)
++	cmd.SetArgs(args)
++	require.NoError(t, cmd.Execute(), "%s", stderr.String())
++	return stdout.String()
++}
++
++func TestUseViewShowsSelectionWithoutChangingIt(t *testing.T) {
++	// Given an identity selected for a directory
++	store, f := useFixture(t)
++	require.NoError(t, store.Save(identity.Identity{Name: "work", Host: "github.com", Account: "alice"}, false))
++	t.Chdir(t.TempDir())
++	familyGit(t, ".", "init", "-q")
++	runUse(t, f, "work")
++
++	// When explicitly viewing the selection
++	output := runUse(t, f, "--view")
++
++	// Then it is the same JSON as bare auth use, and later inspection is unchanged
++	assert.JSONEq(t, `{"name":"work","host":"github.com","account":"alice"}`, output)
++	assert.Equal(t, output, runUse(t, f))
++}
++
++func TestUseViewRejectsOtherActions(t *testing.T) {
++	for _, args := range [][]string{
++		{"--view", "work"}, {"--view", "--unset"}, {"--view", "--list"},
++	} {
++		t.Run(strings.Join(args, " "), func(t *testing.T) {
++			// Given an explicit view combined with another action
++			ios, _, _, _ := iostreams.Test()
++			cmd := NewCmdUse(&cmdutil.Factory{IOStreams: ios}, nil)
++			cmd.SetArgs(args)
++			cmd.SilenceUsage, cmd.SilenceErrors = true, true
++
++			// When parsing that command
++			err := cmd.Execute()
++
++			// Then it fails before reading or changing configuration
++			require.ErrorContains(t, err, "--view cannot be combined")
++		})
++	}
++}
+diff --git a/pkg/cmd/auth/use/worktrees_test.go b/pkg/cmd/auth/use/worktrees_test.go
+new file mode 100644
+index 00000000000..591227be58c
+--- /dev/null
++++ b/pkg/cmd/auth/use/worktrees_test.go
+@@ -0,0 +1,98 @@
++package use
++
++import (
++	"encoding/json"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"strings"
++	"testing"
++
++	"github.com/cli/cli/v2/internal/identity"
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++)
++
++func familyGit(t *testing.T, dir string, args ...string) string {
++	t.Helper()
++	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
++	out, err := cmd.CombinedOutput()
++	require.NoError(t, err, "%s", out)
++	return strings.TrimSpace(string(out))
++}
++
++func TestUseFromAnyWorktreeSelectsEntireRepositoryFamily(t *testing.T) {
++	// Given a main checkout, an external linked worktree, and an unrelated nested repository
++	s, f := useFixture(t)
++	main := t.TempDir()
++	familyGit(t, main, "init", "-q")
++	familyGit(t, main, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
++		"-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "initial")
++	linked := filepath.Join(t.TempDir(), "linked")
++	familyGit(t, main, "worktree", "add", "--detach", linked)
++	nested := filepath.Join(main, "unrelated")
++	require.NoError(t, os.Mkdir(nested, 0o700))
++	familyGit(t, nested, "init", "-q")
++	for _, id := range []identity.Identity{
++		{Name: "work", Host: "github.com", Account: "alice", SSHHost: "work-ssh"},
++		{Name: "personal", Host: "github.com", Account: "bob", SSHHost: "personal-ssh"},
++	} {
++		require.NoError(t, s.Save(id, false))
++	}
++	t.Chdir(linked)
++
++	// When choosing an identity from a linked worktree and creating another worktree later
++	runUse(t, f, "work")
++	future := filepath.Join(t.TempDir(), "future")
++	familyGit(t, main, "worktree", "add", "--detach", future)
++
++	// Then all family members share gh selection and SSH routing, but not the nested repo
++	for _, dir := range []string{main, linked, future} {
++		var selected identity.Identity
++		require.NoError(t, json.Unmarshal([]byte(runUse(t, f, "--view", "--directory", dir)), &selected))
++		assert.Equal(t, "work", selected.Name)
++		args, err := s.SSHArguments([]string{"git@github.com", "git-upload-pack 'company/project.git'"}, dir)
++		require.NoError(t, err)
++		assert.Equal(t, "git@work-ssh", args[0])
++	}
++	assert.JSONEq(t, "null", runUse(t, f, "--view", "--directory", nested))
++	var bindings []map[string]any
++	require.NoError(t, json.Unmarshal([]byte(runUse(t, f, "--list")), &bindings))
++	require.Len(t, bindings, 1)
++	assert.Equal(t, familyGit(t, main, "rev-parse", "--path-format=absolute", "--git-common-dir"), bindings[0]["repository"])
++	assert.NotContains(t, bindings[0], "directory")
++
++	// When applying from another family member, the same choice changes everywhere
++	runUse(t, f, "personal", "--directory", future)
++	require.NoError(t, json.Unmarshal([]byte(runUse(t, f, "--list")), &bindings))
++	require.Len(t, bindings, 1)
++	runUse(t, f, "--unset", "--directory", main)
++	assert.JSONEq(t, "null", runUse(t, f, "--view", "--directory", linked))
++}
++
++func TestFamilySetupDoesNotIgnoreSiblingSSHOverride(t *testing.T) {
++	// Given a sibling worktree with an explicit SSH command that bypasses the global dispatcher
++	s, f := useFixture(t)
++	main := t.TempDir()
++	familyGit(t, main, "init", "-q")
++	familyGit(t, main, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "initial")
++	linked := filepath.Join(t.TempDir(), "linked")
++	familyGit(t, main, "worktree", "add", "--detach", linked)
++	familyGit(t, main, "config", "extensions.worktreeConfig", "true")
++	familyGit(t, linked, "config", "--worktree", "core.sshCommand", "ssh -F sibling.conf")
++	require.NoError(t, s.Save(identity.Identity{Name: "work", Host: "github.com", Account: "alice", SSHHost: "work-ssh"}, false))
++	t.Chdir(main)
++	cmd := NewCmdUse(f, nil)
++	cmd.SilenceUsage, cmd.SilenceErrors = true, true
++	cmd.SetArgs([]string{"work"})
++
++	// When setup from the main checkout would claim to configure the entire family
++	err := cmd.Execute()
++
++	// Then it fails without changing sibling settings or installing a misleading family choice
++	require.ErrorContains(t, err, "core.sshCommand")
++	assert.Equal(t, "ssh -F sibling.conf", familyGit(t, linked, "config", "core.sshCommand"))
++	bindings, err := s.Bindings()
++	require.NoError(t, err)
++	assert.Empty(t, bindings)
++}
+diff --git a/pkg/cmd/root/account.go b/pkg/cmd/root/account.go
+index 181ce3e0039..f5d72d4bb71 100644
+--- a/pkg/cmd/root/account.go
++++ b/pkg/cmd/root/account.go
+@@ -42,7 +42,7 @@ func applyAccountOverride(cmd *cobra.Command, args []string, cfg gh.Config, f *c
+ 	// It's pretty gross that we have to look up "auth" by name.
+ 	// It really couples this logic to the command structure rather than having a more explicit way to identify the auth command.
+ 	if isAuthCommand(cmd) {
+-		return cmdutil.FlagErrorf("--account selects authentication for commands such as 'gh pr create --account <login>', not auth management; see this auth command's --help")
++		return cmdutil.FlagErrorf("--account selects authentication for commands such as 'gh pr create --account <login>', not auth management; use 'gh auth use <identity>' for a persistent choice or see this auth command's --help")
+ 	}
+ 	host, err := accountHostname(cmd, args, cfg, f)
+ 	if err != nil {
+diff --git a/pkg/cmd/root/account_git_test.go b/pkg/cmd/root/account_git_test.go
+index 9cd8b1c43c1..2159bc47155 100644
+--- a/pkg/cmd/root/account_git_test.go
++++ b/pkg/cmd/root/account_git_test.go
+@@ -74,26 +74,6 @@ func accountGit(t *testing.T, dir string, args ...string) string {
+ 	return strings.TrimSpace(string(out))
+ }
+ 
+-func TestAccountSSHRefusesUndeclaredRouting(t *testing.T) {
+-	// Given an account selection without SSH identity routing support
+-	isolateAccountCommand(t)
+-	cfg, _ := config.NewIsolatedTestConfig(t, accountGitConfig)
+-	ios, _, stdout, stderr := iostreams.Test()
+-	cmd := authcmd.NewCmdAuth(&cmdutil.Factory{
+-		IOStreams: ios, Config: func() (gh.Config, error) { return cfg, nil },
+-	}, &telemetry.NoOpService{})
+-	cmd.SetArgs([]string{"git-ssh", "git@github.com", "git-upload-pack 'company/project.git'"})
+-	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+-
+-	// When Git invokes the account-specific SSH command
+-	err := cmd.Execute()
+-
+-	// Then no unrelated SSH key is used and the refusal is explicit
+-	require.ErrorContains(t, err, "--account SSH routing is not supported")
+-	assert.Empty(t, stdout.String())
+-	assert.Empty(t, stderr.String())
+-}
+-
+ func TestAccountOverridePRCreatePushesBeforeCreatingPR(t *testing.T) {
+ 	if runtime.GOOS == "windows" {
+ 		t.Skip("uses Unix executable fixtures for Git's SSH and HTTPS protocols")
+@@ -103,6 +83,7 @@ func TestAccountOverridePRCreatePushesBeforeCreatingPR(t *testing.T) {
+ 		url      string
+ 	}{
+ 		{protocol: "https", url: "https://github.com/bob/project.git"},
++		{protocol: "ssh", url: "git@github.com:bob/project.git"},
+ 	} {
+ 		t.Run(tt.protocol, func(t *testing.T) {
+ 			// Given an unpublished branch with alice attribution, but a repository only bob can push to
+@@ -165,6 +146,13 @@ done
+ 			accountGit(t, repo, "config", "user.name", "Alice")
+ 			accountGit(t, repo, "config", "user.email", "alice@example.invalid")
+ 			accountGit(t, repo, "config", "credential.https://github.com.username", "alice")
++			store, err := identity.Open()
++			require.NoError(t, err)
++			require.NoError(t, store.Save(identity.Identity{
++				Name: "alice", Host: "github.com", Account: "alice", SSHHost: "alice-ssh",
++			}, false))
++			require.NoError(t, store.Save(identity.Identity{Name: "bob", Host: "github.com", Account: "bob", SSHHost: "bob-ssh"}, false))
++			require.NoError(t, store.Bind(identity.Binding{Identity: "alice", Directory: repo}, helper))
+ 			accountGit(t, repo, "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "base")
+ 			accountGit(t, repo, "push", "-q", bare, "main")
+ 			accountGit(t, repo, "remote", "add", "origin", tt.url)
+@@ -218,7 +206,12 @@ done
+ 			assert.Contains(t, string(evidence), "bob")
+ 			assert.Equal(t, before, accountGit(t, repo, "log", "-1", "--format=%H|%an|%ae|%cn|%ce"))
+ 			assert.Equal(t, tt.url, accountGit(t, repo, "config", "remote.origin.url"))
+-
++			selected, err := store.Resolve("github.com", "bob", repo)
++			require.NoError(t, err)
++			assert.Equal(t, "alice", selected.Account)
++			mainSelected, err := store.Resolve("github.com", "bob", mainRepo)
++			require.NoError(t, err)
++			assert.Equal(t, "alice", mainSelected.Account)
+ 		})
+ 	}
+ }
+diff --git a/pkg/cmd/root/reset_experiment_test.go b/pkg/cmd/root/reset_experiment_test.go
+new file mode 100644
+index 00000000000..cc320a215ba
+--- /dev/null
++++ b/pkg/cmd/root/reset_experiment_test.go
+@@ -0,0 +1,56 @@
++package root
++
++import (
++	"os"
++	"path/filepath"
++	"testing"
++
++	"github.com/cli/cli/v2/internal/config"
++	"github.com/cli/cli/v2/internal/identity"
++	"github.com/cli/cli/v2/pkg/httpmock"
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++)
++
++func TestResetExperimentDetachesIntegrationWithoutDeletingAccounts(t *testing.T) {
++	// Given a configured experiment in an isolated home
++	isolateAccountCommand(t)
++	cfg, _ := config.NewIsolatedTestConfig(t, accountGitConfig)
++	s, err := identity.Open()
++	require.NoError(t, err)
++	require.NoError(t, s.Save(identity.Identity{Name: "work", Host: "github.com", Account: "alice"}, false))
++	repo := t.TempDir()
++	accountGit(t, repo, "init", "-q")
++	require.NoError(t, s.Bind(identity.Binding{Identity: "work", Directory: repo}, "/path/to/gh"))
++	reg := &httpmock.Registry{}
++	defer reg.Verify(t)
++	cmd, stdout, stderr := accountCommand(t, cfg, reg)
++	cmd.SetArgs([]string{"auth", "reset-multi-account-experiment", "--confirm"})
++
++	// When resetting through the discoverable auth command
++	err = cmd.Execute()
++
++	// Then identities/bindings/integration are removed but ordinary saved accounts remain
++	require.NoError(t, err, "%s", stderr.String())
++	assert.Empty(t, stdout.String())
++	assert.NoFileExists(t, filepath.Join(os.Getenv("GH_CONFIG_DIR"), "auth.gitconfig"))
++	assert.NoFileExists(t, s.IdentityPath("work"))
++	assert.Equal(t, []string{"alice", "bob"}, cfg.Authentication().UsersForHost("github.com"))
++	bindings, err := s.Bindings()
++	require.NoError(t, err)
++	assert.Empty(t, bindings)
++}
++
++func TestResetExperimentRequiresNoninteractiveConfirmation(t *testing.T) {
++	// Given a noninteractive invocation without confirmation
++	isolateAccountCommand(t)
++	cfg, _ := config.NewIsolatedTestConfig(t, accountGitConfig)
++	cmd, _, _ := accountCommand(t, cfg, &httpmock.Registry{})
++	cmd.SetArgs([]string{"auth", "reset-multi-account-experiment"})
++
++	// When the reset command executes
++	err := cmd.Execute()
++
++	// Then it requires the explicit deletion-confirmation flag
++	require.ErrorContains(t, err, "--confirm required when not running interactively")
++}
+diff --git a/script/multiaccount-review/02-repository.sh b/script/multiaccount-review/02-repository.sh
+new file mode 100755
+index 00000000000..df50e2fd426
+--- /dev/null
++++ b/script/multiaccount-review/02-repository.sh
+@@ -0,0 +1,139 @@
++#!/bin/bash
++# Offline repository-family identity scenario. No installed-gh fallback.
++# From a checkout (the fixture defaults to a new private directory under HOME):
++# env -i HOME="$HOME" PATH=/usr/bin:/bin:/opt/homebrew/bin \
++#   /bin/bash script/multiaccount-review/02-repository.sh --gh "$PWD/bin/gh"
++# For individual phases, set SCENARIO_ROOT to the same explicit absolute path.
++# Setup requires a nonexistent path; later phases require its ownership marker.
++set -euo pipefail
++umask 077
++if [[ ${1:-} == --gh ]]; then GH_SCENARIO_BINARY=$2; shift 2; fi
++: "${GH_SCENARIO_BINARY:?usage: 02-repository.sh --gh /absolute/gh [phase]}"
++[[ $GH_SCENARIO_BINARY = /* && -x $GH_SCENARIO_BINARY ]] || exit 2
++phase=${1:-all}
++if [[ ${SCENARIO_ISOLATED:-} != yes ]]; then
++  [[ -z ${GH_TOKEN:-}${GITHUB_TOKEN:-}${GH_ENTERPRISE_TOKEN:-}${GITHUB_ENTERPRISE_TOKEN:-} ]] ||
++    { echo "Refusing an inherited credential environment" >&2; exit 2; }
++  [[ -x /usr/bin/sandbox-exec ]] || { echo "macOS sandbox-exec is required for keyring isolation" >&2; exit 2; }
++  if [[ -z ${SCENARIO_ROOT:-} && $phase != setup && $phase != all ]]; then
++    echo "Individual phases require an explicit SCENARIO_ROOT" >&2
++    exit 2
++  fi
++  root=${SCENARIO_ROOT:-"${HOME:?HOME or SCENARIO_ROOT is required}/.gh-repository-review-$$"}
++  [[ $root = /* ]] || exit 2
++  parent=$(cd -P "$(dirname "$root")" && pwd)
++  leaf=$(basename "$root")
++  [[ $leaf != . && $leaf != .. && $leaf != / ]] || exit 2
++  root="$parent/$leaf"
++  checkout=$(/usr/bin/env -i PATH=/usr/bin:/bin GIT_CONFIG_NOSYSTEM=1 \
++    GIT_CONFIG_GLOBAL=/dev/null /usr/bin/git rev-parse --show-toplevel 2>/dev/null || true)
++  if [[ -n $checkout && ( $root == "$checkout" || $root == "$checkout/"* ) ]]; then
++    echo "Refusing a fixture root inside the current checkout" >&2
++    exit 2
++  fi
++  if [[ $phase == setup || $phase == all ]]; then
++    [[ ! -e $root && ! -L $root ]] || { echo "Setup requires a new fixture root" >&2; exit 2; }
++    mkdir -m 700 "$root"
++    printf '%s\n' gh-repository-review-v2 >"$root/.scenario-owner"
++  else
++    [[ -d $root && ! -L $root && -O $root &&
++       $(/usr/bin/stat -f '%Lp' "$root") == 700 &&
++       -f $root/.scenario-owner && ! -L $root/.scenario-owner &&
++       -O $root/.scenario-owner && $(cat "$root/.scenario-owner") == gh-repository-review-v2 ]] ||
++      { echo "Refusing a fixture root without private ownership and its scenario marker" >&2; exit 2; }
++  fi
++  policy='(version 1)(allow default)(deny network*)(deny process-exec (literal "/usr/bin/security"))(deny file-read* file-write* (regex #"/Library/Keychains(/|$)"))(deny mach-lookup (global-name "com.apple.securityd") (global-name "com.apple.secd"))'
++  exec /usr/bin/sandbox-exec -p "$policy" /usr/bin/env -i PATH=/usr/bin:/bin:/opt/homebrew/bin HOME="$root/home" \
++    SCENARIO_ISOLATED=yes SCENARIO_ROOT="$root" GH_SCENARIO_BINARY="$GH_SCENARIO_BINARY" \
++    /bin/bash "$0" "$phase"
++fi
++root=$SCENARIO_ROOT
++mkdir -p "$root"/{home,config,cache,tmp,tools,empty-templates}
++export HOME="$root/home" GH_CONFIG_DIR="$root/config" XDG_CONFIG_HOME="$root/config"
++export XDG_CACHE_HOME="$root/cache" TMPDIR="$root/tmp" GIT_CONFIG_GLOBAL="$root/gitconfig"
++export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_SYSTEM=/dev/null GIT_TEMPLATE_DIR="$root/empty-templates"
++export GH_HOST=accounts.invalid GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1
++export GH_NO_EXTENSION_UPDATE_NOTIFIER=1 GH_PAGER=cat PAGER=cat GIT_TERMINAL_PROMPT=0
++export PATH="$root/tools:/usr/bin:/bin:/opt/homebrew/bin"
++gh=$GH_SCENARIO_BINARY
++inspect() {
++  local directory=$1 label=$2 expected=$3 result
++  result=$(cd "$directory" && "$gh" auth use --view --hostname accounts.invalid)
++  printf '%s: %s\n' "$label" "$result"
++  if [[ $expected == bob ]]; then
++    [[ $result == *'"name": "work"'* && $result == *'"account": "bob"'* ]]
++  else
++    [[ $result == null ]]
++  fi
++}
++case "$phase" in
++  setup)
++    [[ ! -e $root/fixture-ready ]] || exit 2
++    cat >"$root/config/hosts.yml" <<'EOF'
++accounts.invalid:
++    user: alice
++    oauth_token: fixture-alice-not-a-real-token
++    git_protocol: https
++    users:
++        alice:
++            oauth_token: fixture-alice-not-a-real-token
++        bob:
++            oauth_token: fixture-bob-not-a-real-token
++EOF
++    cp "$root/config/hosts.yml" "$root/hosts-before"
++    : >"$root/gitconfig"
++    printf '#!/bin/sh\nexit 1\n' >"$root/tools/security"
++    cp "$root/tools/security" "$root/tools/secret-tool"
++    printf '#!/bin/sh\necho "Network disabled in this fixture" >&2\nexit 97\n' >"$root/tools/ssh"
++    chmod 700 "$root/tools/"*
++    git init -q --initial-branch=main "$root/repo"
++    git -C "$root/repo" -c user.name=Fixture -c user.email=fixture@example.invalid \
++      -c commit.gpgsign=false commit --allow-empty -qm baseline
++    git -C "$root/repo" worktree add -q -b review "$root/linked"
++    git init -q --initial-branch=main "$root/repo/nested"
++    # Creation reports an absolute storage path. Keep that real output off-screen
++    # and display the product's structured readback instead.
++    "$gh" auth identity create work --account bob --hostname accounts.invalid \
++      >"$root/create.stdout" 2>"$root/create.stderr"
++    echo "Created a reusable identity (fake saved accounts; no network):"
++    "$gh" auth identity view work
++    inspect "$root/repo" "Main checkout before selection" null
++    echo "Prepared a linked worktree and an unrelated nested repository."
++    touch "$root/fixture-ready"
++    ;;
++  exercise)
++    cd "$root/repo"
++    exec "$gh" auth use work
++    ;;
++  validate)
++    inspect "$root/repo" "Main checkout" bob
++    inspect "$root/linked" "Linked worktree" bob
++    inspect "$root/repo/nested" "Unrelated nested repository" null
++    cmp "$root/hosts-before" "$root/config/hosts.yml"
++    echo "PASS: both worktrees select bob; nested repository inherits nothing."
++    echo "PASS: saved active account and credentials remain unchanged."
++    ;;
++  cleanup-setup)
++    inspect "$root/linked" "Existing linked-worktree selection" bob
++    echo "The final binding will be removed from the linked worktree."
++    ;;
++  cleanup-exercise)
++    cd "$root/linked"
++    exec "$gh" auth use --unset --hostname accounts.invalid
++    ;;
++  cleanup-validate)
++    inspect "$root/repo" "Main checkout after removal" null
++    inspect "$root/linked" "Linked worktree after removal" null
++    [[ -z $(git config --global --list) ]]
++    cmp "$root/hosts-before" "$root/config/hosts.yml"
++    "$gh" auth identity view work
++    echo "PASS: global Git wiring is gone; reusable identity and accounts remain."
++    ;;
++  all)
++    for step in setup exercise validate cleanup-setup cleanup-exercise cleanup-validate; do
++      /bin/bash "$0" "$step"
++    done
++    echo "Replay passed; isolated fixture retained in the chosen root."
++    ;;
++  *) echo "Unknown phase" >&2; exit 2 ;;
++esac

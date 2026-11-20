@@ -31,7 +31,8 @@ scoring:
   smoothing: 5
   maxPerRule: 40
 ci:
-  failBelow: 95
+  # Scores are whole numbers; 96 is the first score strictly above 95.
+  failBelow: 96
   format: json
 telemetry:
   enabled: true

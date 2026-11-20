@@ -8,6 +8,11 @@ export default defineConfig({
   server: {
     // Dev: run `cargo run -- demo --no-open`, then start Vite with
     // ASIDE_URL set to the `url` from its `session.started` event.
-    proxy: process.env.ASIDE_URL ? { '/api': process.env.ASIDE_URL } : undefined,
+    proxy: process.env.ASIDE_URL
+      ? {
+          '/api': { target: process.env.ASIDE_URL, changeOrigin: true },
+          '/auth': { target: process.env.ASIDE_URL, changeOrigin: true },
+        }
+      : undefined,
   },
 });

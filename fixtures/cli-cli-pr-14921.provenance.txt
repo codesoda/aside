@@ -1,0 +1,11 @@
+Source: https://github.com/cli/cli/pull/14921
+Captured: 2026-11-20T11:40:19Z (read-only gh CLI)
+Diff: gh pr diff 14921 -R cli/cli
+Metadata: gh pr view 14921 -R cli/cli --json number,title,body,author,url,state,isDraft,baseRefName,baseRefOid,headRefName,headRefOid
+Repository ID: gh api repos/cli/cli/pulls/14921 (base.repo.id = 212613049)
+Base SHA: 2cbd5515878542a5125ec412045d2b3e365659b6
+Head SHA: a123f7736e7aaabe56b4662de888cc2bff1338a6
+Diff SHA-256: 66363e81e6586b0c76a804d6aa52ad6b3055c386cc7ffe7549700f8c49c6d20f
+Metadata SHA-256: f507c06f852fedea8685e9389f5ba0b80667d821f6c69da152dad4362d4ec19b
+Captured diff includes all 33 changed files (3,790 lines, 138,913 bytes); no file or hunk truncation.
+The snapshot(1) variant is synthetic, not another GitHub revision: it changes one added line in git/client.go and advances the final head SHA nibble to 7. It exists to exercise refresh behavior offline.
