@@ -154,8 +154,9 @@ pub struct IssueComment {
 }
 
 /// A review thread as fetched from GitHub, before it is merged into local state.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct GithubThread {
     pub node_id: String,
     pub path: String,
@@ -168,10 +169,12 @@ pub struct GithubThread {
     pub comments: Vec<GithubComment>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct GithubComment {
     pub node_id: String,
+    #[ts(type = "number | null")]
     pub database_id: Option<i64>,
     pub author: String,
     pub body: String,

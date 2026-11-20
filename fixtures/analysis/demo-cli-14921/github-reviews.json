@@ -1,0 +1,32 @@
+[
+  {
+    "author": "coderabbitai[bot]",
+    "state": "COMMENTED",
+    "body": "_(synthetic fixture)_ Walkthrough: identity routing adds SSH and credential binding. 1 actionable comment.",
+    "submittedAt": "2026-11-20T10:05:00Z"
+  },
+  {
+    "author": "synthetic-reviewer",
+    "state": "CHANGES_REQUESTED",
+    "body": "_(synthetic fixture)_ Please document the platform limits of the review scripts.",
+    "submittedAt": "2026-11-20T09:00:00Z"
+  },
+  {
+    "author": "synthetic-approver",
+    "state": "APPROVED",
+    "body": "",
+    "submittedAt": "2026-11-20T11:00:00Z"
+  },
+  {
+    "author": "ghost",
+    "state": "DISMISSED",
+    "body": "_(synthetic fixture)_ Superseded review from a deleted account.",
+    "submittedAt": "2026-11-18T12:00:00Z"
+  },
+  {
+    "author": "synthetic-maintainer",
+    "state": "PENDING",
+    "body": "",
+    "submittedAt": null
+  }
+]

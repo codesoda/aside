@@ -1,0 +1,815 @@
+[
+  {
+    "schemaVersion": 1,
+    "id": "find_d9d23af04c5656a14f171c853ae123ad1875f146c18461c820b8f465f5626961",
+    "repositoryId": "212613049",
+    "prNumber": 14921,
+    "observedSnapshotId": "snap_e4a72c20c7c58ea23877d89c5f448deb84eb1ee15dc1eb0142e1d6fcfee90da4",
+    "source": {
+      "kind": "github_review_thread",
+      "providerId": "github.import",
+      "runId": "run_db26b2b69660ff491b5418a6225c727d3621d5da9b6570abc150ad4962ae2209",
+      "ruleId": null,
+      "ruleVersion": null,
+      "modelId": null,
+      "modelRevision": null,
+      "promptVersion": null,
+      "native": {
+        "host": "github.com",
+        "repositoryId": "212613049",
+        "sourceKind": "github_review_thread",
+        "key": {
+          "kind": "upstream",
+          "value": "PRRT_synthBot0001"
+        },
+        "externalUrl": "https://github.com/cli/cli/pull/14921#discussion_r9000000101"
+      },
+      "githubActor": "coderabbitai[bot]"
+    },
+    "assertionKind": "external_feedback",
+    "kinds": [
+      "correctness"
+    ],
+    "title": "SSH variant compared without normalisation",
+    "body": "Imported CodeRabbit review thread (3 comments).",
+    "rationale": "Reported by coderabbitai[bot] on GitHub; Aside has not verified it.",
+    "suggestedAction": null,
+    "anchor": {
+      "kind": "diff_line",
+      "fileId": "f_562acc67de25c534",
+      "currentPath": "internal/identity/ssh_command.go",
+      "previousPath": null,
+      "entityId": null,
+      "side": "RIGHT",
+      "line": 24,
+      "startLine": null,
+      "originalLine": 24,
+      "originalStartLine": null,
+      "commitSha": "a123f7736e7aaabe56b4662de888cc2bff1338a6",
+      "originalCommitSha": null,
+      "diffDigest": "cf17c7af27e51770ce3057fcff61619c6288161ba7700b075574ee802b794794",
+      "githubThreadId": "PRRT_synthBot0001",
+      "externalUrl": "https://github.com/cli/cli/pull/14921#discussion_r9000000101"
+    },
+    "relatedAnchors": [],
+    "evidenceIds": [],
+    "attention": {
+      "level": "investigate",
+      "score": null,
+      "scoreVersion": null,
+      "reasons": [
+        "unresolved_external_thread"
+      ]
+    },
+    "severity": {
+      "normalized": "unknown",
+      "original": null
+    },
+    "confidence": null,
+    "validation": {
+      "status": "not_required",
+      "method": null,
+      "validatedAt": null,
+      "note": null
+    },
+    "applicability": "current_exact",
+    "sourceStatus": "open",
+    "firstSeenAt": "2026-11-20T11:40:19Z",
+    "lastSeenAt": "2026-11-20T11:40:19Z",
+    "externalUrl": "https://github.com/cli/cli/pull/14921#discussion_r9000000101",
+    "parentFindingId": null,
+    "correlationGroupId": "corr_ssh_variant_normalisation",
+    "extensions": {}
+  },
+  {
+    "schemaVersion": 1,
+    "id": "find_62c6d866878ad66b0a4dfff4231fdf6218f9091ef81f7e3bea6c8ce2c83754ae",
+    "repositoryId": "212613049",
+    "prNumber": 14921,
+    "observedSnapshotId": "snap_e4a72c20c7c58ea23877d89c5f448deb84eb1ee15dc1eb0142e1d6fcfee90da4",
+    "source": {
+      "kind": "aside_static",
+      "providerId": "aside.static",
+      "runId": "run_8888a8df5fc1a3760892ea8620d7c1670ca52b3273c7c34fe1b76a157e2cde64",
+      "ruleId": "aside.static.env_passthrough",
+      "ruleVersion": "1.0.0",
+      "modelId": null,
+      "modelRevision": null,
+      "promptVersion": null,
+      "native": null,
+      "githubActor": null
+    },
+    "assertionKind": "attention_hint",
+    "kinds": [
+      "security",
+      "correctness"
+    ],
+    "title": "Environment-selected SSH variant is compared verbatim",
+    "body": "An environment variable chooses the SSH variant and is compared without normalisation.",
+    "rationale": "Rule env_passthrough@1 matched an os.Getenv value compared to a literal on line 24.",
+    "suggestedAction": "Check how the value is normalised before comparison.",
+    "anchor": {
+      "kind": "diff_range",
+      "fileId": "f_562acc67de25c534",
+      "currentPath": "internal/identity/ssh_command.go",
+      "previousPath": null,
+      "entityId": null,
+      "side": "RIGHT",
+      "line": 25,
+      "startLine": 24,
+      "originalLine": null,
+      "originalStartLine": null,
+      "commitSha": "a123f7736e7aaabe56b4662de888cc2bff1338a6",
+      "originalCommitSha": null,
+      "diffDigest": "cf17c7af27e51770ce3057fcff61619c6288161ba7700b075574ee802b794794",
+      "githubThreadId": null,
+      "externalUrl": null
+    },
+    "relatedAnchors": [],
+    "evidenceIds": [
+      "ev_2074e8f3eb1f901ad4282d5f4e55a622006beab778af846e976d1b634299a6e4"
+    ],
+    "attention": {
+      "level": "high",
+      "score": 72.0,
+      "scoreVersion": "aside-attention-v1",
+      "reasons": [
+        "security_sensitive_path",
+        "external_feedback_on_same_lines"
+      ]
+    },
+    "severity": {
+      "normalized": "unknown",
+      "original": null
+    },
+    "confidence": null,
+    "validation": {
+      "status": "not_required",
+      "method": null,
+      "validatedAt": null,
+      "note": null
+    },
+    "applicability": "current_exact",
+    "sourceStatus": "unknown",
+    "firstSeenAt": "2026-11-20T11:40:19Z",
+    "lastSeenAt": "2026-11-20T11:40:19Z",
+    "externalUrl": null,
+    "parentFindingId": null,
+    "correlationGroupId": "corr_ssh_variant_normalisation",
+    "extensions": {
+      "idKey": {
+        "claimIdentity": "env-compared-verbatim:GIT_SSH_VARIANT",
+        "subjectIdentity": "file:internal/identity/ssh_command.go",
+        "codeFingerprint": "cf17c7af27e51770ce3057fcff61619c6288161ba7700b075574ee802b794794"
+      }
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "id": "find_d11044ee0b73c3af98cfbfd9e949967f618fb78f3d79227f8ab66e816c56755e",
+    "repositoryId": "212613049",
+    "prNumber": 14921,
+    "observedSnapshotId": "snap_e4a72c20c7c58ea23877d89c5f448deb84eb1ee15dc1eb0142e1d6fcfee90da4",
+    "source": {
+      "kind": "github_check_annotation",
+      "providerId": "github.import",
+      "runId": "run_db26b2b69660ff491b5418a6225c727d3621d5da9b6570abc150ad4962ae2209",
+      "ruleId": "gocritic",
+      "ruleVersion": null,
+      "modelId": null,
+      "modelRevision": null,
+      "promptVersion": null,
+      "native": {
+        "host": "github.com",
+        "repositoryId": "212613049",
+        "sourceKind": "github_check_annotation",
+        "key": {
+          "kind": "content_fingerprint",
+          "value": "85f177a4f922fad554954f210000504830eaf92e1563a86c2c1af0b9ff1bfb25"
+        },
+        "externalUrl": "https://github.com/cli/cli/runs/9100000001"
+      },
+      "githubActor": null
+    },
+    "assertionKind": "external_feedback",
+    "kinds": [
+      "ci_annotation"
+    ],
+    "title": "lint (gocritic): compare a normalised environment value",
+    "body": "Check run `lint` reported a failure annotation on lines 24-25.",
+    "rationale": "Reported by the lint check run on the exact head commit.",
+    "suggestedAction": null,
+    "anchor": {
+      "kind": "diff_range",
+      "fileId": "f_562acc67de25c534",
+      "currentPath": "internal/identity/ssh_command.go",
+      "previousPath": null,
+      "entityId": null,
+      "side": "RIGHT",
+      "line": 25,
+      "startLine": 24,
+      "originalLine": null,
+      "originalStartLine": null,
+      "commitSha": "a123f7736e7aaabe56b4662de888cc2bff1338a6",
+      "originalCommitSha": null,
+      "diffDigest": "cf17c7af27e51770ce3057fcff61619c6288161ba7700b075574ee802b794794",
+      "githubThreadId": null,
+      "externalUrl": "https://github.com/cli/cli/runs/9100000001"
+    },
+    "relatedAnchors": [],
+    "evidenceIds": [],
+    "attention": {
+      "level": "investigate",
+      "score": null,
+      "scoreVersion": null,
+      "reasons": [
+        "failing_check_annotation"
+      ]
+    },
+    "severity": {
+      "normalized": "unknown",
+      "original": "failure"
+    },
+    "confidence": null,
+    "validation": {
+      "status": "not_required",
+      "method": null,
+      "validatedAt": null,
+      "note": null
+    },
+    "applicability": "current_exact",
+    "sourceStatus": "completed",
+    "firstSeenAt": "2026-11-20T11:40:19Z",
+    "lastSeenAt": "2026-11-20T11:40:19Z",
+    "externalUrl": "https://github.com/cli/cli/runs/9100000001",
+    "parentFindingId": null,
+    "correlationGroupId": "corr_ssh_variant_normalisation",
+    "extensions": {}
+  },
+  {
+    "schemaVersion": 1,
+    "id": "find_70089f211811b9df14381bd21e1855803f4462516fd94026ff16745763946539",
+    "repositoryId": "212613049",
+    "prNumber": 14921,
+    "observedSnapshotId": "snap_e4a72c20c7c58ea23877d89c5f448deb84eb1ee15dc1eb0142e1d6fcfee90da4",
+    "source": {
+      "kind": "github_review_thread",
+      "providerId": "github.import",
+      "runId": "run_db26b2b69660ff491b5418a6225c727d3621d5da9b6570abc150ad4962ae2209",
+      "ruleId": null,
+      "ruleVersion": null,
+      "modelId": null,
+      "modelRevision": null,
+      "promptVersion": null,
+      "native": {
+        "host": "github.com",
+        "repositoryId": "212613049",
+        "sourceKind": "github_review_thread",
+        "key": {
+          "kind": "upstream",
+          "value": "PRRT_synthHuman0002"
+        },
+        "externalUrl": "https://github.com/cli/cli/pull/14921#discussion_r9000000201"
+      },
+      "githubActor": "synthetic-reviewer"
+    },
+    "assertionKind": "external_feedback",
+    "kinds": [
+      "other"
+    ],
+    "title": "Gate SSH command override on a bound identity",
+    "body": "Resolved and outdated GitHub thread (2 comments).",
+    "rationale": "Reported by synthetic-reviewer; GitHub marks it resolved and outdated.",
+    "suggestedAction": null,
+    "anchor": {
+      "kind": "diff_line",
+      "fileId": "f_ccedca01e076cd06",
+      "currentPath": "git/client.go",
+      "previousPath": null,
+      "entityId": null,
+      "side": "RIGHT",
+      "line": null,
+      "startLine": null,
+      "originalLine": 190,
+      "originalStartLine": null,
+      "commitSha": null,
+      "originalCommitSha": "0000000000000000000000000000000000c0ffee",
+      "diffDigest": null,
+      "githubThreadId": "PRRT_synthHuman0002",
+      "externalUrl": "https://github.com/cli/cli/pull/14921#discussion_r9000000201"
+    },
+    "relatedAnchors": [],
+    "evidenceIds": [],
+    "attention": {
+      "level": "none",
+      "score": null,
+      "scoreVersion": null,
+      "reasons": []
+    },
+    "severity": {
+      "normalized": "unknown",
+      "original": null
+    },
+    "confidence": null,
+    "validation": {
+      "status": "not_required",
+      "method": null,
+      "validatedAt": null,
+      "note": null
+    },
+    "applicability": "historical_outdated",
+    "sourceStatus": "resolved",
+    "firstSeenAt": "2026-11-20T11:40:19Z",
+    "lastSeenAt": "2026-11-20T11:40:19Z",
+    "externalUrl": "https://github.com/cli/cli/pull/14921#discussion_r9000000201",
+    "parentFindingId": null,
+    "correlationGroupId": null,
+    "extensions": {}
+  },
+  {
+    "schemaVersion": 1,
+    "id": "find_1f38601ff34280bf2db34ceb5fa928886055e4f0f2d3517ce9fc97c7ad5f0b33",
+    "repositoryId": "212613049",
+    "prNumber": 14921,
+    "observedSnapshotId": "snap_e4a72c20c7c58ea23877d89c5f448deb84eb1ee15dc1eb0142e1d6fcfee90da4",
+    "source": {
+      "kind": "github_review_thread",
+      "providerId": "github.import",
+      "runId": "run_db26b2b69660ff491b5418a6225c727d3621d5da9b6570abc150ad4962ae2209",
+      "ruleId": null,
+      "ruleVersion": null,
+      "modelId": null,
+      "modelRevision": null,
+      "promptVersion": null,
+      "native": {
+        "host": "github.com",
+        "repositoryId": "212613049",
+        "sourceKind": "github_review_thread",
+        "key": {
+          "kind": "upstream",
+          "value": "PRRT_synthHuman0003"
+        },
+        "externalUrl": "https://github.com/cli/cli/pull/14921#discussion_r9000000301"
+      },
+      "githubActor": "synthetic-reviewer"
+    },
+    "assertionKind": "external_feedback",
+    "kinds": [
+      "other"
+    ],
+    "title": "Document macOS-only review script",
+    "body": "Unresolved GitHub thread on a file the repository ignore rules exclude.",
+    "rationale": "Reported by synthetic-reviewer on GitHub.",
+    "suggestedAction": null,
+    "anchor": {
+      "kind": "diff_range",
+      "fileId": "f_e921f1d5d311f260",
+      "currentPath": "script/multiaccount-review/02-repository.sh",
+      "previousPath": null,
+      "entityId": null,
+      "side": "RIGHT",
+      "line": 17,
+      "startLine": 15,
+      "originalLine": 17,
+      "originalStartLine": null,
+      "commitSha": "a123f7736e7aaabe56b4662de888cc2bff1338a6",
+      "originalCommitSha": null,
+      "diffDigest": "5f544383c5fd14c20f1b89d083f254589bf854959ee26e67be34a8f527f89675",
+      "githubThreadId": "PRRT_synthHuman0003",
+      "externalUrl": "https://github.com/cli/cli/pull/14921#discussion_r9000000301"
+    },
+    "relatedAnchors": [],
+    "evidenceIds": [],
+    "attention": {
+      "level": "investigate",
+      "score": null,
+      "scoreVersion": null,
+      "reasons": [
+        "unresolved_external_thread"
+      ]
+    },
+    "severity": {
+      "normalized": "unknown",
+      "original": null
+    },
+    "confidence": null,
+    "validation": {
+      "status": "not_required",
+      "method": null,
+      "validatedAt": null,
+      "note": null
+    },
+    "applicability": "current_exact",
+    "sourceStatus": "open",
+    "firstSeenAt": "2026-11-20T11:40:19Z",
+    "lastSeenAt": "2026-11-20T11:40:19Z",
+    "externalUrl": "https://github.com/cli/cli/pull/14921#discussion_r9000000301",
+    "parentFindingId": null,
+    "correlationGroupId": null,
+    "extensions": {}
+  },
+  {
+    "schemaVersion": 1,
+    "id": "find_26eafe45b7a22f40bf9eea9c71f91c08dbb7e4455b2cd1b320a310dea2f8b956",
+    "repositoryId": "212613049",
+    "prNumber": 14921,
+    "observedSnapshotId": "snap_e4a72c20c7c58ea23877d89c5f448deb84eb1ee15dc1eb0142e1d6fcfee90da4",
+    "source": {
+      "kind": "github_review_summary",
+      "providerId": "github.import",
+      "runId": "run_db26b2b69660ff491b5418a6225c727d3621d5da9b6570abc150ad4962ae2209",
+      "ruleId": null,
+      "ruleVersion": null,
+      "modelId": null,
+      "modelRevision": null,
+      "promptVersion": null,
+      "native": {
+        "host": "github.com",
+        "repositoryId": "212613049",
+        "sourceKind": "github_review_summary",
+        "key": {
+          "kind": "upstream",
+          "value": "PRR_synthReview0002"
+        },
+        "externalUrl": "https://github.com/cli/cli/pull/14921#pullrequestreview-9000000002"
+      },
+      "githubActor": "synthetic-reviewer"
+    },
+    "assertionKind": "external_feedback",
+    "kinds": [
+      "other"
+    ],
+    "title": "Changes requested by synthetic-reviewer",
+    "body": "Review verdict CHANGES_REQUESTED with no inline comments.",
+    "rationale": "GitHub review state, imported verbatim.",
+    "suggestedAction": null,
+    "anchor": {
+      "kind": "pr",
+      "fileId": null,
+      "currentPath": null,
+      "previousPath": null,
+      "entityId": null,
+      "side": null,
+      "line": null,
+      "startLine": null,
+      "originalLine": null,
+      "originalStartLine": null,
+      "commitSha": null,
+      "originalCommitSha": null,
+      "diffDigest": null,
+      "githubThreadId": null,
+      "externalUrl": "https://github.com/cli/cli/pull/14921"
+    },
+    "relatedAnchors": [],
+    "evidenceIds": [],
+    "attention": {
+      "level": "info",
+      "score": null,
+      "scoreVersion": null,
+      "reasons": []
+    },
+    "severity": {
+      "normalized": "unknown",
+      "original": "CHANGES_REQUESTED"
+    },
+    "confidence": null,
+    "validation": {
+      "status": "not_required",
+      "method": null,
+      "validatedAt": null,
+      "note": null
+    },
+    "applicability": "current_exact",
+    "sourceStatus": "open",
+    "firstSeenAt": "2026-11-20T11:40:19Z",
+    "lastSeenAt": "2026-11-20T11:40:19Z",
+    "externalUrl": "https://github.com/cli/cli/pull/14921#pullrequestreview-9000000002",
+    "parentFindingId": null,
+    "correlationGroupId": null,
+    "extensions": {}
+  },
+  {
+    "schemaVersion": 1,
+    "id": "find_ff82e8b74783df2dde5e98a25bef136de1b6ff04316baa1bf49f6cc1c16e03c7",
+    "repositoryId": "212613049",
+    "prNumber": 14921,
+    "observedSnapshotId": "snap_e4a72c20c7c58ea23877d89c5f448deb84eb1ee15dc1eb0142e1d6fcfee90da4",
+    "source": {
+      "kind": "aside_static",
+      "providerId": "aside.git-history",
+      "runId": "run_740e3906033f24648817c4a32e69f509650df23f5f96cd5a1338ede89866256c",
+      "ruleId": "aside.history.churn",
+      "ruleVersion": "1.0.0",
+      "modelId": null,
+      "modelRevision": null,
+      "promptVersion": null,
+      "native": null,
+      "githubActor": null
+    },
+    "assertionKind": "measured_fact",
+    "kinds": [
+      "churn",
+      "hotspot"
+    ],
+    "title": "High churn: 14 commits by 6 authors in 180 days",
+    "body": "internal/config/config.go changed in 14 commits in the last 180 days.",
+    "rationale": "Counted from git log over a 180-day window ending 2026-11-20; shallow clone, so this is a lower bound.",
+    "suggestedAction": null,
+    "anchor": {
+      "kind": "file",
+      "fileId": "f_54c7c1af5fa8d5db",
+      "currentPath": "internal/config/config.go",
+      "previousPath": null,
+      "entityId": null,
+      "side": null,
+      "line": null,
+      "startLine": null,
+      "originalLine": null,
+      "originalStartLine": null,
+      "commitSha": null,
+      "originalCommitSha": null,
+      "diffDigest": "2aa2c2a5af15ba1267760bd2db7c5595cde44d9e39585ba945a1985b7b01db7c",
+      "githubThreadId": null,
+      "externalUrl": null
+    },
+    "relatedAnchors": [],
+    "evidenceIds": [
+      "ev_6c33cc0d2c753fd0c79da8a36989639c05d0efb4072f684f6c14da211b06d119"
+    ],
+    "attention": {
+      "level": "high",
+      "score": 68.0,
+      "scoreVersion": "aside-attention-v1",
+      "reasons": [
+        "high_churn"
+      ]
+    },
+    "severity": {
+      "normalized": "unknown",
+      "original": null
+    },
+    "confidence": {
+      "kind": "measured_count",
+      "value": 14.0,
+      "denominator": null,
+      "calibrationVersion": null
+    },
+    "validation": {
+      "status": "not_required",
+      "method": null,
+      "validatedAt": null,
+      "note": null
+    },
+    "applicability": "current_exact",
+    "sourceStatus": "unknown",
+    "firstSeenAt": "2026-11-20T11:40:19Z",
+    "lastSeenAt": "2026-11-20T11:40:19Z",
+    "externalUrl": null,
+    "parentFindingId": null,
+    "correlationGroupId": null,
+    "extensions": {
+      "idKey": {
+        "claimIdentity": "high-churn",
+        "subjectIdentity": "file:internal/config/config.go",
+        "codeFingerprint": null
+      }
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "id": "find_b55a6ec37ca6387ec633cb0da532f02fadc4c3ab117017acb8b33003b30b74a3",
+    "repositoryId": "212613049",
+    "prNumber": 14921,
+    "observedSnapshotId": "snap_e4a72c20c7c58ea23877d89c5f448deb84eb1ee15dc1eb0142e1d6fcfee90da4",
+    "source": {
+      "kind": "aside_static",
+      "providerId": "aside.static",
+      "runId": "run_8888a8df5fc1a3760892ea8620d7c1670ca52b3273c7c34fe1b76a157e2cde64",
+      "ruleId": "aside.static.pr_size",
+      "ruleVersion": "1.0.0",
+      "modelId": null,
+      "modelRevision": null,
+      "promptVersion": null,
+      "native": null,
+      "githubActor": null
+    },
+    "assertionKind": "measured_fact",
+    "kinds": [
+      "other"
+    ],
+    "title": "Large PR: 33 files, 3,811 changed lines",
+    "body": "This PR is larger than most reviews in one sitting.",
+    "rationale": "Diff stat over all changed files.",
+    "suggestedAction": null,
+    "anchor": {
+      "kind": "pr",
+      "fileId": null,
+      "currentPath": null,
+      "previousPath": null,
+      "entityId": null,
+      "side": null,
+      "line": null,
+      "startLine": null,
+      "originalLine": null,
+      "originalStartLine": null,
+      "commitSha": null,
+      "originalCommitSha": null,
+      "diffDigest": null,
+      "githubThreadId": null,
+      "externalUrl": null
+    },
+    "relatedAnchors": [],
+    "evidenceIds": [
+      "ev_ffeb885d8c22603214d915e37293550ba7851f2de2a2ff9bbc04f6487294d1d7"
+    ],
+    "attention": {
+      "level": "info",
+      "score": null,
+      "scoreVersion": null,
+      "reasons": []
+    },
+    "severity": {
+      "normalized": "unknown",
+      "original": null
+    },
+    "confidence": null,
+    "validation": {
+      "status": "not_required",
+      "method": null,
+      "validatedAt": null,
+      "note": null
+    },
+    "applicability": "current_exact",
+    "sourceStatus": "unknown",
+    "firstSeenAt": "2026-11-20T11:40:19Z",
+    "lastSeenAt": "2026-11-20T11:40:19Z",
+    "externalUrl": null,
+    "parentFindingId": null,
+    "correlationGroupId": null,
+    "extensions": {
+      "idKey": {
+        "claimIdentity": "pr-size",
+        "subjectIdentity": null,
+        "codeFingerprint": "a123f7736e7aaabe56b4662de888cc2bff1338a6"
+      }
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "id": "find_0fbd3dd17c656732416f87073d4cc2ad2de2e9555c8d0f600db8f86ba3328ef2",
+    "repositoryId": "212613049",
+    "prNumber": 14921,
+    "observedSnapshotId": "snap_e4a72c20c7c58ea23877d89c5f448deb84eb1ee15dc1eb0142e1d6fcfee90da4",
+    "source": {
+      "kind": "aside_static",
+      "providerId": "aside.static",
+      "runId": "run_8888a8df5fc1a3760892ea8620d7c1670ca52b3273c7c34fe1b76a157e2cde64",
+      "ruleId": "aside.static.env_passthrough",
+      "ruleVersion": "1.0.0",
+      "modelId": null,
+      "modelRevision": null,
+      "promptVersion": null,
+      "native": null,
+      "githubActor": null
+    },
+    "assertionKind": "attention_hint",
+    "kinds": [
+      "security"
+    ],
+    "title": "SSH variant forwarded to child process verbatim",
+    "body": "The configured SSH variant is appended to the child environment unchanged.",
+    "rationale": "Rule env_passthrough@1 matched line 193.",
+    "suggestedAction": null,
+    "anchor": {
+      "kind": "diff_line",
+      "fileId": "f_ccedca01e076cd06",
+      "currentPath": "git/client.go",
+      "previousPath": null,
+      "entityId": null,
+      "side": "RIGHT",
+      "line": 193,
+      "startLine": null,
+      "originalLine": null,
+      "originalStartLine": null,
+      "commitSha": "a123f7736e7aaabe56b4662de888cc2bff1338a6",
+      "originalCommitSha": null,
+      "diffDigest": "6e789ad162a4654557e08794267f656bd162e701f4d4c8f3557b144d9fb7b445",
+      "githubThreadId": null,
+      "externalUrl": null
+    },
+    "relatedAnchors": [],
+    "evidenceIds": [
+      "ev_2148a55ff569c0f9cdc030ddd665a8154c4ee41dca47928c2a000fc6ade8a824"
+    ],
+    "attention": {
+      "level": "info",
+      "score": null,
+      "scoreVersion": null,
+      "reasons": []
+    },
+    "severity": {
+      "normalized": "unknown",
+      "original": null
+    },
+    "confidence": null,
+    "validation": {
+      "status": "not_required",
+      "method": null,
+      "validatedAt": null,
+      "note": null
+    },
+    "applicability": "current_exact",
+    "sourceStatus": "unknown",
+    "firstSeenAt": "2026-11-20T11:40:19Z",
+    "lastSeenAt": "2026-11-20T11:40:19Z",
+    "externalUrl": null,
+    "parentFindingId": null,
+    "correlationGroupId": null,
+    "extensions": {
+      "idKey": {
+        "claimIdentity": "env-forwarded:GH_IDENTITY_SSH_VARIANT",
+        "subjectIdentity": "file:git/client.go",
+        "codeFingerprint": "6e789ad162a4654557e08794267f656bd162e701f4d4c8f3557b144d9fb7b445"
+      }
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "id": "find_8300f7f660f30c39f6757b6921d57b64e1738f1913378dfbf713a64fd058f855",
+    "repositoryId": "212613049",
+    "prNumber": 14921,
+    "observedSnapshotId": "snap_0bde9fbf3c834b0cda64876c983ee94e2da98caa74e1a8dd3f23697d32ff15ff",
+    "source": {
+      "kind": "aside_static",
+      "providerId": "aside.static",
+      "runId": "run_c34cbe5a207f977b3c3380be7ed2fd33730fcacf9ec646f4b9608b7e8447455f",
+      "ruleId": "aside.static.duplicate_literal",
+      "ruleVersion": "1.0.0",
+      "modelId": null,
+      "modelRevision": null,
+      "promptVersion": null,
+      "native": null,
+      "githubActor": null
+    },
+    "assertionKind": "attention_hint",
+    "kinds": [
+      "duplicate_code"
+    ],
+    "title": "Token variable list duplicated (earlier head)",
+    "body": "Seen on an earlier head; the patch has since changed.",
+    "rationale": "Rule duplicate_literal@1 on the earlier patch.",
+    "suggestedAction": null,
+    "anchor": {
+      "kind": "diff_line",
+      "fileId": "f_ffad9eab34e01b22",
+      "currentPath": "internal/identity/credentials.go",
+      "previousPath": null,
+      "entityId": null,
+      "side": "RIGHT",
+      "line": 58,
+      "startLine": null,
+      "originalLine": null,
+      "originalStartLine": null,
+      "commitSha": "0000000000000000000000000000000000c0ffee",
+      "originalCommitSha": null,
+      "diffDigest": "000000000000000000000000000000000000000000000000000000005ca1ab1e",
+      "githubThreadId": null,
+      "externalUrl": null
+    },
+    "relatedAnchors": [],
+    "evidenceIds": [
+      "ev_1daec31b08f81a558ea77316416ffb8b96a2fe24eb8108ea595825e9940ce2ac"
+    ],
+    "attention": {
+      "level": "info",
+      "score": null,
+      "scoreVersion": null,
+      "reasons": []
+    },
+    "severity": {
+      "normalized": "unknown",
+      "original": null
+    },
+    "confidence": null,
+    "validation": {
+      "status": "not_required",
+      "method": null,
+      "validatedAt": null,
+      "note": null
+    },
+    "applicability": "historical_outdated",
+    "sourceStatus": "unknown",
+    "firstSeenAt": "2026-11-19T09:00:03Z",
+    "lastSeenAt": "2026-11-19T09:00:03Z",
+    "externalUrl": null,
+    "parentFindingId": null,
+    "correlationGroupId": null,
+    "extensions": {
+      "idKey": {
+        "claimIdentity": "duplicate-token-list",
+        "subjectIdentity": "file:internal/identity/credentials.go",
+        "codeFingerprint": "000000000000000000000000000000000000000000000000000000005ca1ab1e"
+      }
+    }
+  }
+]
