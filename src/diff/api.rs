@@ -71,18 +71,78 @@ pub fn file_from_api(
     file.change_kind = kind;
     file.content_digest = api.blob_sha.map(str::to_string);
     if api.patch.is_none() {
-        if api.additions + api.deletions > 0 {
-            warnings.push(format!(
-                "{}: GitHub did not return a patch (file too large)",
-                api.path
-            ));
+        if kind != ChangeKind::Renamed || api.additions != 0 || api.deletions != 0 {
+            warnings.push(format!("{}: GitHub did not return a patch", api.path));
             file.patch_complete = false;
-        } else if kind != ChangeKind::Renamed {
-            file.is_binary = true;
         }
         file.additions = api.additions;
         file.deletions = api.deletions;
+    } else if !file.is_binary
+        && (file.additions != api.additions || file.deletions != api.deletions)
+    {
+        warnings.push(format!(
+            "{}: patch line counts do not match GitHub's additions/deletions",
+            api.path
+        ));
+        file.patch_complete = false;
     }
     file.diff_digest = fingerprint(&file, head_sha);
     file
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn omitted_whole_hunk_is_incomplete_and_head_bound() {
+        let api = ApiFile {
+            path: "a.txt",
+            previous_path: None,
+            status: "modified",
+            patch: Some("@@ -1 +1 @@\n-old\n+new"),
+            blob_sha: Some("blob"),
+            additions: 2,
+            deletions: 1,
+        };
+        let mut warnings = Vec::new();
+        let first = file_from_api(&api, "head-one", &Limits::default(), &mut warnings);
+        let second = file_from_api(&api, "head-two", &Limits::default(), &mut warnings);
+        assert!(!first.patch_complete);
+        assert_ne!(first.diff_digest, second.diff_digest);
+    }
+
+    #[test]
+    fn explicit_binary_patch_does_not_require_text_line_counts() {
+        let api = ApiFile {
+            path: "image.png",
+            previous_path: None,
+            status: "modified",
+            patch: Some("GIT binary patch\nliteral 0"),
+            blob_sha: Some("blob"),
+            additions: 1,
+            deletions: 1,
+        };
+        let mut warnings = Vec::new();
+        let file = file_from_api(&api, "head", &Limits::default(), &mut warnings);
+        assert!(file.is_binary);
+        assert!(file.patch_complete);
+    }
+
+    #[test]
+    fn missing_zero_count_patch_is_not_proof_of_binary() {
+        let api = ApiFile {
+            path: "empty.txt",
+            previous_path: None,
+            status: "modified",
+            patch: None,
+            blob_sha: Some("blob"),
+            additions: 0,
+            deletions: 0,
+        };
+        let mut warnings = Vec::new();
+        let file = file_from_api(&api, "head", &Limits::default(), &mut warnings);
+        assert!(!file.patch_complete);
+        assert!(!file.is_binary);
+    }
 }

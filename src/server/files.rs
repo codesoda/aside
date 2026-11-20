@@ -53,6 +53,9 @@ async fn acknowledgement(
         .read()
         .map_err(|_| ApiError::internal())?;
     let file = checked_file(&snapshot, &id, &digest)?;
+    if !file.patch_complete {
+        return Err(ApiError::bad("file patch is incomplete"));
+    }
     let ack = Acknowledgement {
         id: new_id("ack"),
         path: file.path.clone(),
@@ -122,4 +125,47 @@ pub(super) async fn file_history(
         .filter(|a| a.path == file.path || file.previous_path.as_deref() == Some(&a.path))
         .collect();
     Ok(Json(json!({"file":file,"history":history})))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{demo, session::Session, store::Store};
+
+    #[tokio::test]
+    async fn incomplete_patch_cannot_be_acknowledged() {
+        let mut snapshot = demo::snapshot(0);
+        let file = &mut snapshot.files[0];
+        file.patch_complete = false;
+        let id = file.id.clone();
+        let digest = file.diff_digest.clone();
+        let session = Session::new(snapshot, Store::open_in_memory().unwrap(), None, None).unwrap();
+        let state = AppState::new(session.clone(), "ui-secret".into(), "agent-secret".into());
+
+        for kind in ["reviewed", "cleared"] {
+            let error = acknowledgement(
+                state.clone(),
+                Actor::Human,
+                id.clone(),
+                digest.clone(),
+                kind,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.status, StatusCode::BAD_REQUEST);
+            assert_eq!(
+                session.sequence.load(std::sync::atomic::Ordering::SeqCst),
+                0
+            );
+            assert!(
+                session
+                    .store
+                    .lock()
+                    .unwrap()
+                    .list_acknowledgements(&session.pr_id)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
 }
