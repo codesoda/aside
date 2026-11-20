@@ -1,4 +1,4 @@
-//! `PUT /api/v1/review/publish/selection` (#13).
+//! `PUT /api/v1/review/publish/selection` and reconciling an unresolved attempt (#13).
 
 use super::*;
 use crate::{
@@ -69,15 +69,17 @@ fn app() -> (Router, Arc<Session>) {
     (router(state), session)
 }
 
-async fn put(
+async fn send(
     app: Router,
+    method: Method,
+    path: &str,
     credential: &str,
     origin: Option<&str>,
-    body: Value,
+    body: Option<Value>,
 ) -> (StatusCode, Value) {
     let mut builder = axum::http::Request::builder()
-        .method(Method::PUT)
-        .uri(PATH)
+        .method(method)
+        .uri(path)
         .header(header::HOST, "127.0.0.1:1234")
         .header(header::CONTENT_TYPE, "application/json");
     builder = if let Some(token) = credential.strip_prefix("Bearer ") {
@@ -88,12 +90,9 @@ async fn put(
     if let Some(origin) = origin {
         builder = builder.header(header::ORIGIN, origin);
     }
+    let body = body.map(|b| b.to_string()).unwrap_or_default();
     let response = app
-        .oneshot(
-            builder
-                .body(axum::body::Body::from(body.to_string()))
-                .unwrap(),
-        )
+        .oneshot(builder.body(axum::body::Body::from(body)).unwrap())
         .await
         .unwrap();
     let status = response.status();
@@ -104,6 +103,15 @@ async fn put(
         status,
         serde_json::from_slice(&bytes).unwrap_or(Value::Null),
     )
+}
+
+async fn put(
+    app: Router,
+    credential: &str,
+    origin: Option<&str>,
+    body: Value,
+) -> (StatusCode, Value) {
+    send(app, Method::PUT, PATH, credential, origin, Some(body)).await
 }
 
 #[tokio::test]
@@ -153,4 +161,60 @@ async fn bad_selections_are_refused() {
     let (status, body) = put(app, HUMAN, Some(ORIGIN), unknown).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(body["error"], "not_found");
+}
+
+#[tokio::test]
+async fn the_human_reconciles_an_unresolved_attempt_and_gets_its_drafts_back() {
+    let (app, session) = app();
+    let unresolved = "/api/v1/review/publish/unresolved";
+    let (status, body) = send(app.clone(), Method::GET, unresolved, HUMAN, None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["unresolved"], Value::Null);
+    let attempt = {
+        let mut store = session.store.lock().unwrap();
+        let id = store
+            .start_publication(&session.pr_id, "plan", "{}", "head", &[("c", "look here")])
+            .unwrap();
+        store
+            .finish_publication(&id, "partial", Some("timed out"), None)
+            .unwrap();
+        id
+    };
+    let (_, body) = send(app.clone(), Method::GET, unresolved, HUMAN, None, None).await;
+    assert_eq!(body["unresolved"]["attemptId"], attempt.as_str());
+    assert_eq!(body["unresolved"]["remainingCommentIds"], json!(["c"]));
+
+    let path = format!("/api/v1/review/publish/attempts/{attempt}/reconcile");
+    let none = Some(json!({"published":[]}));
+    let agent = "Bearer agent-secret";
+    let (status, _) = send(app.clone(), Method::POST, &path, agent, None, none.clone()).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = send(app.clone(), Method::POST, &path, HUMAN, None, none.clone()).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "cross-origin");
+    let wrong = "/api/v1/review/publish/attempts/pub_x/reconcile";
+    let (status, _) = send(
+        app.clone(),
+        Method::POST,
+        wrong,
+        HUMAN,
+        Some(ORIGIN),
+        none.clone(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        session
+            .store
+            .lock()
+            .unwrap()
+            .update_comment_body("c", "x")
+            .is_err()
+    );
+
+    let (status, _) = send(app.clone(), Method::POST, &path, HUMAN, Some(ORIGIN), none).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, body) = send(app, Method::GET, unresolved, HUMAN, None, None).await;
+    assert_eq!(body["unresolved"], Value::Null);
+    let mut store = session.store.lock().unwrap();
+    store.update_comment_body("c", "editable again").unwrap();
 }

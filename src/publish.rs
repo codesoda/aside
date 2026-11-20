@@ -2,96 +2,22 @@
 //!
 //! An attempt is persisted as `partial` before its first remote operation. A
 //! timeout may mean GitHub accepted a request, so the same plan is never sent
-//! again automatically. A human must reconcile uncertain attempts on GitHub.
+//! again automatically. A human checks GitHub and reconciles an uncertain attempt
+//! (`reconcile`), which releases its unsent drafts for a new plan.
 
-use std::collections::BTreeSet;
+mod plan;
+
 use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
+pub use self::plan::PublishPlan;
+use self::plan::{Selection, build_plan};
 use crate::{
-    diff,
     github::{self, GhRunner, NewReviewComment, PrRef},
-    model::{
-        Actor, AnchorState, Comment, PrSnapshot, PublishState, ReviewThread, Side, ThreadSource,
-        Verdict,
-    },
     session::Session,
-    util::sha256_hex,
 };
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PlannedInline {
-    pub comment_id: String,
-    pub thread_id: String,
-    pub path: String,
-    pub side: Side,
-    pub line: u32,
-    pub start_line: Option<u32>,
-    pub body: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PlannedReply {
-    pub comment_id: String,
-    pub thread_id: String,
-    /// A published or imported GitHub comment, or the new inline comment in this plan.
-    pub parent_comment_id: String,
-    pub github_parent_id: Option<i64>,
-    pub body: String,
-}
-
-/// Why a local draft is left out of a publication plan.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OmitCode {
-    /// Imported from GitHub, or an empty body.
-    NotALocalDraft,
-    /// The human deselected it; it stays a draft for a later review.
-    NotSelected,
-    /// The thread's new first comment is deselected, so a reply has nothing to attach to.
-    ParentNotSelected,
-    /// The thread has no comment on GitHub, and its first comment cannot be published.
-    ParentNotPublishable,
-    /// The thread's anchor is stale, missing or incomplete.
-    StaleAnchor,
-}
-
-impl OmitCode {
-    fn reason(self) -> &'static str {
-        match self {
-            Self::NotALocalDraft => "not a nonempty local draft",
-            Self::NotSelected => "not selected for this review",
-            Self::ParentNotSelected => "its thread's first comment is not selected",
-            Self::ParentNotPublishable => "no publishable parent comment",
-            Self::StaleAnchor => "anchor is stale, missing or incomplete",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OmittedDraft {
-    pub comment_id: String,
-    pub thread_id: String,
-    pub code: OmitCode,
-    pub reason: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PublishPlan {
-    pub plan_id: String,
-    pub head_sha: String,
-    pub verdict: Verdict,
-    pub summary: String,
-    pub inline: Vec<PlannedInline>,
-    pub replies: Vec<PlannedReply>,
-    pub omitted: Vec<OmittedDraft>,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -109,146 +35,6 @@ fn lock_store(session: &Session) -> Result<std::sync::MutexGuard<'_, crate::stor
         .store
         .lock()
         .map_err(|_| anyhow!("store lock poisoned"))
-}
-
-fn current_anchor(t: &ReviewThread, snapshot: &PrSnapshot) -> bool {
-    if t.anchor_state != AnchorState::Current || t.head_sha != snapshot.pr.head_sha {
-        return false;
-    }
-    let (Some(line), Some(text)) = (t.line, t.line_text.as_deref()) else {
-        return false;
-    };
-    snapshot
-        .files
-        .iter()
-        .find(|f| f.path == t.path && f.patch_complete)
-        .and_then(|f| diff::find_line(f, t.side, line))
-        .is_some_and(|l| l.text == text)
-        && t.start_line.is_none_or(|start| {
-            start <= line
-                && snapshot
-                    .files
-                    .iter()
-                    .find(|f| f.path == t.path)
-                    .and_then(|f| diff::find_line(f, t.side, start))
-                    .is_some()
-        })
-}
-
-/// What a thread's replies attach to on GitHub: replies hang off the first comment.
-enum Parent {
-    /// The first comment exists on GitHub, or is the new inline comment in this plan.
-    Ready(String, Option<i64>),
-    /// The first comment is a local draft the human deselected.
-    NotSelected,
-    /// Nothing publishable to attach to.
-    Missing,
-}
-
-/// Why `comment` must stay local, or `None` if it can be planned.
-fn omission(
-    comment: &Comment,
-    is_root: bool,
-    parent: &Parent,
-    anchored: bool,
-    deselected: &BTreeSet<String>,
-) -> Option<OmitCode> {
-    if comment.author_kind == Actor::Github || comment.body.trim().is_empty() {
-        Some(OmitCode::NotALocalDraft)
-    } else if deselected.contains(&comment.id) {
-        Some(OmitCode::NotSelected)
-    } else if is_root {
-        (!anchored).then_some(OmitCode::StaleAnchor)
-    } else {
-        match parent {
-            Parent::Ready(..) => None,
-            Parent::NotSelected => Some(OmitCode::ParentNotSelected),
-            Parent::Missing => Some(OmitCode::ParentNotPublishable),
-        }
-    }
-}
-
-/// Plan one thread's drafts. A deselected or unpublishable first comment leaves
-/// the thread's draft replies local too, each with its reason.
-fn plan_thread(
-    plan: &mut PublishPlan,
-    thread: &ReviewThread,
-    snapshot: &PrSnapshot,
-    deselected: &BTreeSet<String>,
-) -> Result<()> {
-    let mut parent = match thread.comments.first() {
-        Some(c) if c.github_comment_id.is_some() => {
-            Parent::Ready(c.id.clone(), c.github_comment_id)
-        }
-        _ => Parent::Missing,
-    };
-    let anchored = current_anchor(thread, snapshot);
-    for (index, comment) in thread.comments.iter().enumerate() {
-        if comment.publish_state != PublishState::Draft {
-            continue;
-        }
-        let is_root = index == 0 && thread.source == ThreadSource::Local;
-        if let Some(code) = omission(comment, is_root, &parent, anchored, deselected) {
-            if is_root && code == OmitCode::NotSelected {
-                parent = Parent::NotSelected;
-            }
-            plan.omitted.push(OmittedDraft {
-                comment_id: comment.id.clone(),
-                thread_id: thread.id.clone(),
-                code,
-                reason: code.reason().into(),
-            });
-        } else if is_root {
-            plan.inline.push(PlannedInline {
-                comment_id: comment.id.clone(),
-                thread_id: thread.id.clone(),
-                path: thread.path.clone(),
-                side: thread.side,
-                line: thread.line.context("current anchor has no line")?,
-                start_line: thread.start_line,
-                body: comment.body.clone(),
-            });
-            parent = Parent::Ready(comment.id.clone(), None);
-        } else if let Parent::Ready(parent_comment_id, github_parent_id) = &parent {
-            plan.replies.push(PlannedReply {
-                comment_id: comment.id.clone(),
-                thread_id: thread.id.clone(),
-                parent_comment_id: parent_comment_id.clone(),
-                github_parent_id: *github_parent_id,
-                body: comment.body.clone(),
-            });
-        }
-    }
-    Ok(())
-}
-
-fn build_plan(
-    snapshot: &PrSnapshot,
-    verdict: Verdict,
-    summary: &str,
-    threads: &[ReviewThread],
-    deselected: &BTreeSet<String>,
-) -> Result<PublishPlan> {
-    let mut plan = PublishPlan {
-        plan_id: String::new(),
-        head_sha: snapshot.pr.head_sha.clone(),
-        verdict,
-        summary: summary.to_owned(),
-        inline: Vec::new(),
-        replies: Vec::new(),
-        omitted: Vec::new(),
-    };
-    for thread in threads {
-        plan_thread(&mut plan, thread, snapshot, deselected)?;
-    }
-    if matches!(verdict, Verdict::RequestChanges | Verdict::Comment)
-        && summary.trim().is_empty()
-        && plan.inline.is_empty()
-    {
-        bail!("REQUEST_CHANGES and COMMENT require a summary or inline comment");
-    }
-    plan.plan_id = sha256_hex(&serde_json::to_vec(&plan)?);
-    Ok(plan)
 }
 
 /// Build the exact outbound review and reply operations. Every eligible local draft is
@@ -275,7 +61,10 @@ pub fn preview(session: &Session) -> Result<PublishPlan> {
         verdict,
         &review.summary,
         &store.list_threads(&session.pr_id)?,
-        &store.deselected_comment_ids(&session.pr_id)?,
+        &Selection {
+            deselected: store.deselected_comment_ids(&session.pr_id)?,
+            rootless_threads: store.rootless_thread_ids(&session.pr_id)?,
+        },
     )
 }
 
@@ -295,6 +84,25 @@ fn github_context(session: &Session) -> Result<(Arc<dyn GhRunner>, PrRef)> {
     ))
 }
 
+/// Serializes publications and reconciliations, even when callers supply different plan IDs.
+fn publication_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+/// Record what the human found on GitHub for the PR's unresolved attempt, releasing its
+/// unsent drafts for a later plan (`Store::reconcile_publication`). Waits for a send in
+/// progress, so its drafts are never released mid-send. The HTTP layer must authorize a
+/// human actor before calling this function.
+pub async fn reconcile(
+    session: &Session,
+    attempt_id: &str,
+    published: &[(String, Option<i64>)],
+) -> Result<()> {
+    let _guard = publication_lock().lock().await;
+    lock_store(session)?.reconcile_publication(&session.pr_id, attempt_id, published)
+}
+
 /// Publish a confirmed plan. A partial/uncertain attempt is never blindly retried.
 /// The HTTP layer must authorize a human actor before calling this function.
 pub async fn publish(session: &Session, plan_id: &str, confirm: bool) -> Result<PublishOutcome> {
@@ -304,12 +112,7 @@ pub async fn publish(session: &Session, plan_id: &str, confirm: bool) -> Result<
     if session.demo {
         bail!("demo sessions cannot publish to GitHub");
     }
-    // Serialize active publications even when callers supply different plan IDs.
-    static PUBLICATION_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-    let _guard = PUBLICATION_LOCK
-        .get_or_init(|| tokio::sync::Mutex::new(()))
-        .lock()
-        .await;
+    let _guard = publication_lock().lock().await;
     let (gh, pr) = github_context(session)?;
     let snapshot = session
         .snapshot
@@ -481,277 +284,10 @@ async fn execute(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{
-        github::{PrRef, fake::FakeGh},
-        model::{Comment, PullRequest, SCHEMA_VERSION},
-        store::{NewThread, Store},
-    };
-
-    fn snapshot() -> PrSnapshot {
-        PrSnapshot {
-            schema_version: SCHEMA_VERSION,
-            pr: PullRequest {
-                owner: "o".into(),
-                repo: "r".into(),
-                number: 1,
-                title: "t".into(),
-                body: String::new(),
-                author: "a".into(),
-                url: "u".into(),
-                state: "OPEN".into(),
-                is_draft: false,
-                base_ref: "main".into(),
-                base_sha: "base".into(),
-                head_ref: "feature".into(),
-                head_sha: "head".into(),
-            },
-            provider_repository_id: None,
-            files: vec![],
-            github_threads: vec![],
-            reviews: vec![],
-            issue_comments: vec![],
-            warnings: vec![],
-            complete: true,
-            fetched_at: String::new(),
-        }
-    }
-
-    #[test]
-    fn plan_id_binds_head_and_text() {
-        let a = build_plan(
-            &snapshot(),
-            Verdict::Approve,
-            "looks good",
-            &[],
-            &BTreeSet::new(),
-        )
-        .unwrap();
-        assert_eq!(
-            a.plan_id,
-            build_plan(
-                &snapshot(),
-                Verdict::Approve,
-                "looks good",
-                &[],
-                &BTreeSet::new()
-            )
-            .unwrap()
-            .plan_id
-        );
-        let mut changed = snapshot();
-        changed.pr.head_sha = "later".into();
-        assert_ne!(
-            a.plan_id,
-            build_plan(
-                &changed,
-                Verdict::Approve,
-                "looks good",
-                &[],
-                &BTreeSet::new()
-            )
-            .unwrap()
-            .plan_id
-        );
-        assert_ne!(
-            a.plan_id,
-            build_plan(
-                &snapshot(),
-                Verdict::Approve,
-                "different",
-                &[],
-                &BTreeSet::new()
-            )
-            .unwrap()
-            .plan_id
-        );
-    }
-
-    #[tokio::test]
-    async fn fake_publication_marks_each_comment_and_blocks_duplicate() {
-        let mut snapshot = snapshot();
-        snapshot.files = diff::parse_unified(
-            "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n",
-            "head",
-            &diff::Limits::default(),
-        )
-        .files;
-        let fake = Arc::new(FakeGh::default());
-        fake.on(&["pr", "view"], Ok(r#"{"headRefOid":"head"}"#));
-        fake.on(
-            &["api", "--method", "POST", "repos/o/r/pulls/1/reviews"],
-            Ok(r#"{"id":7}"#),
-        );
-        fake.on(
-            &[
-                "api",
-                "--paginate",
-                "--slurp",
-                "repos/o/r/pulls/1/reviews/7/comments?per_page=100",
-            ],
-            Ok(r#"[[{"id":70,"path":"a.rs","line":1,"body":"fix this"}]]"#),
-        );
-        fake.on(
-            &[
-                "api",
-                "--method",
-                "POST",
-                "repos/o/r/pulls/1/comments/70/replies",
-            ],
-            Ok(r#"{"id":71}"#),
-        );
-        let session = Session::new(
-            snapshot,
-            Store::open_in_memory().unwrap(),
-            Some(fake.clone()),
-            Some(PrRef {
-                owner: "o".into(),
-                repo: "r".into(),
-                number: 1,
-            }),
-        )
-        .unwrap();
-        {
-            let mut store = session.store.lock().unwrap();
-            store
-                .insert_thread(
-                    &session.pr_id,
-                    &NewThread {
-                        id: "t".into(),
-                        source: ThreadSource::Local,
-                        github_thread_id: None,
-                        path: "a.rs".into(),
-                        side: Side::Right,
-                        line: Some(1),
-                        start_line: None,
-                        line_text: Some("new".into()),
-                        diff_digest: None,
-                        head_sha: "head".into(),
-                        anchor_state: AnchorState::Current,
-                        anchor_reason: None,
-                        resolved: false,
-                        created_at: None,
-                    },
-                )
-                .unwrap();
-            for (id, body) in [("c1", "fix this"), ("c2", "follow up")] {
-                store
-                    .insert_comment(
-                        &Comment {
-                            id: id.into(),
-                            thread_id: "t".into(),
-                            author_kind: Actor::Human,
-                            author: "me".into(),
-                            body: body.into(),
-                            created_at: id.into(),
-                            updated_at: id.into(),
-                            publish_state: PublishState::Draft,
-                            github_comment_id: None,
-                        },
-                        None,
-                    )
-                    .unwrap();
-            }
-            store
-                .finish_review(&session.pr_id, Verdict::Comment, "review body")
-                .unwrap();
-        }
-        let plan = preview(&session).unwrap();
-        assert_eq!(plan.inline.len(), 1);
-        assert_eq!(plan.replies.len(), 1);
-        let result = publish(&session, &plan.plan_id, true).await.unwrap();
-        assert_eq!(result.status, "succeeded");
-        assert_eq!(result.published_comment_ids, ["c1", "c2"]);
-        let stored = session
-            .store
-            .lock()
-            .unwrap()
-            .list_threads(&session.pr_id)
-            .unwrap();
-        assert_eq!(stored[0].comments[0].github_comment_id, Some(70));
-        assert_eq!(stored[0].comments[1].github_comment_id, Some(71));
-        assert_eq!(fake.calls_matching(&["api", "--method", "POST"]).len(), 2);
-        assert!(publish(&session, &plan.plan_id, true).await.is_err());
-        assert_eq!(fake.calls_matching(&["api", "--method", "POST"]).len(), 2);
-    }
-
-    #[tokio::test]
-    async fn unknown_remote_outcome_is_durable_and_never_retried() {
-        let fake = Arc::new(FakeGh::default());
-        fake.on(&["pr", "view"], Ok(r#"{"headRefOid":"head"}"#));
-        fake.on(
-            &["api", "--method", "POST"],
-            Err("connection lost after submit"),
-        );
-        let session = Session::new(
-            snapshot(),
-            Store::open_in_memory().unwrap(),
-            Some(fake.clone()),
-            Some(PrRef {
-                owner: "o".into(),
-                repo: "r".into(),
-                number: 1,
-            }),
-        )
-        .unwrap();
-        session
-            .store
-            .lock()
-            .unwrap()
-            .finish_review(&session.pr_id, Verdict::Approve, "okay")
-            .unwrap();
-        let plan = preview(&session).unwrap();
-        let first = publish(&session, &plan.plan_id, true).await.unwrap();
-        assert_eq!(first.status, "partial");
-        assert!(first.error.unwrap().contains("do not retry"));
-        assert!(publish(&session, &plan.plan_id, true).await.is_err());
-        session
-            .store
-            .lock()
-            .unwrap()
-            .finish_review(&session.pr_id, Verdict::Approve, "edited summary")
-            .unwrap();
-        let changed = preview(&session).unwrap();
-        assert_ne!(plan.plan_id, changed.plan_id);
-        assert!(publish(&session, &changed.plan_id, true).await.is_err());
-        assert_eq!(fake.calls_matching(&["api", "--method", "POST"]).len(), 1);
-    }
-
-    #[test]
-    fn stale_draft_is_omitted_without_moving_its_anchor() {
-        let t = ReviewThread {
-            id: "t".into(),
-            source: ThreadSource::Local,
-            github_thread_id: None,
-            path: "lost.rs".into(),
-            file_id: None,
-            side: Side::Right,
-            line: Some(4),
-            start_line: None,
-            line_text: Some("x".into()),
-            anchor_state: AnchorState::Current,
-            anchor_reason: None,
-            resolved: false,
-            head_sha: "head".into(),
-            created_at: String::new(),
-            comments: vec![Comment {
-                id: "c".into(),
-                thread_id: "t".into(),
-                author_kind: Actor::Human,
-                author: "a".into(),
-                body: "fix".into(),
-                created_at: String::new(),
-                updated_at: String::new(),
-                publish_state: PublishState::Draft,
-                github_comment_id: None,
-            }],
-        };
-        let plan = build_plan(&snapshot(), Verdict::Approve, "", &[t], &BTreeSet::new()).unwrap();
-        assert!(plan.inline.is_empty());
-        assert_eq!(plan.omitted[0].comment_id, "c");
-    }
-}
+mod tests;
 
 #[cfg(test)]
 mod selection_tests;
+
+#[cfg(test)]
+mod reconcile_tests;

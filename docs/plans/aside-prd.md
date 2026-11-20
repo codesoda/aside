@@ -304,12 +304,12 @@ A previously reviewed file that becomes ignored still retains its review history
 
 - All comments are local drafts by default.
 - The reviewer can choose Approve, Request changes or Comment-only.
-- Reviewer can individually select draft threads/replies for inclusion in the outbound review.
+- Reviewer can individually select draft threads/replies for inclusion in the outbound review. Every eligible draft is selected until the reviewer holds it back, and the choice is durable. Each omitted draft carries a code: `not_selected`, `parent_not_selected` (a reply whose thread's new first comment is held back), `parent_not_publishable` (a reply with no comment on GitHub to attach to, including after its first comment was deleted), `stale_anchor` or `not_a_local_draft`.
 - The app constructs a precise, human-readable publication plan, including targets, texts and omissions.
 - The user must explicitly confirm **Publish to GitHub** after seeing this plan.
 - Rust revalidates PR head, line anchors and publication permissions before executing `gh` operations.
 - Invalid/outdated anchors remain local with reasons; never publish them to a guessed destination.
-- Publishing must be idempotent or safely recoverable; partial failures are surfaced honestly, and any remaining drafts are preserved.
+- Publishing must be idempotent or safely recoverable; partial failures are surfaced honestly, and any remaining drafts are preserved. An unresolved attempt is never retried automatically: the reviewer checks GitHub and records which of its drafts arrived, and the rest become drafts again for a new plan.
 - Review completion and review publication are distinct states: a session may be finished locally but not published.
 - A previously published review does not prevent reopening a PR to inspect a later diff, though publishing a new review requires a new explicit confirmation.
 
@@ -480,7 +480,10 @@ These are **proposed routes**, to be finalised as a versioned contract:
 | POST | `/api/v1/refresh` | Re-fetch PR/diff and rederive state |
 | POST | `/api/v1/review/finish` | Store local verdict/draft summary |
 | POST | `/api/v1/review/publish/preview` | Build exact planned GitHub changes |
+| PUT | `/api/v1/review/publish/selection` | Hold back or re-select local drafts (`{commentIds, selected}`); human only |
 | POST | `/api/v1/review/publish` | Apply confirmed plan after freshness check |
+| GET | `/api/v1/review/publish/unresolved` | The PR's unresolved publication attempt and its unsent drafts; human only |
+| POST | `/api/v1/review/publish/attempts/{id}/reconcile` | Record which drafts reached GitHub (`{published: [{commentId, githubCommentId?}]}`) and release the rest; human only |
 
 All mutation endpoints must return the effective updated state or sufficient event/sequence metadata for deterministic UI reconciliation. Use stable IDs unrelated to tree display order; map file IDs to a validated session path, not arbitrary filesystem access. Stale snapshot/fingerprint writes should return `409 Conflict` with a machine-readable reason and fresh data.
 

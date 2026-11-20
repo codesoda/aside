@@ -144,4 +144,10 @@ pub(super) const MIGRATIONS: &[&str] = &[
         created_at TEXT NOT NULL
     );
     ",
+    // v4: a local thread whose first comment was deleted while replies remained.
+    // Its remaining drafts were replies, so none of them may be published as the
+    // thread's inline comment.
+    "
+    ALTER TABLE review_threads ADD COLUMN root_deleted INTEGER NOT NULL DEFAULT 0;
+    ",
 ];

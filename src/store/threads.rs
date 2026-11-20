@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use anyhow::Result;
 use rusqlite::{OptionalExtension, Row, params};
 
@@ -212,12 +214,18 @@ impl Store {
         Ok(())
     }
 
-    /// Delete a draft comment, and its thread if that leaves the thread empty.
+    /// Delete a draft comment, and its thread if that leaves the thread empty. Deleting
+    /// a local thread's first comment while replies remain marks the thread rootless.
     pub fn delete_comment(&mut self, id: &str) -> Result<()> {
         let tx = self.conn.transaction()?;
         let thread_id: String = tx.query_row(
             "SELECT thread_id FROM review_comments WHERE id = ?1",
             [id],
+            |r| r.get(0),
+        )?;
+        let first: String = tx.query_row(
+            "SELECT id FROM review_comments WHERE thread_id = ?1 ORDER BY seq LIMIT 1",
+            [&thread_id],
             |r| r.get(0),
         )?;
         let n = tx.execute(
@@ -235,9 +243,23 @@ impl Store {
         )?;
         if left == 0 {
             tx.execute("DELETE FROM review_threads WHERE id = ?1", [&thread_id])?;
+        } else if first == id {
+            tx.execute(
+                "UPDATE review_threads SET root_deleted = 1 WHERE id = ?1 AND source = 'local'",
+                [&thread_id],
+            )?;
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// Local threads of this PR whose first comment was deleted while replies remained.
+    pub fn rootless_thread_ids(&self, pr_id: &str) -> Result<BTreeSet<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM review_threads WHERE pr_id = ?1 AND root_deleted = 1")?;
+        let ids = stmt.query_map([pr_id], |r| r.get(0))?;
+        ids.collect::<rusqlite::Result<_>>().map_err(Into::into)
     }
 
     pub fn mark_comment_published(

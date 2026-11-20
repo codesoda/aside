@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 
 use anyhow::{Context, Result, bail};
 use rusqlite::{OptionalExtension, params};
+use serde::Serialize;
 
 use crate::util::{new_id, now_rfc3339};
 
@@ -28,6 +29,18 @@ impl std::fmt::Display for NotADraft {
     }
 }
 impl std::error::Error for NotADraft {}
+
+/// The attempt holding a PR's publication claim: in flight, or partial and waiting
+/// for the human to reconcile it against GitHub.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnresolvedPublication {
+    pub attempt_id: String,
+    pub error: Option<String>,
+    pub github_review_id: Option<i64>,
+    /// Drafts the attempt reserved that are not recorded as published.
+    pub remaining_comment_ids: Vec<String>,
+}
 
 impl Store {
     /// Local drafts of this PR that the human held back from publication.
@@ -103,7 +116,8 @@ impl Store {
             .conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let attempted: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM publication_attempts WHERE pr_id = ?1 AND plan_id = ?2",
+            "SELECT COUNT(*) FROM publication_attempts
+             WHERE pr_id = ?1 AND plan_id = ?2 AND status != 'reconciled'",
             params![pr_id, plan_id],
             |r| r.get(0),
         )?;
@@ -162,10 +176,94 @@ impl Store {
             tx.execute(
                 "DELETE FROM publication_claims WHERE attempt_id = ?1
                  AND NOT EXISTS (SELECT 1 FROM publication_attempts a
-                                 WHERE a.pr_id = publication_claims.pr_id AND a.status != 'succeeded')",
+                                 WHERE a.pr_id = publication_claims.pr_id
+                                 AND a.status NOT IN ('succeeded', 'reconciled'))",
                 [id],
             )?;
         }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn unresolved_publication(&self, pr_id: &str) -> Result<Option<UnresolvedPublication>> {
+        let attempt = self
+            .conn
+            .query_row(
+                "SELECT a.id, a.error, a.github_review_id FROM publication_claims c
+                 JOIN publication_attempts a ON a.id = c.attempt_id WHERE c.pr_id = ?1",
+                [pr_id],
+                |r| Ok((r.get::<_, String>(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        let Some((attempt_id, error, github_review_id)) = attempt else {
+            return Ok(None);
+        };
+        let mut stmt = self.conn.prepare(
+            "SELECT c.id FROM publication_reservations r JOIN review_comments c ON c.id = r.comment_id
+             WHERE r.attempt_id = ?1 AND c.publish_state = 'draft' ORDER BY c.seq",
+        )?;
+        let remaining_comment_ids = stmt
+            .query_map([&attempt_id], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(Some(UnresolvedPublication {
+            attempt_id,
+            error,
+            github_review_id,
+            remaining_comment_ids,
+        }))
+    }
+
+    /// The human checked GitHub for the PR's unresolved attempt. Drafts in `published`
+    /// reached GitHub (with their comment ids where known) and are marked published.
+    /// The attempt's other drafts become editable, selectable drafts again, the attempt
+    /// becomes `reconciled` and the PR's claim is released, so a new plan can send them.
+    pub fn reconcile_publication(
+        &mut self,
+        pr_id: &str,
+        attempt_id: &str,
+        published: &[(String, Option<i64>)],
+    ) -> Result<()> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let claimed: Option<String> = tx
+            .query_row(
+                "SELECT attempt_id FROM publication_claims WHERE pr_id = ?1",
+                [pr_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if claimed.as_deref() != Some(attempt_id) {
+            return Err(NotFound(format!("unresolved publication {attempt_id}")).into());
+        }
+        let now = now_rfc3339();
+        for (comment_id, github_id) in published {
+            let reserved: bool = tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM publication_reservations
+                                WHERE comment_id = ?1 AND attempt_id = ?2)",
+                params![comment_id, attempt_id],
+                |r| r.get(0),
+            )?;
+            if !reserved {
+                return Err(NotFound(format!("comment {comment_id} in this publication")).into());
+            }
+            // A draft the attempt already recorded as published keeps its GitHub id.
+            tx.execute(
+                "UPDATE review_comments SET publish_state = 'published', github_comment_id = ?1, updated_at = ?2
+                 WHERE id = ?3 AND publish_state = 'draft'",
+                params![github_id, now, comment_id],
+            )?;
+        }
+        tx.execute(
+            "DELETE FROM publication_reservations WHERE attempt_id = ?1
+             AND comment_id IN (SELECT id FROM review_comments WHERE publish_state = 'draft')",
+            [attempt_id],
+        )?;
+        tx.execute(
+            "UPDATE publication_attempts SET status = 'reconciled', finished_at = ?1 WHERE id = ?2",
+            params![now, attempt_id],
+        )?;
+        tx.execute("DELETE FROM publication_claims WHERE pr_id = ?1", [pr_id])?;
         tx.commit()?;
         Ok(())
     }
@@ -193,7 +291,7 @@ mod tests {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, MIGRATIONS.len() as i64);
         let tables: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE name = 'publication_deselections'",

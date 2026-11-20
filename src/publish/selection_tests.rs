@@ -1,15 +1,19 @@
 //! Selecting individual local drafts for publication (#13).
 
-use super::*;
+use super::{plan::OmitCode, *};
 use crate::{
+    diff,
     github::{PrRef, fake::FakeGh},
-    model::{PullRequest, SCHEMA_VERSION},
+    model::{
+        Actor, AnchorState, Comment, PrSnapshot, PublishState, PullRequest, SCHEMA_VERSION, Side,
+        ThreadSource, Verdict,
+    },
     store::{NewThread, NotADraft, NotFound, ReservedDraft, Store},
 };
 
 const DIFF: &str = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n\
                     diff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n@@ -1 +1 @@\n-was\n+now\n";
-const POST_REVIEW: &[&str] = &["api", "--method", "POST", "repos/o/r/pulls/1/reviews"];
+pub(super) const POST_REVIEW: &[&str] = &["api", "--method", "POST", "repos/o/r/pulls/1/reviews"];
 
 fn snapshot() -> PrSnapshot {
     PrSnapshot {
@@ -41,7 +45,7 @@ fn snapshot() -> PrSnapshot {
 }
 
 /// A GitHub that accepts reviews and replies and lists the inline comments it created.
-fn github() -> Arc<FakeGh> {
+pub(super) fn github() -> Arc<FakeGh> {
     let fake = Arc::new(FakeGh::default());
     fake.on(&["pr", "view"], Ok(r#"{"headRefOid":"head"}"#));
     fake.on(POST_REVIEW, Ok(r#"{"id":7}"#));
@@ -107,7 +111,7 @@ fn comment(
 }
 
 /// Thread t1 on a.rs: draft c1 and its draft reply c2. Thread t2 on b.rs: draft c3.
-fn session(fake: &Arc<FakeGh>) -> Arc<Session> {
+pub(super) fn session(fake: &Arc<FakeGh>) -> Arc<Session> {
     let pr = PrRef {
         owner: "o".into(),
         repo: "r".into(),
@@ -144,7 +148,7 @@ fn session(fake: &Arc<FakeGh>) -> Arc<Session> {
     session
 }
 
-fn select(session: &Session, ids: &[&str], selected: bool) -> Result<()> {
+pub(super) fn select(session: &Session, ids: &[&str], selected: bool) -> Result<()> {
     let ids: Vec<String> = ids.iter().map(|id| id.to_string()).collect();
     session
         .store
@@ -153,11 +157,11 @@ fn select(session: &Session, ids: &[&str], selected: bool) -> Result<()> {
         .set_publication_selection(&session.pr_id, &ids, selected)
 }
 
-fn inline_ids(plan: &PublishPlan) -> Vec<&str> {
+pub(super) fn inline_ids(plan: &PublishPlan) -> Vec<&str> {
     plan.inline.iter().map(|c| c.comment_id.as_str()).collect()
 }
 
-fn omitted(plan: &PublishPlan) -> Vec<(&str, OmitCode)> {
+pub(super) fn omitted(plan: &PublishPlan) -> Vec<(&str, OmitCode)> {
     plan.omitted
         .iter()
         .map(|o| (o.comment_id.as_str(), o.code))
@@ -328,6 +332,26 @@ fn only_local_drafts_of_this_pr_can_be_selected() {
         store.deselected_comment_ids(&s.pr_id).unwrap().is_empty(),
         "a refused change leaves every draft as it was"
     );
+}
+
+#[test]
+fn deleting_a_thread_s_first_draft_leaves_its_replies_local() {
+    let s = session(&github());
+    s.store.lock().unwrap().delete_comment("c1").unwrap();
+    let plan = preview(&s).unwrap();
+    assert_eq!(
+        inline_ids(&plan),
+        ["c3"],
+        "c2 is a reply, not a new comment"
+    );
+    assert!(plan.replies.is_empty());
+    assert_eq!(omitted(&plan), [("c2", OmitCode::ParentNotPublishable)]);
+
+    let s = session(&github());
+    s.store.lock().unwrap().delete_comment("c2").unwrap();
+    let plan = preview(&s).unwrap();
+    assert_eq!(inline_ids(&plan), ["c1", "c3"]);
+    assert!(plan.omitted.is_empty(), "deleting a reply leaves the root");
 }
 
 #[test]
