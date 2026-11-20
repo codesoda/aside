@@ -1,4 +1,5 @@
 //! Loopback-only HTTP API and embedded SPA. The caller owns listener binding and browser launch.
+mod analysis;
 mod assets;
 mod auth;
 mod exclusions;
@@ -34,7 +35,7 @@ use self::{
 use crate::{
     model::Actor,
     session::Session,
-    store::{NotFound, ReservedDraft},
+    store::{NotFound, ReservedDraft, RevisionConflict},
 };
 
 /// Tokens are session-specific secrets. The UI token is never included in API responses.
@@ -120,6 +121,20 @@ fn db_error(error: anyhow::Error) -> ApiError {
             "draft_reserved",
             "draft is reserved for publication",
         )
+    } else if let Some(conflict) = error.downcast_ref::<RevisionConflict>() {
+        // Recoverable: carries the authoritative state to retry against
+        // (analyze.md §12.4). TODO(#26): the triage PATCH that raises it.
+        let mut api = ApiError::new(
+            StatusCode::CONFLICT,
+            "revision_conflict",
+            conflict.to_string(),
+        );
+        api.details = Some(json!({
+            "retryable": true,
+            "current": conflict.current,
+            "currentRevision": conflict.current.as_ref().map_or(0, |s| s.revision),
+        }));
+        api
     } else {
         ApiError::internal()
     }
@@ -148,6 +163,11 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/session", get(session_view))
         .route("/events", get(events))
+        .route("/analysis/summary", get(analysis::summary))
+        .route("/analysis/runs", get(analysis::runs))
+        .route("/analysis/findings", get(analysis::findings))
+        .route("/analysis/findings/{id}/evidence", get(analysis::evidence))
+        .route("/github-feedback/threads", get(analysis::feedback))
         .route(
             "/repositories/current/exclusions",
             get(exclusions).post(create_exclusion),
