@@ -163,6 +163,14 @@ pub struct GithubThread {
     pub line: Option<u32>,
     pub start_line: Option<u32>,
     pub original_line: Option<u32>,
+    #[serde(default)]
+    pub original_start_line: Option<u32>,
+    #[serde(default)]
+    pub start_side: Option<Side>,
+    #[serde(default)]
+    pub viewer_can_resolve: Option<bool>,
+    #[serde(default)]
+    pub viewer_can_unresolve: Option<bool>,
     pub is_outdated: bool,
     pub is_resolved: bool,
     pub comments: Vec<GithubComment>,
@@ -174,8 +182,14 @@ pub struct GithubComment {
     pub node_id: String,
     pub database_id: Option<i64>,
     pub author: String,
+    #[serde(default)]
+    pub author_node_id: Option<String>,
+    #[serde(default)]
+    pub author_type: Option<String>,
     pub body: String,
     pub created_at: String,
+    #[serde(default)]
+    pub updated_at: Option<String>,
 }
 
 /// Everything fetched for one PR revision.
