@@ -24,7 +24,11 @@ was merged down into this branch, so #19 is unblocked.
 2. **Wave 2** — #17 and #18 in parallel, once #15 is merged into this branch.
 3. **Wave 3** — #22 (after #18) and #19 (after #14 merged down), in parallel. Done.
 
-## Open gap: the diff engine is not registered
+## Closed gap: the diff engine is not registered
+
+Closed on `feat/wire-diff-provider`: `analysis::providers::DiffFactsProvider`
+wraps `diff::facts::scan` and is registered in `default_providers()`.
+
 
 #19 and #22 were built in parallel with deliberately disjoint scope: #19 was told
 not to implement scheduling, #22 was told not to implement engines. Both met their

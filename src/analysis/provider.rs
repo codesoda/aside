@@ -23,7 +23,7 @@ pub const INPUT_DIGEST_DOMAIN: &str = "aside-analysis-input/v1";
 /// The engine families named in analyze.md §4.1 step 5. Informational: the
 /// scheduler treats every kind the same way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[allow(dead_code)] // TODO(#19, #23, #28, #31): variants are used as engines register.
+#[allow(dead_code)] // TODO(#23, #28, #31): remaining variants are used as engines register.
 pub enum ProviderKind {
     Feedback,
     Diff,
@@ -64,7 +64,7 @@ impl Default for ProviderLimits {
 /// Static identity of a provider. Everything here feeds the run ID, so a
 /// version or configuration change produces a new run rather than silently
 /// reinterpreting old output (analyze.md §4.3).
-#[allow(dead_code)] // TODO(#19, #23, #28, #31): read by engines.
+#[allow(dead_code)] // TODO(#23, #28, #31): remaining fields read by engines.
 #[derive(Debug, Clone)]
 pub struct ProviderDescriptor {
     pub id: String,
@@ -78,7 +78,7 @@ pub struct ProviderDescriptor {
 }
 
 /// The immutable snapshot a run is pinned to.
-#[allow(dead_code)] // TODO(#19, #23, #28, #31): read by engines.
+#[allow(dead_code)] // TODO(#23, #28, #31): remaining fields read by engines.
 #[derive(Debug, Clone)]
 pub struct AnalysisInput {
     pub pr_id: String,
@@ -142,7 +142,7 @@ impl AnalysisInput {
 }
 
 /// Everything a provider gets for one run.
-#[allow(dead_code)] // TODO(#19, #23, #28, #31): read by engines.
+#[allow(dead_code)] // TODO(#23, #28, #31): remaining fields read by engines.
 #[derive(Debug, Clone)]
 pub struct ProviderContext {
     /// Findings must name this run and the input's snapshot.

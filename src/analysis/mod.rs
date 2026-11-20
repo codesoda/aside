@@ -2,12 +2,13 @@
 //! that runs providers in the background without blocking review (#22).
 
 mod provider;
+mod providers;
 mod scheduler;
 
 #[cfg(test)]
 pub(crate) mod test_doubles;
 
-#[allow(unused_imports)]
+#[allow(unused_imports)] // TODO(#33): rest of the API is consumed over HTTP.
 pub use provider::{
     AnalysisInput, AnalysisProvider, INPUT_DIGEST_DOMAIN, ProviderContext, ProviderDescriptor,
     ProviderKind, ProviderLimits, ProviderOutput,
@@ -19,8 +20,8 @@ use std::sync::Arc;
 
 /// Engines registered for live and demo sessions.
 ///
-/// None ship yet. TODO(#19): diff facts. TODO(#23, #24, #25): GitHub
-/// feedback/CI imports. TODO(#28): history. TODO(#31, #32): structural.
+/// Diff facts (#19). TODO(#23, #24, #25): GitHub feedback/CI imports.
+/// TODO(#28): history. TODO(#31, #32): structural.
 pub fn default_providers() -> Vec<Arc<dyn AnalysisProvider>> {
-    Vec::new()
+    vec![Arc::new(providers::DiffFactsProvider::default())]
 }

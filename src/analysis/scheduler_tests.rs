@@ -167,7 +167,13 @@ async fn review_is_usable_while_a_slow_provider_is_in_flight() {
 async fn session_starts_analysis_without_blocking() {
     let session = session();
     let handles = session.start_analysis().unwrap();
-    assert!(handles.is_empty(), "no engines ship yet");
+    // The registered diff engine is scheduled; this call returned without
+    // waiting for it.
+    assert!(
+        handles
+            .iter()
+            .any(|h| h.provider_id == crate::diff::facts::PROVIDER_ID)
+    );
     let current = session
         .store
         .lock()
