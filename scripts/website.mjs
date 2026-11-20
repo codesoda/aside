@@ -7,6 +7,7 @@ const files = new Map([
   ['/index.html', ['index.html', 'text/html; charset=utf-8']],
   ['/README.md', ['README.md', 'text/markdown; charset=utf-8']],
   ['/agents.md', ['agents.md', 'text/markdown; charset=utf-8']],
+  ['/og-aside.jpg', ['og-aside.jpg', 'image/jpeg']],
   ['/desktop.png', ['desktop.png', 'image/png']],
   ['/mobile.png', ['mobile.png', 'image/png']],
 ]);
