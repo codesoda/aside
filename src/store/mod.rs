@@ -11,7 +11,7 @@ mod schema;
 mod snapshots;
 mod threads;
 
-pub use publication::ReservedDraft;
+pub use publication::{NotADraft, ReservedDraft};
 pub use rules::RuleUpdate;
 pub use threads::NewThread;
 

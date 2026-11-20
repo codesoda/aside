@@ -69,6 +69,44 @@ pub(super) async fn publish_preview(
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub(super) struct SelectionInput {
+    comment_ids: Vec<String>,
+    selected: bool,
+}
+/// Choose which local drafts the next publication plan includes. Human only:
+/// the selection decides what reaches GitHub, so an agent cannot change it.
+pub(super) async fn publish_selection(
+    State(state): State<AppState>,
+    axum::Extension(actor): axum::Extension<Actor>,
+    Json(input): Json<SelectionInput>,
+) -> ApiResult<Json<Value>> {
+    human(actor)?;
+    if input.comment_ids.is_empty() || input.comment_ids.len() > 1_000 {
+        return Err(ApiError::bad("commentIds must list 1–1000 comment ids"));
+    }
+    let deselected = {
+        let mut store = state
+            .session
+            .store
+            .lock()
+            .map_err(|_| ApiError::internal())?;
+        store
+            .set_publication_selection(&state.session.pr_id, &input.comment_ids, input.selected)
+            .map_err(db_error)?;
+        store
+            .deselected_comment_ids(&state.session.pr_id)
+            .map_err(db_error)?
+    };
+    let event = state.session.notify(
+        "publication.selection_changed",
+        json!({"commentIds":input.comment_ids,"selected":input.selected}),
+    );
+    Ok(Json(
+        json!({"deselectedCommentIds":deselected,"sequence":event.sequence}),
+    ))
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct PublishInput {
     plan_id: String,
     confirm: bool,

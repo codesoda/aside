@@ -28,13 +28,13 @@ use self::{
         create_exclusion, delete_exclusion, exclusions, preview_exclusion, update_exclusion,
     },
     files::{clear_reviewed, file_history, mark_reviewed},
-    review::{finish, publish_confirm, publish_preview, refresh},
+    review::{finish, publish_confirm, publish_preview, publish_selection, refresh},
     threads::{create_thread, delete_comment, reply, update_comment, update_thread},
 };
 use crate::{
     model::Actor,
     session::Session,
-    store::{NotFound, ReservedDraft},
+    store::{NotADraft, NotFound, ReservedDraft},
 };
 
 /// Tokens are session-specific secrets. The UI token is never included in API responses.
@@ -120,6 +120,12 @@ fn db_error(error: anyhow::Error) -> ApiError {
             "draft_reserved",
             "draft is reserved for publication",
         )
+    } else if error.downcast_ref::<NotADraft>().is_some() {
+        ApiError::new(
+            StatusCode::CONFLICT,
+            "not_a_local_draft",
+            "only local drafts can be selected for publication",
+        )
     } else {
         ApiError::internal()
     }
@@ -175,6 +181,10 @@ pub fn router(state: AppState) -> Router {
         .route("/refresh", post(refresh))
         .route("/review/finish", post(finish))
         .route("/review/publish/preview", post(publish_preview))
+        .route(
+            "/review/publish/selection",
+            axum::routing::put(publish_selection),
+        )
         .route("/review/publish", post(publish_confirm))
         .fallback(api_not_found)
         .layer(DefaultBodyLimit::max(1_048_576));
@@ -224,6 +234,9 @@ async fn events(
 async fn api_not_found() -> Response {
     ApiError::missing().into_response()
 }
+
+#[cfg(test)]
+mod selection_tests;
 
 #[cfg(test)]
 mod tests {

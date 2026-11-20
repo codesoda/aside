@@ -136,4 +136,12 @@ pub(super) const MIGRATIONS: &[&str] = &[
         attempt_id TEXT NOT NULL REFERENCES publication_attempts(id)
     );
     ",
+    // v3: local drafts the human held back from publication. No row means the
+    // draft is selected, so every eligible draft is published unless deselected.
+    "
+    CREATE TABLE publication_deselections (
+        comment_id TEXT PRIMARY KEY REFERENCES review_comments(id) ON DELETE CASCADE,
+        created_at TEXT NOT NULL
+    );
+    ",
 ];

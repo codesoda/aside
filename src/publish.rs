@@ -4,6 +4,7 @@
 //! timeout may mean GitHub accepted a request, so the same plan is never sent
 //! again automatically. A human must reconcile uncertain attempts on GitHub.
 
+use std::collections::BTreeSet;
 use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -13,7 +14,8 @@ use crate::{
     diff,
     github::{self, GhRunner, NewReviewComment, PrRef},
     model::{
-        Actor, AnchorState, PrSnapshot, PublishState, ReviewThread, Side, ThreadSource, Verdict,
+        Actor, AnchorState, Comment, PrSnapshot, PublishState, ReviewThread, Side, ThreadSource,
+        Verdict,
     },
     session::Session,
     util::sha256_hex,
@@ -42,11 +44,40 @@ pub struct PlannedReply {
     pub body: String,
 }
 
+/// Why a local draft is left out of a publication plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OmitCode {
+    /// Imported from GitHub, or an empty body.
+    NotALocalDraft,
+    /// The human deselected it; it stays a draft for a later review.
+    NotSelected,
+    /// The thread's new first comment is deselected, so a reply has nothing to attach to.
+    ParentNotSelected,
+    /// The thread has no comment on GitHub, and its first comment cannot be published.
+    ParentNotPublishable,
+    /// The thread's anchor is stale, missing or incomplete.
+    StaleAnchor,
+}
+
+impl OmitCode {
+    fn reason(self) -> &'static str {
+        match self {
+            Self::NotALocalDraft => "not a nonempty local draft",
+            Self::NotSelected => "not selected for this review",
+            Self::ParentNotSelected => "its thread's first comment is not selected",
+            Self::ParentNotPublishable => "no publishable parent comment",
+            Self::StaleAnchor => "anchor is stale, missing or incomplete",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OmittedDraft {
     pub comment_id: String,
     pub thread_id: String,
+    pub code: OmitCode,
     pub reason: String,
 }
 
@@ -104,11 +135,99 @@ fn current_anchor(t: &ReviewThread, snapshot: &PrSnapshot) -> bool {
         })
 }
 
+/// What a thread's replies attach to on GitHub: replies hang off the first comment.
+enum Parent {
+    /// The first comment exists on GitHub, or is the new inline comment in this plan.
+    Ready(String, Option<i64>),
+    /// The first comment is a local draft the human deselected.
+    NotSelected,
+    /// Nothing publishable to attach to.
+    Missing,
+}
+
+/// Why `comment` must stay local, or `None` if it can be planned.
+fn omission(
+    comment: &Comment,
+    is_root: bool,
+    parent: &Parent,
+    anchored: bool,
+    deselected: &BTreeSet<String>,
+) -> Option<OmitCode> {
+    if comment.author_kind == Actor::Github || comment.body.trim().is_empty() {
+        Some(OmitCode::NotALocalDraft)
+    } else if deselected.contains(&comment.id) {
+        Some(OmitCode::NotSelected)
+    } else if is_root {
+        (!anchored).then_some(OmitCode::StaleAnchor)
+    } else {
+        match parent {
+            Parent::Ready(..) => None,
+            Parent::NotSelected => Some(OmitCode::ParentNotSelected),
+            Parent::Missing => Some(OmitCode::ParentNotPublishable),
+        }
+    }
+}
+
+/// Plan one thread's drafts. A deselected or unpublishable first comment leaves
+/// the thread's draft replies local too, each with its reason.
+fn plan_thread(
+    plan: &mut PublishPlan,
+    thread: &ReviewThread,
+    snapshot: &PrSnapshot,
+    deselected: &BTreeSet<String>,
+) -> Result<()> {
+    let mut parent = match thread.comments.first() {
+        Some(c) if c.github_comment_id.is_some() => {
+            Parent::Ready(c.id.clone(), c.github_comment_id)
+        }
+        _ => Parent::Missing,
+    };
+    let anchored = current_anchor(thread, snapshot);
+    for (index, comment) in thread.comments.iter().enumerate() {
+        if comment.publish_state != PublishState::Draft {
+            continue;
+        }
+        let is_root = index == 0 && thread.source == ThreadSource::Local;
+        if let Some(code) = omission(comment, is_root, &parent, anchored, deselected) {
+            if is_root && code == OmitCode::NotSelected {
+                parent = Parent::NotSelected;
+            }
+            plan.omitted.push(OmittedDraft {
+                comment_id: comment.id.clone(),
+                thread_id: thread.id.clone(),
+                code,
+                reason: code.reason().into(),
+            });
+        } else if is_root {
+            plan.inline.push(PlannedInline {
+                comment_id: comment.id.clone(),
+                thread_id: thread.id.clone(),
+                path: thread.path.clone(),
+                side: thread.side,
+                line: thread.line.context("current anchor has no line")?,
+                start_line: thread.start_line,
+                body: comment.body.clone(),
+            });
+            parent = Parent::Ready(comment.id.clone(), None);
+        } else if let Parent::Ready(parent_comment_id, github_parent_id) = &parent {
+            plan.replies.push(PlannedReply {
+                comment_id: comment.id.clone(),
+                thread_id: thread.id.clone(),
+                parent_comment_id: parent_comment_id.clone(),
+                github_parent_id: *github_parent_id,
+                body: comment.body.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
 fn build_plan(
     snapshot: &PrSnapshot,
     verdict: Verdict,
     summary: &str,
     threads: &[ReviewThread],
+    deselected: &BTreeSet<String>,
 ) -> Result<PublishPlan> {
     let mut plan = PublishPlan {
         plan_id: String::new(),
@@ -120,56 +239,7 @@ fn build_plan(
         omitted: Vec::new(),
     };
     for thread in threads {
-        let root = thread.comments.first();
-        let mut parent = root
-            .filter(|c| c.github_comment_id.is_some())
-            .map(|c| (c.id.clone(), c.github_comment_id));
-        for (index, comment) in thread.comments.iter().enumerate() {
-            if comment.publish_state != PublishState::Draft {
-                continue;
-            }
-            let reason = if comment.author_kind == Actor::Github || comment.body.trim().is_empty() {
-                Some("not a nonempty local draft")
-            } else if index == 0 && thread.source == ThreadSource::Local {
-                if current_anchor(thread, snapshot) {
-                    None
-                } else {
-                    Some("anchor is stale, missing or incomplete")
-                }
-            } else if parent.is_none() {
-                Some("no publishable parent comment")
-            } else {
-                None
-            };
-            if let Some(reason) = reason {
-                plan.omitted.push(OmittedDraft {
-                    comment_id: comment.id.clone(),
-                    thread_id: thread.id.clone(),
-                    reason: reason.into(),
-                });
-                continue;
-            }
-            if index == 0 && thread.source == ThreadSource::Local {
-                plan.inline.push(PlannedInline {
-                    comment_id: comment.id.clone(),
-                    thread_id: thread.id.clone(),
-                    path: thread.path.clone(),
-                    side: thread.side,
-                    line: thread.line.context("current anchor has no line")?,
-                    start_line: thread.start_line,
-                    body: comment.body.clone(),
-                });
-                parent = Some((comment.id.clone(), None));
-            } else if let Some((parent_comment_id, github_parent_id)) = &parent {
-                plan.replies.push(PlannedReply {
-                    comment_id: comment.id.clone(),
-                    thread_id: thread.id.clone(),
-                    parent_comment_id: parent_comment_id.clone(),
-                    github_parent_id: *github_parent_id,
-                    body: comment.body.clone(),
-                });
-            }
-        }
+        plan_thread(&mut plan, thread, snapshot, deselected)?;
     }
     if matches!(verdict, Verdict::RequestChanges | Verdict::Comment)
         && summary.trim().is_empty()
@@ -181,9 +251,10 @@ fn build_plan(
     Ok(plan)
 }
 
-/// Build the exact outbound review and reply operations; invalid drafts are omitted with reasons.
-/// In v1 all eligible local drafts are selected; the API has no per-comment selection state.
-/// Callers must display `omitted` as well as the selected operations before confirmation.
+/// Build the exact outbound review and reply operations. Every eligible local draft is
+/// selected unless the human deselected it (`PUT /review/publish/selection`); deselected,
+/// dependent and invalid drafts are omitted with a code and a reason. Callers must display
+/// `omitted` as well as the selected operations before confirmation.
 pub fn preview(session: &Session) -> Result<PublishPlan> {
     let snapshot = session
         .snapshot
@@ -204,6 +275,7 @@ pub fn preview(session: &Session) -> Result<PublishPlan> {
         verdict,
         &review.summary,
         &store.list_threads(&session.pr_id)?,
+        &store.deselected_comment_ids(&session.pr_id)?,
     )
 }
 
@@ -448,26 +520,51 @@ mod tests {
 
     #[test]
     fn plan_id_binds_head_and_text() {
-        let a = build_plan(&snapshot(), Verdict::Approve, "looks good", &[]).unwrap();
+        let a = build_plan(
+            &snapshot(),
+            Verdict::Approve,
+            "looks good",
+            &[],
+            &BTreeSet::new(),
+        )
+        .unwrap();
         assert_eq!(
             a.plan_id,
-            build_plan(&snapshot(), Verdict::Approve, "looks good", &[])
-                .unwrap()
-                .plan_id
+            build_plan(
+                &snapshot(),
+                Verdict::Approve,
+                "looks good",
+                &[],
+                &BTreeSet::new()
+            )
+            .unwrap()
+            .plan_id
         );
         let mut changed = snapshot();
         changed.pr.head_sha = "later".into();
         assert_ne!(
             a.plan_id,
-            build_plan(&changed, Verdict::Approve, "looks good", &[])
-                .unwrap()
-                .plan_id
+            build_plan(
+                &changed,
+                Verdict::Approve,
+                "looks good",
+                &[],
+                &BTreeSet::new()
+            )
+            .unwrap()
+            .plan_id
         );
         assert_ne!(
             a.plan_id,
-            build_plan(&snapshot(), Verdict::Approve, "different", &[])
-                .unwrap()
-                .plan_id
+            build_plan(
+                &snapshot(),
+                Verdict::Approve,
+                "different",
+                &[],
+                &BTreeSet::new()
+            )
+            .unwrap()
+            .plan_id
         );
     }
 
@@ -650,8 +747,11 @@ mod tests {
                 github_comment_id: None,
             }],
         };
-        let plan = build_plan(&snapshot(), Verdict::Approve, "", &[t]).unwrap();
+        let plan = build_plan(&snapshot(), Verdict::Approve, "", &[t], &BTreeSet::new()).unwrap();
         assert!(plan.inline.is_empty());
         assert_eq!(plan.omitted[0].comment_id, "c");
     }
 }
+
+#[cfg(test)]
+mod selection_tests;
