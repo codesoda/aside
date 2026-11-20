@@ -6,7 +6,7 @@ use crate::model::PrSnapshot;
 use super::Store;
 
 /// How many snapshots to keep per PR.
-pub(super) const SNAPSHOT_RETENTION: i64 = 20;
+pub(crate) const SNAPSHOT_RETENTION: i64 = 20;
 
 impl Store {
     pub fn save_snapshot(&mut self, pr_id: &str, snapshot: &PrSnapshot) -> Result<i64> {

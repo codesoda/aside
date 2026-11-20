@@ -3,14 +3,23 @@
 //! The database lives in the OS data directory (never in a repository).
 //! Set `ASIDE_DATA_DIR` to override. Demo sessions use an in-memory database.
 
+// Analysis persistence (#18). Consumers land in #22 (scheduler) and #33 (API);
+// until then parts of the API are unused in this binary.
+#[allow(dead_code)]
+mod analysis;
 mod publication;
 mod repositories;
 mod review;
 mod rules;
 mod schema;
-mod snapshots;
+pub(crate) mod snapshots;
 mod threads;
 
+#[allow(unused_imports)]
+pub use analysis::{
+    ANALYSIS_SNAPSHOT_RETENTION, AnalysisBatch, BatchOutcome, ImportBatch, ImportedSourceWrite,
+    ObservationLabel, PruneReport, Raw, RevisionConflict, StoredFinding,
+};
 pub use publication::ReservedDraft;
 pub use rules::RuleUpdate;
 pub use threads::NewThread;
@@ -73,6 +82,12 @@ impl Store {
             let tx = self.conn.transaction()?;
             tx.execute_batch(sql)
                 .with_context(|| format!("migration v{} failed", i + 1))?;
+            if i + 1 > schema::MIGRATION_TABLE_VERSION {
+                tx.execute(
+                    "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
+                    rusqlite::params![(i + 1) as i64, crate::util::now_rfc3339()],
+                )?;
+            }
             tx.pragma_update(None, "user_version", (i + 1) as i64)?;
             tx.commit()?;
         }
