@@ -143,7 +143,7 @@ mod tests {
             "pageInfo": {"hasNextPage": false, "endCursor": null},
             "nodes": [{"id": "T1", "isResolved": false, "isOutdated": false, "path": "a.rs", "line": 1,
                 "originalLine": 1, "startLine": null, "diffSide": "RIGHT",
-                "comments": {"nodes": [{"id": "C1", "databaseId": 11, "body": "why?", "createdAt": "2026-01-01T00:00:00Z", "author": {"login": "bob"}}]}}]
+                "comments": {"pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": [{"id": "C1", "databaseId": 11, "body": "why?", "createdAt": "2026-01-01T00:00:00Z", "author": {"login": "bob"}}]}}]
         }}}}})
         .to_string()
     }
@@ -172,6 +172,10 @@ mod tests {
         assert_eq!(snap.github_threads[0].comments[0].database_id, Some(11));
         assert_eq!(snap.reviews[0].author, "bob");
         assert!(snap.warnings.is_empty());
+        assert_eq!(
+            snap.github_threads_completeness,
+            crate::model::Completeness::Complete
+        );
     }
 
     // A force push can happen after the metadata request, while the diff and
@@ -492,5 +496,9 @@ mod tests {
             "1 of 2 files must mark the snapshot incomplete"
         );
         assert!(snap.warnings.iter().any(|w| w.contains("review threads")));
+        assert_eq!(
+            snap.github_threads_completeness,
+            crate::model::Completeness::Failed
+        );
     }
 }
