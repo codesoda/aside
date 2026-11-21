@@ -56,6 +56,7 @@ pub fn snapshot(version: usize) -> PrSnapshot {
         issue_comments: intelligence::issue_comments(),
         issue_comments_completeness: crate::model::Completeness::Complete,
         issue_comments_problems: Vec::new(),
+        checks: Default::default(),
         warnings: parsed.warnings,
         complete: true,
         fetched_at: "2026-11-20T11:40:19Z".into(),

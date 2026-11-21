@@ -273,7 +273,7 @@ fn migrates_released_v2_schema_and_keeps_review_data() {
     released_v2_database(&path);
     let mut s = Store::open(&path).unwrap();
     assert_eq!(user_version(&s.conn), MIGRATIONS.len() as i64);
-    assert_eq!(recorded_versions(&s.conn), vec![1, 2, 3, 4, 5]);
+    assert_eq!(recorded_versions(&s.conn), vec![1, 2, 3, 4, 5, 6]);
     let acks = s.list_acknowledgements("pr1").unwrap();
     assert_eq!(acks.len(), 1);
     assert_eq!(acks[0].path, "src/a.rs");
@@ -285,8 +285,43 @@ fn migrates_released_v2_schema_and_keeps_review_data() {
     drop(s);
     // Re-opening is a no-op: migrations are forward-only and applied once.
     let s = Store::open(&path).unwrap();
-    assert_eq!(recorded_versions(&s.conn), vec![1, 2, 3, 4, 5]);
+    assert_eq!(recorded_versions(&s.conn), vec![1, 2, 3, 4, 5, 6]);
     assert_eq!(s.current_analysis_snapshot("pr1").unwrap(), Some(id));
+}
+
+#[test]
+fn branch_v5_rest_schema_gains_main_import_memberships() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("branch-v5.db");
+    released_v2_database(&path);
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch(MIGRATIONS[2]).unwrap();
+    for &(table, column, kind) in schema::GITHUB_METADATA {
+        conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {kind}"))
+            .unwrap();
+    }
+    conn.execute_batch(
+        "INSERT INTO schema_migrations (version, applied_at) VALUES
+         (4, '2025-01-01'), (5, '2025-01-01');
+         ALTER TABLE review_comments ADD COLUMN in_reply_to_id INTEGER;
+         CREATE INDEX idx_comments_github_database_id ON review_comments(github_comment_id);
+         ALTER TABLE review_comments ADD COLUMN source_status TEXT NOT NULL DEFAULT 'available';",
+    )
+    .unwrap();
+    conn.pragma_update(None, "user_version", 5).unwrap();
+    drop(conn);
+    let store = Store::open(&path).unwrap();
+    assert_eq!(user_version(&store.conn), 6);
+    assert_eq!(recorded_versions(&store.conn), vec![1, 2, 3, 4, 5, 6]);
+    let count: i64 = store
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'imported_source_prs'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
 }
 
 #[test]
@@ -337,8 +372,8 @@ fn colliding_v3_schemas_converge_without_losing_rows() {
         drop(conn);
         for _ in 0..2 {
             let s = Store::open(&path).unwrap();
-            assert_eq!(user_version(&s.conn), 5);
-            assert_eq!(recorded_versions(&s.conn), vec![1, 2, 3, 4, 5]);
+            assert_eq!(user_version(&s.conn), MIGRATIONS.len() as i64);
+            assert_eq!(recorded_versions(&s.conn), vec![1, 2, 3, 4, 5, 6]);
             let body: String = s
                 .conn
                 .query_row(
@@ -1208,6 +1243,47 @@ fn source_aliases_merge_representations_and_findings_share_records() {
         "no alias chains"
     );
     assert_eq!(f.count("review_findings"), 2, "both source findings kept");
+}
+
+#[test]
+fn shared_native_head_is_available_independently_to_two_prs() {
+    let mut f = fixture();
+    let repo = f
+        .store
+        .resolve_repository("github.com", "acme", "widget", Some(REPO))
+        .unwrap();
+    let other = f.store.upsert_pull_request(&repo.id, 43, "t", "u").unwrap();
+    let rec = |key: &str| ImportedSourceWrite {
+        native: native("github_check_run", key),
+        raw_json: "{}".into(),
+        aliases: vec![("rest_id".into(), key.into())],
+    };
+    let first = f
+        .store
+        .commit_import_batch(&f.pr, &import("check_runs", true, vec![rec("100")]))
+        .unwrap();
+    let second = f
+        .store
+        .commit_import_batch(&other, &import("check_runs", true, vec![rec("100")]))
+        .unwrap();
+    assert_eq!(first, second, "native identity is shared");
+    assert_eq!(
+        f.store.resolve_imported_alias("rest_id", "100").unwrap(),
+        Some(first[0])
+    );
+    f.store
+        .commit_import_batch(&other, &import("check_runs", true, vec![]))
+        .unwrap();
+    assert!(f.store.list_imported_sources(&f.pr, None).unwrap()[0].available);
+    assert!(!f.store.list_imported_sources(&other, None).unwrap()[0].available);
+    f.store
+        .commit_import_batch(&other, &import("check_runs", true, vec![rec("100")]))
+        .unwrap();
+    f.store
+        .commit_import_batch(&f.pr, &import("check_runs", true, vec![]))
+        .unwrap();
+    assert!(!f.store.list_imported_sources(&f.pr, None).unwrap()[0].available);
+    assert!(f.store.list_imported_sources(&other, None).unwrap()[0].available);
 }
 
 #[test]

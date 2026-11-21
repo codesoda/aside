@@ -112,6 +112,8 @@ pub fn fetch_snapshot(gh: &dyn GhRunner, pr_ref: &PrRef, limits: &Limits) -> Res
         warnings.push(format!("comments incomplete: {problem}"));
     }
 
+    let checks = super::checks::fetch(gh, pr_ref, &meta.head_ref_oid);
+
     // The diff and paginated files API target a mutable PR number. A force push
     // or base update during ingestion must never yield a complete mixed revision.
     #[derive(Deserialize)]
@@ -162,6 +164,7 @@ pub fn fetch_snapshot(gh: &dyn GhRunner, pr_ref: &PrRef, limits: &Limits) -> Res
         issue_comments: comments.records,
         issue_comments_completeness: comments.completeness,
         issue_comments_problems: comments.problems,
+        checks,
         warnings,
         complete,
         fetched_at: now_rfc3339(),

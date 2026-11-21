@@ -82,9 +82,10 @@ impl Store {
                 // Both branches released a different v3. Inspect under the write
                 // transaction before applying only the missing half.
                 migrate_colliding_v3(&tx)?;
-            } else if i + 1 == 5 {
-                migrate_rest_columns(&tx)?;
             } else {
+                if i + 1 == 5 || i + 1 == 6 {
+                    migrate_rest_columns(&tx)?;
+                }
                 tx.execute_batch(sql)
                     .with_context(|| format!("migration v{} failed", i + 1))?;
             }

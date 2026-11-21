@@ -342,12 +342,31 @@ pub(super) const MIGRATIONS: &[&str] = &[
     ",
     // v4 is procedural: either historical v3 may already be installed.
     "",
-    // v5: REST aliases and explicit source status. Older v3/v4 databases
-    // receive these without changing either historical migration.
-    "ALTER TABLE review_comments ADD COLUMN in_reply_to_id INTEGER;
-     CREATE INDEX idx_comments_github_database_id ON review_comments(github_comment_id);
-     ALTER TABLE review_comments ADD COLUMN source_status TEXT NOT NULL DEFAULT 'available'
-       CHECK (source_status IN ('available', 'source_deleted_or_unavailable'));",
+    // v5: native identity is global; availability belongs to each PR import.
+    "CREATE TABLE imported_source_prs (
+        source_record_id INTEGER NOT NULL REFERENCES imported_source_records(id) ON DELETE CASCADE,
+        pr_id TEXT NOT NULL REFERENCES pull_requests(id),
+        available INTEGER NOT NULL DEFAULT 1,
+        first_seen_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        PRIMARY KEY (source_record_id, pr_id)
+    );
+    CREATE INDEX idx_imported_source_prs_pr ON imported_source_prs(pr_id, source_record_id);
+    INSERT INTO imported_source_prs (source_record_id, pr_id, available, first_seen_at, last_seen_at)
+    SELECT id, pr_id, available, first_seen_at, last_seen_at FROM imported_source_records;",
+    // v6: reconcile the two independently shipped v5 schemas. The migration
+    // runner also installs the REST columns if this database came from main.
+    "CREATE TABLE IF NOT EXISTS imported_source_prs (
+        source_record_id INTEGER NOT NULL REFERENCES imported_source_records(id) ON DELETE CASCADE,
+        pr_id TEXT NOT NULL REFERENCES pull_requests(id),
+        available INTEGER NOT NULL DEFAULT 1,
+        first_seen_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        PRIMARY KEY (source_record_id, pr_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_imported_source_prs_pr ON imported_source_prs(pr_id, source_record_id);
+    INSERT OR IGNORE INTO imported_source_prs (source_record_id, pr_id, available, first_seen_at, last_seen_at)
+    SELECT id, pr_id, available, first_seen_at, last_seen_at FROM imported_source_records;"
 ];
 
 pub(super) const GITHUB_METADATA: &[(&str, &str, &str)] = &[

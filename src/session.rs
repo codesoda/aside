@@ -27,8 +27,9 @@ use crate::{
         ScopeOutcome, SessionView, SnapshotId, SourceCoverage, ThreadSource, classify, overall,
         run_event_type, stable_digest,
     },
+    model::{NativeSourceKey, NativeSourceRef, SourceKind},
     rules,
-    store::{ObservationLabel, Raw, Store},
+    store::{ImportBatch, ImportedSourceWrite, ObservationLabel, Raw, Store},
     util::{new_id, now_rfc3339},
 };
 
@@ -50,6 +51,7 @@ pub struct Session {
     demo_version: AtomicUsize,
     /// What the current analysis results were computed for (#27).
     analysis_key: Mutex<Option<AnalysisKey>>,
+    analysis_context: RwLock<Option<github::context::AnalysisContext>>,
 }
 
 /// Emits envelopes on the session's single SSE channel. Cloned into the
@@ -163,6 +165,7 @@ impl Session {
             &snapshot.pr.url,
         )?;
         store.save_snapshot(&pr_id, &snapshot)?;
+        persist_checks(&mut store, &pr_id, &repository.id, &snapshot)?;
         store.sync_github_threads(
             &pr_id,
             &snapshot.pr.head_sha,
@@ -202,15 +205,16 @@ impl Session {
             refresh_lock: AsyncMutex::new(()),
             demo_version: AtomicUsize::new(demo_version),
             analysis_key: Mutex::new(None),
+            analysis_context: RwLock::new(None),
         }))
     }
 
     pub fn view(&self, actor: Actor) -> Result<SessionView> {
-        let snapshot = self
-            .snapshot
-            .read()
-            .expect("snapshot lock poisoned")
-            .clone();
+        let (snapshot, analysis_context) = {
+            let snapshot = self.snapshot.read().expect("snapshot lock poisoned");
+            let context = self.analysis_context.read().expect("context lock poisoned");
+            (snapshot.clone(), context.clone())
+        };
         let store = self.store.lock().expect("store lock poisoned");
         let rules = store.list_rules(&self.repository.id)?;
         let mut threads = store.list_threads(&self.pr_id)?;
@@ -238,6 +242,7 @@ impl Session {
             complete: snapshot.complete,
             fetched_at: snapshot.fetched_at,
             analysis,
+            analysis_context,
         })
     }
 
@@ -301,6 +306,8 @@ impl Session {
             threads,
             file_states,
             github_threads: snapshot.github_threads,
+            head_sha: snapshot.pr.head_sha,
+            annotation_coverage: snapshot.checks.annotation_coverage,
         })
     }
 
@@ -459,6 +466,13 @@ impl Session {
         Ok((handles, invalidation))
     }
 
+    pub fn set_analysis_context(&self, context: github::context::AnalysisContext) {
+        *self
+            .analysis_context
+            .write()
+            .expect("context lock poisoned") = Some(context);
+    }
+
     /// Emit an event only after the corresponding mutation has committed.
     pub fn notify(&self, event_type: &str, payload: Value) -> EventEnvelope {
         EventBus {
@@ -487,6 +501,23 @@ impl Session {
             .context("GitHub refresh task failed")??;
             (snapshot, None)
         };
+        let prior_context = self
+            .analysis_context
+            .read()
+            .expect("context lock poisoned")
+            .clone();
+        let replacement = prior_context.map(|context| {
+            if context.base_sha == snapshot.pr.base_sha && context.head_sha == snapshot.pr.head_sha
+            {
+                context
+            } else {
+                github::context::AnalysisContext::unavailable(
+                    &snapshot.pr.base_sha,
+                    &snapshot.pr.head_sha,
+                    "PR revision changed; analysis context requires resolution again",
+                )
+            }
+        });
         let previous_head = self
             .snapshot
             .read()
@@ -503,6 +534,7 @@ impl Session {
                 &snapshot.pr.url,
             )?;
             store.save_snapshot(&self.pr_id, &snapshot)?;
+            persist_checks(&mut store, &self.pr_id, &self.repository.id, &snapshot)?;
             store.sync_github_threads(
                 &self.pr_id,
                 &snapshot.pr.head_sha,
@@ -514,7 +546,17 @@ impl Session {
                 store.reopen_review(&self.pr_id)?;
             }
         }
-        *self.snapshot.write().expect("snapshot lock poisoned") = snapshot;
+        // Publish both views together only after all persistent writes succeed.
+        // Readers acquire snapshot before context (see view), so hold that lock
+        // while replacing the paired context.
+        {
+            let mut current = self.snapshot.write().expect("snapshot lock poisoned");
+            *self
+                .analysis_context
+                .write()
+                .expect("context lock poisoned") = replacement;
+            *current = snapshot;
+        }
         if let Some(next) = next_demo_version {
             self.demo_version.store(next, Ordering::SeqCst);
         }
@@ -580,12 +622,17 @@ pub(crate) struct AnalysisRead<'a> {
     pub file_states: Vec<FileState>,
     /// Native imported GitHub threads of the canonical snapshot.
     pub github_threads: Vec<GithubThread>,
+    pub head_sha: String,
+    pub annotation_coverage: Vec<(u64, crate::github::checks::Coverage)>,
 }
 
 pub mod source {
     pub const PR_DIFF: &str = "github.pr_diff";
     pub const REVIEW_THREADS: &str = "github.review_threads";
     pub const REVIEWS_AND_COMMENTS: &str = "github.reviews_and_comments";
+    pub const CHECK_RUNS: &str = "github.check_runs";
+    pub const CHECK_ANNOTATIONS: &str = "github.check_annotations";
+    pub const COMMIT_STATUSES: &str = "github.commit_statuses";
 }
 
 /// Reason codes for import sources (analyze.md §13.4, lower-cased like the
@@ -788,7 +835,77 @@ fn import_sources(snapshot: &PrSnapshot) -> Vec<ImportSource> {
         reason_codes: feedback_codes,
         limitations: feedback_limitations,
     });
+    for (source_id, item_kind, count, coverage) in [
+        (
+            source::CHECK_RUNS,
+            "check_runs",
+            snapshot.checks.runs.len(),
+            &snapshot.checks.runs_coverage,
+        ),
+        (
+            source::COMMIT_STATUSES,
+            "commit_statuses",
+            snapshot.checks.statuses.len(),
+            &snapshot.checks.statuses_coverage,
+        ),
+    ] {
+        out.push(check_source(source_id, item_kind, count, coverage));
+    }
+    let mut annotation_coverage = snapshot.checks.runs_coverage.clone();
+    for (id, coverage) in &snapshot.checks.annotation_coverage {
+        if coverage.completeness != Completeness::Complete {
+            annotation_coverage.completeness =
+                match (annotation_coverage.completeness, coverage.completeness) {
+                    (Completeness::Failed, _) | (_, Completeness::Failed) => Completeness::Failed,
+                    _ => Completeness::Partial,
+                };
+        }
+        annotation_coverage.reasons.extend(
+            coverage
+                .reasons
+                .iter()
+                .map(|reason| format!("run {id}: {reason}")),
+        );
+    }
+    if annotation_coverage.completeness == Completeness::Failed
+        && !snapshot.checks.annotations.is_empty()
+    {
+        annotation_coverage.completeness = Completeness::Partial;
+    }
+    out.push(check_source(
+        source::CHECK_ANNOTATIONS,
+        "check_annotations",
+        snapshot.checks.annotations.len(),
+        &annotation_coverage,
+    ));
     out
+}
+
+fn check_source(
+    source_id: &'static str,
+    item_kind: &'static str,
+    count: usize,
+    coverage: &crate::github::checks::Coverage,
+) -> ImportSource {
+    ImportSource {
+        source_id,
+        item_kind,
+        completeness: coverage.completeness,
+        status: match coverage.completeness {
+            Completeness::Complete => RunStatus::Succeeded,
+            Completeness::Failed => RunStatus::Failed,
+            _ => RunStatus::Partial,
+        },
+        items: if coverage.completeness == Completeness::Failed {
+            KnownCount::Unknown
+        } else {
+            KnownCount::Known {
+                value: count as u32,
+            }
+        },
+        reason_codes: coverage.reasons.clone(),
+        limitations: coverage.reasons.clone(),
+    }
 }
 
 /// The source-specific reason code a thread import problem adds on top of the
@@ -822,6 +939,97 @@ fn thread_problem_reason(problem: &ThreadImportProblem) -> Option<&'static str> 
             ..
         } => None,
     }
+}
+
+fn persist_checks(
+    store: &mut Store,
+    pr_id: &str,
+    repository_id: &str,
+    snapshot: &PrSnapshot,
+) -> Result<()> {
+    let checks = &snapshot.checks;
+    if checks.sha.is_empty() {
+        return Ok(());
+    }
+    let native = |kind, key, url| {
+        Raw::new(NativeSourceRef {
+            host: "github.com".into(),
+            repository_id: repository_id.into(),
+            source_kind: kind,
+            key,
+            external_url: url,
+        })
+    };
+    let runs = checks
+        .runs
+        .iter()
+        .map(|r| {
+            Ok(ImportedSourceWrite {
+                native: native(
+                    SourceKind::GithubCheckRun,
+                    NativeSourceKey::Upstream(r.github_check_run_id.to_string()),
+                    r.details_url.clone(),
+                )?,
+                raw_json: serde_json::to_string(r)?,
+                aliases: vec![],
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let annotations = checks
+        .annotations
+        .iter()
+        .map(|a| {
+            Ok(ImportedSourceWrite {
+                native: native(SourceKind::GithubCheckAnnotation, a.key.clone(), None)?,
+                raw_json: serde_json::to_string(a)?,
+                aliases: vec![],
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let statuses = checks
+        .statuses
+        .iter()
+        .map(|s| {
+            Ok(ImportedSourceWrite {
+                native: native(
+                    SourceKind::GithubCommitStatus,
+                    NativeSourceKey::Upstream(s.github_status_id.to_string()),
+                    s.target_url.clone(),
+                )?,
+                raw_json: serde_json::to_string(s)?,
+                aliases: vec![],
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let annotations_complete = checks.runs_coverage.completeness == Completeness::Complete
+        && checks
+            .annotation_coverage
+            .iter()
+            .all(|(_, c)| c.completeness == Completeness::Complete);
+    for (kind, complete, records) in [
+        (
+            "check_runs",
+            checks.runs_coverage.completeness == Completeness::Complete,
+            runs,
+        ),
+        ("check_annotations", annotations_complete, annotations),
+        (
+            "commit_statuses",
+            checks.statuses_coverage.completeness == Completeness::Complete,
+            statuses,
+        ),
+    ] {
+        store.commit_import_batch(
+            pr_id,
+            &ImportBatch {
+                resource_kind: format!("{kind}:{}", checks.sha),
+                complete,
+                observed_at: snapshot.fetched_at.clone(),
+                records,
+            },
+        )?;
+    }
+    Ok(())
 }
 
 /// Persists each import source as a terminal `github_import` run on the
@@ -1025,6 +1233,27 @@ mod tests {
         util::now_rfc3339,
     };
 
+    #[test]
+    fn session_view_exposes_context_independent_of_diff_completeness() {
+        let session = session();
+        let snapshot = session.snapshot.read().unwrap().clone();
+        let context = github::context::AnalysisContext {
+            source: "api-only".into(),
+            base_sha: snapshot.pr.base_sha.clone(),
+            head_sha: snapshot.pr.head_sha.clone(),
+            comparison_base: None,
+            history_count: 0,
+            shallow: false,
+            complete: false,
+            reason: Some("fetch not consented".into()),
+        };
+        session.set_analysis_context(context);
+        let view = session.view(Actor::Human).unwrap();
+        assert_eq!(view.analysis_context.unwrap().source, "api-only");
+        assert!(!view.analysis.sources.is_empty());
+        assert_eq!(view.complete, snapshot.complete);
+    }
+
     fn session() -> Arc<Session> {
         Session::new(
             demo::snapshot(0),
@@ -1170,6 +1399,52 @@ mod tests {
         assert_eq!(view.sequence, 1);
         assert_eq!(receiver.try_recv().unwrap().sequence, 1);
         assert_eq!(session.refresh().await.unwrap().sequence, 2);
+    }
+
+    #[tokio::test]
+    async fn refresh_invalidates_context_on_captured_revision_change() {
+        let session = session();
+        let initial = session.view(Actor::Human).unwrap();
+        let context = github::context::AnalysisContext {
+            source: "fetched-cache".into(),
+            base_sha: initial.pr.base_sha.clone(),
+            head_sha: initial.pr.head_sha.clone(),
+            comparison_base: Some(initial.pr.base_sha.clone()),
+            history_count: 2,
+            shallow: false,
+            complete: true,
+            reason: None,
+        };
+        session.set_analysis_context(context);
+        let changed = session.refresh().await.unwrap();
+        let invalidated = changed.analysis_context.unwrap();
+        assert_eq!(invalidated.source, "api-only");
+        assert_eq!(invalidated.base_sha, changed.pr.base_sha);
+        assert_eq!(invalidated.head_sha, changed.pr.head_sha);
+        assert_eq!(
+            invalidated.reason.as_deref(),
+            Some("PR revision changed; analysis context requires resolution again")
+        );
+        assert_eq!(
+            session
+                .view(Actor::Human)
+                .unwrap()
+                .analysis_context
+                .unwrap()
+                .head_sha,
+            changed.pr.head_sha
+        );
+        let unchanged = session.refresh().await.unwrap();
+        assert_eq!(unchanged.analysis_context.unwrap().source, "api-only");
+        assert_eq!(
+            session
+                .view(Actor::Human)
+                .unwrap()
+                .analysis_context
+                .unwrap()
+                .head_sha,
+            unchanged.pr.head_sha
+        );
     }
 
     #[tokio::test]
