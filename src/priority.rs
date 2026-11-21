@@ -35,6 +35,9 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use serde::Serialize;
+use ts_rs::TS;
+
 use crate::{
     model::{
         AssertionKind, AttentionLevel, ExclusionRule, FileScope, FileState, FileStatus, FindingId,
@@ -83,7 +86,9 @@ pub struct QueueInput<'a> {
 }
 
 /// Lexicographic queue buckets (analyze.md §11.2), in queue order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
 pub enum Bucket {
     /// Changed since reviewed, with an unresolved current thread or a
     /// validated high-attention finding.
@@ -114,7 +119,9 @@ impl Bucket {
 }
 
 /// What kind of fact a [`Reason`] cites.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
 pub enum ReasonCode {
     /// Acknowledgement: no current review of this file.
     Unreviewed,
@@ -140,7 +147,9 @@ pub enum ReasonCode {
 
 /// One concrete fact behind an item's position. At least one of the IDs is
 /// set for every code except the acknowledgement codes, which cite the file.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct Reason {
     pub code: ReasonCode,
     pub finding_id: Option<FindingId>,
@@ -188,7 +197,9 @@ impl Reason {
 
 /// A finding attached to a file, with its three axes kept apart. Copies no
 /// score or confidence from the finding on purpose.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct FindingEntry {
     pub id: FindingId,
     pub source_kind: SourceKind,
@@ -205,7 +216,9 @@ pub struct FindingEntry {
 
 /// Findings and threads about one topic, grouped for display. Members are
 /// IDs of untouched source records; nothing is merged.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct TopicGroup {
     /// `correlationGroupId` when a member has one, else the smallest member ID.
     pub key: String,
@@ -213,7 +226,9 @@ pub struct TopicGroup {
     pub threads: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct QueueItem {
     pub file_id: String,
     pub path: String,
@@ -234,10 +249,12 @@ pub struct QueueItem {
 }
 
 /// Whether an empty remaining queue may be read as "nothing to review".
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(tag = "kind", content = "count", rename_all = "snake_case")]
+#[ts(export)]
 pub enum QueueVerdict {
     /// Remaining items exist.
-    Remaining(usize),
+    Remaining(#[ts(type = "number")] usize),
     /// Nothing remains and every source is complete.
     AllClear,
     /// Nothing remains so far, but some source is still running.
@@ -247,7 +264,9 @@ pub enum QueueVerdict {
     EmptyIncomplete,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct ReviewQueue {
     /// Every changed file exactly once, in queue order.
     pub items: Vec<QueueItem>,
@@ -264,7 +283,9 @@ impl ReviewQueue {
 }
 
 /// A count split by scope. `in_scope + ignored == total` always holds.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct Tally {
     pub total: u32,
     pub in_scope: u32,
@@ -288,7 +309,9 @@ impl Tally {
 
 /// Scope-aware summary counts (analyze.md §11.4). Labels denominators: file,
 /// thread and finding tallies are separate and never summed together.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct ScopeCounts {
     pub files: Tally,
     /// In-scope files only, by acknowledgement.

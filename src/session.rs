@@ -22,10 +22,10 @@ use crate::{
         Acknowledgement, Actor, AnalysisCoverage, AnalysisKey, AnalysisMode, AnalysisRun,
         AnalysisSummary, AnchorState, ChangedFile, Completeness, CoverageEntry, CoverageScope,
         EventEnvelope, ExclusionRule, FINDINGS_INVALIDATED, FINDINGS_UPSERTED, FileState,
-        FileStatus, Invalidation, KnownCount, LIFECYCLE_EVENT_VERSION, PrSnapshot, Progress,
-        Repository, ReviewThread, RunKeyInput, RunStatus, RunWarning, SCHEMA_VERSION, ScopeOutcome,
-        SessionView, SnapshotId, SourceCoverage, ThreadSource, classify, overall, run_event_type,
-        stable_digest,
+        FileStatus, GithubThread, Invalidation, KnownCount, LIFECYCLE_EVENT_VERSION, PrSnapshot,
+        Progress, Repository, ReviewThread, RunKeyInput, RunStatus, RunWarning, SCHEMA_VERSION,
+        ScopeOutcome, SessionView, SnapshotId, SourceCoverage, ThreadSource, classify, overall,
+        run_event_type, stable_digest,
     },
     rules,
     store::{ObservationLabel, Raw, Store},
@@ -208,29 +208,9 @@ impl Session {
             .clone();
         let store = self.store.lock().expect("store lock poisoned");
         let rules = store.list_rules(&self.repository.id)?;
-        let acknowledgements = store.list_acknowledgements(&self.pr_id)?;
         let mut threads = store.list_threads(&self.pr_id)?;
         attach_files(&mut threads, &snapshot.files);
-        let file_states = snapshot
-            .files
-            .iter()
-            .map(|file| {
-                let scope = rules::evaluate(&rules, &file.path);
-                let (review_status, last_reviewed_at) = review_status(file, &acknowledgements);
-                FileState {
-                    file_id: file.id.clone(),
-                    path: file.path.clone(),
-                    status: if scope.ignored {
-                        FileStatus::Ignored
-                    } else {
-                        review_status
-                    },
-                    review_status,
-                    scope,
-                    last_reviewed_at,
-                }
-            })
-            .collect::<Vec<_>>();
+        let file_states = self.file_states(&store, &snapshot, &rules)?;
         let progress = progress(&file_states);
         let analysis = self.analysis_summary(&store, &snapshot, &rules)?;
         Ok(SessionView {
@@ -256,6 +236,37 @@ impl Session {
         })
     }
 
+    /// Derived per-file review and scope state. Reads acknowledgements only;
+    /// never writes them.
+    fn file_states(
+        &self,
+        store: &Store,
+        snapshot: &PrSnapshot,
+        rules: &[ExclusionRule],
+    ) -> Result<Vec<FileState>> {
+        let acknowledgements = store.list_acknowledgements(&self.pr_id)?;
+        Ok(snapshot
+            .files
+            .iter()
+            .map(|file| {
+                let scope = rules::evaluate(rules, &file.path);
+                let (review_status, last_reviewed_at) = review_status(file, &acknowledgements);
+                FileState {
+                    file_id: file.id.clone(),
+                    path: file.path.clone(),
+                    status: if scope.ignored {
+                        FileStatus::Ignored
+                    } else {
+                        review_status
+                    },
+                    review_status,
+                    scope,
+                    last_reviewed_at,
+                }
+            })
+            .collect())
+    }
+
     /// One consistent read of analysis state for the read-only API (#33): a
     /// single snapshot clone and a single store lock, so the items a page
     /// returns and the coverage it reports describe the same state.
@@ -274,13 +285,17 @@ impl Session {
         let summary = self.analysis_summary(&store, &snapshot, &rules)?;
         let mut threads = store.list_threads(&self.pr_id)?;
         attach_files(&mut threads, &snapshot.files);
+        let file_states = self.file_states(&store, &snapshot, &rules)?;
         read(AnalysisRead {
             store: &store,
             pr_id: &self.pr_id,
+            session_id: &self.id,
             sequence,
             rules,
             summary,
             threads,
+            file_states,
+            github_threads: snapshot.github_threads,
         })
     }
 
@@ -554,6 +569,11 @@ pub(crate) struct AnalysisRead<'a> {
     pub summary: AnalysisSummary,
     /// Every thread of the PR with current file IDs attached.
     pub threads: Vec<ReviewThread>,
+    pub session_id: &'a str,
+    /// Derived review/scope state of every changed file (read-only).
+    pub file_states: Vec<FileState>,
+    /// Native imported GitHub threads of the canonical snapshot.
+    pub github_threads: Vec<GithubThread>,
 }
 
 pub mod source {
