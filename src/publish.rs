@@ -550,6 +550,7 @@ mod tests {
             issue_comments: vec![],
             issue_comments_completeness: crate::model::Completeness::Complete,
             issue_comments_problems: Vec::new(),
+            checks: Default::default(),
             warnings: vec![],
             complete: true,
             fetched_at: String::new(),

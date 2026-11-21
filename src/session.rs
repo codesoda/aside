@@ -27,8 +27,9 @@ use crate::{
         ScopeOutcome, SessionView, SnapshotId, SourceCoverage, ThreadSource, classify, overall,
         run_event_type, stable_digest,
     },
+    model::{NativeSourceKey, NativeSourceRef, SourceKind},
     rules,
-    store::{ObservationLabel, Raw, Store},
+    store::{ImportBatch, ImportedSourceWrite, ObservationLabel, Raw, Store},
     util::{new_id, now_rfc3339},
 };
 
@@ -163,6 +164,7 @@ impl Session {
             &snapshot.pr.url,
         )?;
         store.save_snapshot(&pr_id, &snapshot)?;
+        persist_checks(&mut store, &pr_id, &repository.id, &snapshot)?;
         store.sync_github_threads(&pr_id, &snapshot.pr.head_sha, &snapshot.github_threads)?;
         revalidate_anchors(&mut store, &pr_id, &snapshot)?;
         let demo_version =
@@ -296,6 +298,8 @@ impl Session {
             threads,
             file_states,
             github_threads: snapshot.github_threads,
+            head_sha: snapshot.pr.head_sha,
+            annotation_coverage: snapshot.checks.annotation_coverage,
         })
     }
 
@@ -498,6 +502,7 @@ impl Session {
                 &snapshot.pr.url,
             )?;
             store.save_snapshot(&self.pr_id, &snapshot)?;
+            persist_checks(&mut store, &self.pr_id, &self.repository.id, &snapshot)?;
             store.sync_github_threads(
                 &self.pr_id,
                 &snapshot.pr.head_sha,
@@ -574,12 +579,17 @@ pub(crate) struct AnalysisRead<'a> {
     pub file_states: Vec<FileState>,
     /// Native imported GitHub threads of the canonical snapshot.
     pub github_threads: Vec<GithubThread>,
+    pub head_sha: String,
+    pub annotation_coverage: Vec<(u64, crate::github::checks::Coverage)>,
 }
 
 pub mod source {
     pub const PR_DIFF: &str = "github.pr_diff";
     pub const REVIEW_THREADS: &str = "github.review_threads";
     pub const REVIEWS_AND_COMMENTS: &str = "github.reviews_and_comments";
+    pub const CHECK_RUNS: &str = "github.check_runs";
+    pub const CHECK_ANNOTATIONS: &str = "github.check_annotations";
+    pub const COMMIT_STATUSES: &str = "github.commit_statuses";
 }
 
 /// Reason codes for import sources (analyze.md §13.4, lower-cased like the
@@ -782,7 +792,77 @@ fn import_sources(snapshot: &PrSnapshot) -> Vec<ImportSource> {
         reason_codes: feedback_codes,
         limitations: feedback_limitations,
     });
+    for (source_id, item_kind, count, coverage) in [
+        (
+            source::CHECK_RUNS,
+            "check_runs",
+            snapshot.checks.runs.len(),
+            &snapshot.checks.runs_coverage,
+        ),
+        (
+            source::COMMIT_STATUSES,
+            "commit_statuses",
+            snapshot.checks.statuses.len(),
+            &snapshot.checks.statuses_coverage,
+        ),
+    ] {
+        out.push(check_source(source_id, item_kind, count, coverage));
+    }
+    let mut annotation_coverage = snapshot.checks.runs_coverage.clone();
+    for (id, coverage) in &snapshot.checks.annotation_coverage {
+        if coverage.completeness != Completeness::Complete {
+            annotation_coverage.completeness =
+                match (annotation_coverage.completeness, coverage.completeness) {
+                    (Completeness::Failed, _) | (_, Completeness::Failed) => Completeness::Failed,
+                    _ => Completeness::Partial,
+                };
+        }
+        annotation_coverage.reasons.extend(
+            coverage
+                .reasons
+                .iter()
+                .map(|reason| format!("run {id}: {reason}")),
+        );
+    }
+    if annotation_coverage.completeness == Completeness::Failed
+        && !snapshot.checks.annotations.is_empty()
+    {
+        annotation_coverage.completeness = Completeness::Partial;
+    }
+    out.push(check_source(
+        source::CHECK_ANNOTATIONS,
+        "check_annotations",
+        snapshot.checks.annotations.len(),
+        &annotation_coverage,
+    ));
     out
+}
+
+fn check_source(
+    source_id: &'static str,
+    item_kind: &'static str,
+    count: usize,
+    coverage: &crate::github::checks::Coverage,
+) -> ImportSource {
+    ImportSource {
+        source_id,
+        item_kind,
+        completeness: coverage.completeness,
+        status: match coverage.completeness {
+            Completeness::Complete => RunStatus::Succeeded,
+            Completeness::Failed => RunStatus::Failed,
+            _ => RunStatus::Partial,
+        },
+        items: if coverage.completeness == Completeness::Failed {
+            KnownCount::Unknown
+        } else {
+            KnownCount::Known {
+                value: count as u32,
+            }
+        },
+        reason_codes: coverage.reasons.clone(),
+        limitations: coverage.reasons.clone(),
+    }
 }
 
 /// The source-specific reason code a thread import problem adds on top of the
@@ -816,6 +896,97 @@ fn thread_problem_reason(problem: &ThreadImportProblem) -> Option<&'static str> 
             ..
         } => None,
     }
+}
+
+fn persist_checks(
+    store: &mut Store,
+    pr_id: &str,
+    repository_id: &str,
+    snapshot: &PrSnapshot,
+) -> Result<()> {
+    let checks = &snapshot.checks;
+    if checks.sha.is_empty() {
+        return Ok(());
+    }
+    let native = |kind, key, url| {
+        Raw::new(NativeSourceRef {
+            host: "github.com".into(),
+            repository_id: repository_id.into(),
+            source_kind: kind,
+            key,
+            external_url: url,
+        })
+    };
+    let runs = checks
+        .runs
+        .iter()
+        .map(|r| {
+            Ok(ImportedSourceWrite {
+                native: native(
+                    SourceKind::GithubCheckRun,
+                    NativeSourceKey::Upstream(r.github_check_run_id.to_string()),
+                    r.details_url.clone(),
+                )?,
+                raw_json: serde_json::to_string(r)?,
+                aliases: vec![],
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let annotations = checks
+        .annotations
+        .iter()
+        .map(|a| {
+            Ok(ImportedSourceWrite {
+                native: native(SourceKind::GithubCheckAnnotation, a.key.clone(), None)?,
+                raw_json: serde_json::to_string(a)?,
+                aliases: vec![],
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let statuses = checks
+        .statuses
+        .iter()
+        .map(|s| {
+            Ok(ImportedSourceWrite {
+                native: native(
+                    SourceKind::GithubCommitStatus,
+                    NativeSourceKey::Upstream(s.github_status_id.to_string()),
+                    s.target_url.clone(),
+                )?,
+                raw_json: serde_json::to_string(s)?,
+                aliases: vec![],
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let annotations_complete = checks.runs_coverage.completeness == Completeness::Complete
+        && checks
+            .annotation_coverage
+            .iter()
+            .all(|(_, c)| c.completeness == Completeness::Complete);
+    for (kind, complete, records) in [
+        (
+            "check_runs",
+            checks.runs_coverage.completeness == Completeness::Complete,
+            runs,
+        ),
+        ("check_annotations", annotations_complete, annotations),
+        (
+            "commit_statuses",
+            checks.statuses_coverage.completeness == Completeness::Complete,
+            statuses,
+        ),
+    ] {
+        store.commit_import_batch(
+            pr_id,
+            &ImportBatch {
+                resource_kind: format!("{kind}:{}", checks.sha),
+                complete,
+                observed_at: snapshot.fetched_at.clone(),
+                records,
+            },
+        )?;
+    }
+    Ok(())
 }
 
 /// Persists each import source as a terminal `github_import` run on the

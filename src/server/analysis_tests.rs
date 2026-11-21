@@ -633,6 +633,62 @@ async fn empty_page_from_a_partial_run_is_distinguishable_from_a_clean_one() {
 }
 
 #[tokio::test]
+async fn checks_are_persisted_and_served_separately_from_review_threads() {
+    let mut snapshot = demo::snapshot(0);
+    snapshot.checks.sha = snapshot.pr.head_sha.clone();
+    snapshot.checks.runs_coverage.completeness = Completeness::Complete;
+    snapshot.checks.runs_coverage.reasons.clear();
+    snapshot.checks.statuses_coverage.completeness = Completeness::Complete;
+    snapshot.checks.statuses_coverage.reasons.clear();
+    snapshot.checks.runs.push(crate::model::ImportedCheckRun {
+        github_check_run_id: 42,
+        app_slug: None,
+        name: "CI".into(),
+        status: "completed".into(),
+        conclusion: Some("failure".into()),
+        head_sha: snapshot.pr.head_sha.clone(),
+        started_at: None,
+        completed_at: None,
+        details_url: None,
+        summary: None,
+        annotations_count: 0,
+        observed_at: "now".into(),
+    });
+    let session = Session::new(snapshot, Store::open_in_memory().unwrap(), None, None).unwrap();
+    session.start_analysis().unwrap();
+    let app = app(&session);
+    let checks = ok(&app, "/api/v1/github-feedback/checks").await;
+    assert_eq!(checks["items"].as_array().unwrap().len(), 1);
+    assert_eq!(checks["items"][0]["githubCheckRunId"], 42);
+    assert_eq!(checks["items"][0]["currentHead"], true);
+    assert_eq!(
+        checks["items"][0]["native"]["key"],
+        serde_json::json!({"kind":"upstream","value":"42"})
+    );
+    let threads = ok(&app, "/api/v1/github-feedback/threads").await;
+    assert!(
+        threads["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item.get("githubCheckRunId").is_none())
+    );
+    assert_eq!(
+        session
+            .store
+            .lock()
+            .unwrap()
+            .list_imported_sources(&session.pr_id, None)
+            .unwrap()
+            .len(),
+        1
+    );
+    session.refresh().await.unwrap();
+    let stale = ok(&app, "/api/v1/github-feedback/checks").await;
+    assert_eq!(stale["items"][0]["currentHead"], false);
+}
+
+#[tokio::test]
 async fn feedback_reports_thread_import_coverage() {
     let mut snapshot = demo::snapshot(0);
     snapshot.github_threads_completeness = Completeness::Partial;
