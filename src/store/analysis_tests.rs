@@ -213,10 +213,6 @@ fn simple_batch(run: &AnalysisRun, claims: &[&str]) -> AnalysisBatch {
     batch(run, findings, vec![ev])
 }
 
-// ---------------------------------------------------------------------------
-// Migrations
-// ---------------------------------------------------------------------------
-
 fn user_version(conn: &Connection) -> i64 {
     conn.pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap()
@@ -460,10 +456,6 @@ fn analysis_tables_never_reference_review_state() {
     assert_eq!(triggers, 0);
 }
 
-// ---------------------------------------------------------------------------
-// Restart and labels
-// ---------------------------------------------------------------------------
-
 #[test]
 fn restart_restores_current_and_historical_without_false_current_labels() {
     let dir = tempfile::tempdir().unwrap();
@@ -611,10 +603,6 @@ fn duplicate_delivery_is_idempotent() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Run states for the scheduler (#22)
-// ---------------------------------------------------------------------------
-
 #[test]
 fn records_scheduler_run_states_and_rejects_reopening_terminal_runs() {
     let mut f = fixture();
@@ -719,10 +707,6 @@ fn queued_runs_on_old_snapshots_finish_as_stale() {
     assert_eq!(f.label_of("late"), ObservationLabel::Historical);
 }
 
-// ---------------------------------------------------------------------------
-// Failed writes
-// ---------------------------------------------------------------------------
-
 #[test]
 fn failed_mid_batch_write_leaves_no_partial_rows() {
     let mut f = fixture();
@@ -806,10 +790,6 @@ fn invalid_findings_are_rejected_before_writing() {
     }
     assert_eq!(f.count("review_findings"), 0);
 }
-
-// ---------------------------------------------------------------------------
-// Concurrency
-// ---------------------------------------------------------------------------
 
 #[test]
 fn concurrent_writers_wait_for_the_lock_instead_of_failing() {
@@ -909,10 +889,6 @@ fn concurrent_triage_updates_cannot_lose_writes() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Retention
-// ---------------------------------------------------------------------------
-
 #[test]
 fn retention_prunes_old_runs_but_keeps_current_unfinished_and_triage() {
     let mut f = fixture();
@@ -1000,10 +976,6 @@ fn snapshot_json_retention_does_not_break_analysis_links() {
     assert_eq!(link, None);
     assert_eq!(f.store.current_analysis_snapshot(&f.pr).unwrap(), Some(s));
 }
-
-// ---------------------------------------------------------------------------
-// Source fidelity
-// ---------------------------------------------------------------------------
 
 #[test]
 fn records_from_newer_versions_round_trip_without_degrading() {
@@ -1269,10 +1241,6 @@ fn only_complete_import_refreshes_mark_missing_records_unavailable() {
         .unwrap();
     assert_eq!(avail(&f), 1);
 }
-
-// ---------------------------------------------------------------------------
-// Local triage and isolation
-// ---------------------------------------------------------------------------
 
 #[test]
 fn dispositions_survive_restart_and_use_revisions() {

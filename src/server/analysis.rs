@@ -49,10 +49,6 @@ pub(super) const DEFAULT_PAGE_SIZE: usize = 50;
 pub(super) const MAX_PAGE_SIZE: usize = 200;
 const CURSOR_VERSION: u32 = 1;
 
-// ---------------------------------------------------------------------------
-// Query parameters
-// ---------------------------------------------------------------------------
-
 /// Shared list parameters. Values are parsed by hand so an absurd `limit` is
 /// clamped rather than rejected and bad booleans are a clean 400.
 #[derive(Debug, Default, Deserialize)]
@@ -90,10 +86,6 @@ pub(super) fn page_size(limit: Option<&str>) -> ApiResult<usize> {
     let n = raw.parse::<usize>().unwrap_or(usize::MAX);
     Ok(n.clamp(1, MAX_PAGE_SIZE))
 }
-
-// ---------------------------------------------------------------------------
-// Cursors
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct Cursor {
@@ -144,10 +136,6 @@ fn stale(expected: &str, read: &AnalysisRead<'_>, reason: &str) -> ApiError {
     }));
     error
 }
-
-// ---------------------------------------------------------------------------
-// Pages
-// ---------------------------------------------------------------------------
 
 /// Coverage of the sources a list was derived from. `complete` is true only
 /// when every one of them ran over its whole scope, so an empty page with
@@ -300,10 +288,6 @@ fn in_scope(read: &AnalysisRead<'_>, path: Option<&str>) -> bool {
 fn is_analysis_source(s: &SourceCoverage) -> bool {
     s.mode != AnalysisMode::GithubImport
 }
-
-// ---------------------------------------------------------------------------
-// Handlers
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

@@ -295,8 +295,6 @@ fn shuffled<T: Clone>(items: &[T], mut seed: u64) -> Vec<T> {
     out
 }
 
-// --- Golden fixtures and drift ------------------------------------------------
-
 #[test]
 fn manifests_are_synthetic_and_round_trip_exactly() {
     for fx in fixtures() {
@@ -364,8 +362,6 @@ fn golden_drift_guard_rejects_renamed_fields_and_unknown_values() {
     assert!(serde_json::from_value::<GoldenFacts>(golden).is_err());
 }
 
-// --- Stability ----------------------------------------------------------------
-
 #[test]
 fn facts_are_byte_stable_under_reordered_and_shuffled_inputs() {
     for fx in fixtures() {
@@ -405,8 +401,6 @@ fn stable_ids_do_not_collide_across_fixtures() {
         }
     }
 }
-
-// --- Unknown, not clean -------------------------------------------------------
 
 /// Layer 1 (#19): every unsupported file has an explicit, non-zero outcome
 /// for every content rule, and the run reports reduced completeness when
@@ -590,8 +584,6 @@ fn presentation_never_turns_partial_scans_into_all_clear() {
         assert_eq!(queue.items.len(), snapshot.files.len());
     }
 }
-
-// --- False test-gap claims -----------------------------------------------------
 
 /// Phrases that would turn an absent test change into a proven defect.
 const DEFECT_PHRASES: &[&str] = &[
@@ -851,8 +843,6 @@ fn deleted_binary_and_mode_only_files_get_file_level_facts_only() {
         }
     }
 }
-
-// --- Label evaluation ---------------------------------------------------------
 
 type Label = (String, Option<String>, AssertionKind, AttentionLevel);
 

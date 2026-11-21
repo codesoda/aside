@@ -18,10 +18,6 @@ use crate::util::sha256_hex;
 /// Independent of [`super::SCHEMA_VERSION`], which versions the session view.
 pub const ANALYSIS_SCHEMA_VERSION: u32 = 1;
 
-// ---------------------------------------------------------------------------
-// Stable IDs
-// ---------------------------------------------------------------------------
-
 /// Deterministic digest over an ordered list of optional fields.
 ///
 /// Encoding, fed to SHA-256 in order:
@@ -260,10 +256,6 @@ impl EvidenceId {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Analysis runs
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
@@ -387,10 +379,6 @@ impl AnalysisRun {
             })
     }
 }
-
-// ---------------------------------------------------------------------------
-// Coverage, applicability and unknown semantics
-// ---------------------------------------------------------------------------
 
 /// A count that may be unknown. Never encode "unknown" as `0` (analyze.md
 /// §10.1 rule 9, §11.4).

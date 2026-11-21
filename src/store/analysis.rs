@@ -41,10 +41,6 @@ use super::{NotFound, Store};
 /// addition to the current snapshot and any snapshot with unfinished runs.
 pub const ANALYSIS_SNAPSHOT_RETENTION: usize = 5;
 
-// ---------------------------------------------------------------------------
-// Source-preserving records
-// ---------------------------------------------------------------------------
-
 /// A decoded record together with the exact JSON it came from.
 ///
 /// Persist with [`Raw::json`], never by re-serialising [`Raw::value`]: decoding
@@ -107,10 +103,6 @@ fn enum_str<T: Serialize>(value: &T) -> Result<String> {
         other => bail!("expected a string enum, got {other}"),
     }
 }
-
-// ---------------------------------------------------------------------------
-// Public types
-// ---------------------------------------------------------------------------
 
 /// Results of one run, written atomically.
 #[derive(Debug, Clone)]
@@ -209,10 +201,6 @@ impl std::fmt::Display for RevisionConflict {
 }
 
 impl std::error::Error for RevisionConflict {}
-
-// ---------------------------------------------------------------------------
-// Snapshots
-// ---------------------------------------------------------------------------
 
 impl Store {
     fn write_tx(&mut self) -> Result<Transaction<'_>> {
@@ -327,10 +315,6 @@ impl Store {
         Ok(report)
     }
 
-    // -----------------------------------------------------------------------
-    // Runs
-    // -----------------------------------------------------------------------
-
     /// Inserts or updates a run's state (queued, running, partial, skipped,
     /// failed, stale, ...). A terminal run can only move to `stale`.
     /// Output-bearing states for a snapshot that is no longer current are
@@ -368,10 +352,6 @@ impl Store {
         let rows = stmt.query_map([pr_id], |r| r.get::<_, String>(0))?;
         rows.map(|json| Raw::from_json(&json?)).collect()
     }
-
-    // -----------------------------------------------------------------------
-    // Result batches
-    // -----------------------------------------------------------------------
 
     /// Writes a run's findings, evidence and relations in one transaction.
     /// Re-delivering the same batch is idempotent.
@@ -537,10 +517,6 @@ impl Store {
         Ok(outcome)
     }
 
-    // -----------------------------------------------------------------------
-    // Reads
-    // -----------------------------------------------------------------------
-
     /// Findings for a PR with their derived label. With `include_historical`
     /// false only current findings are returned.
     pub fn list_findings(
@@ -617,10 +593,6 @@ impl Store {
         rows.map(|json| Ok(serde_json::from_str(&json?)?)).collect()
     }
 
-    // -----------------------------------------------------------------------
-    // Finding aliases
-    // -----------------------------------------------------------------------
-
     /// Records that `alias` reports the same logical claim as `canonical`.
     /// Both source findings stay intact.
     #[allow(dead_code)] // TODO(#23): not consumed by the binary yet.
@@ -676,10 +648,6 @@ impl Store {
         let rows = stmt.query_map([canonical.as_str()], |r| r.get::<_, String>(0))?;
         rows.map(|id| Ok(FindingId::new(id?))).collect()
     }
-
-    // -----------------------------------------------------------------------
-    // Imported native records
-    // -----------------------------------------------------------------------
 
     /// Upserts one GitHub resource group in a single transaction. Returns the
     /// record IDs in input order.
@@ -820,10 +788,6 @@ impl Store {
         rows.map(|id| Ok(FindingId::new(id?))).collect()
     }
 
-    // -----------------------------------------------------------------------
-    // Local triage
-    // -----------------------------------------------------------------------
-
     /// Compare-and-set update of local triage. `expected_revision` is `0` when
     /// no state exists yet. Returns the stored state with its new revision.
     /// Never touches review state and is never published to GitHub.
@@ -900,10 +864,6 @@ impl Store {
         Ok(())
     }
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 type NativeKey = (String, String, String, String, String);
 
