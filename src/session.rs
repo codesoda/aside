@@ -9,6 +9,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use tokio::sync::{Mutex as AsyncMutex, broadcast};
 
+use crate::github::{LegacyKind, ThreadImportProblem};
 use crate::{
     analysis::{
         self, AnalysisInput, AnalysisProvider, RunEvent, RunHandle, Scheduler, SchedulerConfig,
@@ -21,10 +22,10 @@ use crate::{
         Acknowledgement, Actor, AnalysisCoverage, AnalysisKey, AnalysisMode, AnalysisRun,
         AnalysisSummary, AnchorState, ChangedFile, Completeness, CoverageEntry, CoverageScope,
         EventEnvelope, ExclusionRule, FINDINGS_INVALIDATED, FINDINGS_UPSERTED, FileState,
-        FileStatus, Invalidation, KnownCount, LIFECYCLE_EVENT_VERSION, PrSnapshot, Progress,
-        Repository, ReviewThread, RunKeyInput, RunStatus, RunWarning, SCHEMA_VERSION, ScopeOutcome,
-        SessionView, SnapshotId, SourceCoverage, ThreadSource, classify, overall, run_event_type,
-        stable_digest,
+        FileStatus, GithubThread, Invalidation, KnownCount, LIFECYCLE_EVENT_VERSION, PrSnapshot,
+        Progress, Repository, ReviewThread, RunKeyInput, RunStatus, RunWarning, SCHEMA_VERSION,
+        ScopeOutcome, SessionView, SnapshotId, SourceCoverage, ThreadSource, classify, overall,
+        run_event_type, stable_digest,
     },
     rules,
     store::{ObservationLabel, Raw, Store},
@@ -207,29 +208,9 @@ impl Session {
             .clone();
         let store = self.store.lock().expect("store lock poisoned");
         let rules = store.list_rules(&self.repository.id)?;
-        let acknowledgements = store.list_acknowledgements(&self.pr_id)?;
         let mut threads = store.list_threads(&self.pr_id)?;
         attach_files(&mut threads, &snapshot.files);
-        let file_states = snapshot
-            .files
-            .iter()
-            .map(|file| {
-                let scope = rules::evaluate(&rules, &file.path);
-                let (review_status, last_reviewed_at) = review_status(file, &acknowledgements);
-                FileState {
-                    file_id: file.id.clone(),
-                    path: file.path.clone(),
-                    status: if scope.ignored {
-                        FileStatus::Ignored
-                    } else {
-                        review_status
-                    },
-                    review_status,
-                    scope,
-                    last_reviewed_at,
-                }
-            })
-            .collect::<Vec<_>>();
+        let file_states = self.file_states(&store, &snapshot, &rules)?;
         let progress = progress(&file_states);
         let analysis = self.analysis_summary(&store, &snapshot, &rules)?;
         Ok(SessionView {
@@ -255,6 +236,37 @@ impl Session {
         })
     }
 
+    /// Derived per-file review and scope state. Reads acknowledgements only;
+    /// never writes them.
+    fn file_states(
+        &self,
+        store: &Store,
+        snapshot: &PrSnapshot,
+        rules: &[ExclusionRule],
+    ) -> Result<Vec<FileState>> {
+        let acknowledgements = store.list_acknowledgements(&self.pr_id)?;
+        Ok(snapshot
+            .files
+            .iter()
+            .map(|file| {
+                let scope = rules::evaluate(rules, &file.path);
+                let (review_status, last_reviewed_at) = review_status(file, &acknowledgements);
+                FileState {
+                    file_id: file.id.clone(),
+                    path: file.path.clone(),
+                    status: if scope.ignored {
+                        FileStatus::Ignored
+                    } else {
+                        review_status
+                    },
+                    review_status,
+                    scope,
+                    last_reviewed_at,
+                }
+            })
+            .collect())
+    }
+
     /// One consistent read of analysis state for the read-only API (#33): a
     /// single snapshot clone and a single store lock, so the items a page
     /// returns and the coverage it reports describe the same state.
@@ -273,13 +285,17 @@ impl Session {
         let summary = self.analysis_summary(&store, &snapshot, &rules)?;
         let mut threads = store.list_threads(&self.pr_id)?;
         attach_files(&mut threads, &snapshot.files);
+        let file_states = self.file_states(&store, &snapshot, &rules)?;
         read(AnalysisRead {
             store: &store,
             pr_id: &self.pr_id,
+            session_id: &self.id,
             sequence,
             rules,
             summary,
             threads,
+            file_states,
+            github_threads: snapshot.github_threads,
         })
     }
 
@@ -553,6 +569,11 @@ pub(crate) struct AnalysisRead<'a> {
     pub summary: AnalysisSummary,
     /// Every thread of the PR with current file IDs attached.
     pub threads: Vec<ReviewThread>,
+    pub session_id: &'a str,
+    /// Derived review/scope state of every changed file (read-only).
+    pub file_states: Vec<FileState>,
+    /// Native imported GitHub threads of the canonical snapshot.
+    pub github_threads: Vec<GithubThread>,
 }
 
 pub mod source {
@@ -674,14 +695,15 @@ fn import_sources(snapshot: &PrSnapshot) -> Vec<ImportSource> {
             vec![source_reason::COMPLETENESS_UNKNOWN.to_string()],
         ),
     };
-    let lower: Vec<String> = problems.iter().map(|p| p.to_ascii_lowercase()).collect();
-    if lower.iter().any(|p| {
-        p.contains("forbidden") || p.contains("permission") || p.contains("not accessible")
-    }) {
-        codes.push(source_reason::GITHUB_PERMISSION_DENIED.into());
-    }
-    if lower.iter().any(|p| p.contains("pages; stopped early")) {
-        codes.push(source_reason::PAGE_LIMIT_REACHED.into());
+    // Each extra code is added at most once, permission before page limit.
+    let extra: Vec<&str> = problems.iter().filter_map(thread_problem_reason).collect();
+    for code in [
+        source_reason::GITHUB_PERMISSION_DENIED,
+        source_reason::PAGE_LIMIT_REACHED,
+    ] {
+        if extra.contains(&code) {
+            codes.push(code.into());
+        }
     }
     out.push(ImportSource {
         source_id: source::REVIEW_THREADS,
@@ -693,7 +715,7 @@ fn import_sources(snapshot: &PrSnapshot) -> Vec<ImportSource> {
         items,
         item_kind: "threads",
         reason_codes: codes,
-        limitations: problems.clone(),
+        limitations: problems.iter().map(ToString::to_string).collect(),
     });
 
     // `gh pr view --json reviews,comments` does not report whether it saw
@@ -711,6 +733,39 @@ fn import_sources(snapshot: &PrSnapshot) -> Vec<ImportSource> {
         limitations: vec!["review verdicts and PR comments are not verified as complete".into()],
     });
     out
+}
+
+/// The source-specific reason code a thread import problem adds on top of the
+/// completeness code, if any. Exhaustive on purpose: a new problem kind must
+/// make a decision here.
+fn thread_problem_reason(problem: &ThreadImportProblem) -> Option<&'static str> {
+    use ThreadImportProblem as P;
+    match problem {
+        P::PermissionDenied { .. }
+        | P::Legacy {
+            legacy_kind: LegacyKind::PermissionDenied,
+            ..
+        } => Some(source_reason::GITHUB_PERMISSION_DENIED),
+        P::PageLimitReached { .. }
+        | P::Legacy {
+            legacy_kind: LegacyKind::PageLimitReached,
+            ..
+        } => Some(source_reason::PAGE_LIMIT_REACHED),
+        P::GraphqlError { .. }
+        | P::PageFetchFailed { .. }
+        | P::NoData { .. }
+        | P::MissingThreadsConnection
+        | P::MissingCommentsConnection { .. }
+        | P::UnreadableThread
+        | P::UnreadableReply { .. }
+        | P::MissingPageInfo { .. }
+        | P::MissingCursor { .. }
+        | P::StalledCursor { .. }
+        | P::Legacy {
+            legacy_kind: LegacyKind::Other,
+            ..
+        } => None,
+    }
 }
 
 /// Persists each import source as a terminal `github_import` run on the

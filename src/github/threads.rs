@@ -9,8 +9,9 @@
 //! [`Completeness::Partial`] or [`Completeness::Failed`] with a reason, never
 //! as a successful complete import.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::model::{Completeness, GithubComment, GithubThread, Side};
@@ -19,6 +20,293 @@ use super::{GhRunner, PrRef, runner::run_json};
 
 /// Safety cap per connection (100 items per page).
 const MAX_PAGES: usize = 50;
+
+/// One reason a thread import is not complete. This typed value is the source
+/// of truth: `session` maps it to reason codes with an exhaustive `match`, and
+/// the human-readable message is derived from it via [`Display`](std::fmt::Display).
+///
+/// `scope` is the rendered prefix naming what was being fetched, e.g.
+/// `"review threads"`, `"thread T1: replies"` or `"replies of thread T1"`.
+///
+/// Persisted on `PrSnapshot`. Serialised as a `kind`-tagged object; snapshots
+/// stored before this type existed held plain strings, which decode as
+/// [`ThreadImportProblem::Legacy`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum ThreadImportProblem {
+    /// GitHub refused access: a GraphQL error of type `FORBIDDEN`, or an
+    /// error whose text reports a permission denial.
+    PermissionDenied {
+        scope: String,
+        detail: String,
+        via: DeniedVia,
+    },
+    /// A GraphQL error that is not a permission denial.
+    GraphqlError { scope: String, message: String },
+    /// The `gh` call for a page failed outright.
+    PageFetchFailed { scope: String, error: String },
+    /// The response had neither `data` nor `errors`.
+    NoData { scope: String },
+    /// A review-threads page had no `reviewThreads` connection.
+    MissingThreadsConnection,
+    /// A replies page had no `comments` connection.
+    MissingCommentsConnection { scope: String },
+    /// A review thread node had no ID.
+    UnreadableThread,
+    /// A reply had no node ID.
+    UnreadableReply { scope: String },
+    /// `pageInfo` was missing, so completeness cannot be confirmed.
+    MissingPageInfo { scope: String },
+    /// `hasNextPage` was true but no `endCursor` was given.
+    MissingCursor { scope: String },
+    /// The next cursor equalled the previous one.
+    StalledCursor { scope: String },
+    /// Stopped after `max_pages` pages with more remaining.
+    PageLimitReached { scope: String, max_pages: usize },
+    /// A plain-string problem from a snapshot stored before this type
+    /// existed. `legacy_kind` was classified once, at decode time.
+    Legacy {
+        message: String,
+        legacy_kind: LegacyKind,
+    },
+}
+
+/// How a permission denial was reported.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeniedVia {
+    GraphqlError,
+    FailedRequest,
+}
+
+/// What a legacy plain-string problem was understood to mean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LegacyKind {
+    PermissionDenied,
+    PageLimitReached,
+    Other,
+}
+
+impl ThreadImportProblem {
+    /// Compatibility for older tests that inspect the rendered diagnostic text.
+    #[cfg(test)]
+    pub fn contains(&self, needle: &str) -> bool {
+        self.to_string().contains(needle)
+    }
+
+    /// Wraps a pre-typed stored message. The wording checks here are frozen:
+    /// they describe text that older builds already wrote, not live messages,
+    /// so rewording a [`Display`](std::fmt::Display) arm cannot affect them.
+    pub fn legacy(message: String) -> Self {
+        let kind = if mentions_permission_denial(&message) {
+            LegacyKind::PermissionDenied
+        } else if message
+            .to_ascii_lowercase()
+            .contains("pages; stopped early")
+        {
+            LegacyKind::PageLimitReached
+        } else {
+            LegacyKind::Other
+        };
+        Self::Legacy {
+            message,
+            legacy_kind: kind,
+        }
+    }
+}
+
+impl std::fmt::Display for ThreadImportProblem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PermissionDenied {
+                scope,
+                detail,
+                via: DeniedVia::GraphqlError,
+            }
+            | Self::GraphqlError {
+                scope,
+                message: detail,
+            } => write!(f, "{scope}: GraphQL error: {detail}"),
+            Self::PermissionDenied {
+                scope,
+                detail,
+                via: DeniedVia::FailedRequest,
+            }
+            | Self::PageFetchFailed {
+                scope,
+                error: detail,
+            } => write!(f, "{scope}: {detail}"),
+            Self::NoData { scope } => write!(f, "{scope}: response had no data"),
+            Self::MissingThreadsConnection => {
+                f.write_str("review threads page had no reviewThreads connection")
+            }
+            Self::MissingCommentsConnection { scope } => {
+                write!(f, "{scope}: page had no comments connection")
+            }
+            Self::UnreadableThread => f.write_str("a review thread could not be read (missing ID)"),
+            Self::UnreadableReply { scope } => {
+                write!(f, "{scope}: a reply could not be read (missing ID)")
+            }
+            Self::MissingPageInfo { scope } => {
+                write!(
+                    f,
+                    "{scope}: pageInfo missing; cannot confirm every item was fetched"
+                )
+            }
+            Self::MissingCursor { scope } => {
+                write!(f, "{scope}: next page reported without a cursor")
+            }
+            Self::StalledCursor { scope } => write!(f, "{scope}: cursor did not advance"),
+            Self::PageLimitReached { scope, max_pages } => {
+                write!(f, "{scope} exceed {max_pages} pages; stopped early")
+            }
+            Self::Legacy { message, .. } => f.write_str(message),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ThreadImportProblem {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(
+            tag = "kind",
+            rename_all = "snake_case",
+            rename_all_fields = "camelCase"
+        )]
+        enum Typed {
+            PermissionDenied {
+                scope: String,
+                detail: String,
+                via: DeniedVia,
+            },
+            GraphqlError {
+                scope: String,
+                message: String,
+            },
+            PageFetchFailed {
+                scope: String,
+                error: String,
+            },
+            NoData {
+                scope: String,
+            },
+            MissingThreadsConnection,
+            MissingCommentsConnection {
+                scope: String,
+            },
+            UnreadableThread,
+            UnreadableReply {
+                scope: String,
+            },
+            MissingPageInfo {
+                scope: String,
+            },
+            MissingCursor {
+                scope: String,
+            },
+            StalledCursor {
+                scope: String,
+            },
+            PageLimitReached {
+                scope: String,
+                max_pages: usize,
+            },
+            Legacy {
+                message: String,
+                legacy_kind: LegacyKind,
+            },
+        }
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Stored {
+            Plain(String),
+            Typed(Typed),
+        }
+        Ok(match Stored::deserialize(d)? {
+            Stored::Plain(message) => Self::legacy(message),
+            Stored::Typed(t) => match t {
+                Typed::PermissionDenied { scope, detail, via } => {
+                    Self::PermissionDenied { scope, detail, via }
+                }
+                Typed::GraphqlError { scope, message } => Self::GraphqlError { scope, message },
+                Typed::PageFetchFailed { scope, error } => Self::PageFetchFailed { scope, error },
+                Typed::NoData { scope } => Self::NoData { scope },
+                Typed::MissingThreadsConnection => Self::MissingThreadsConnection,
+                Typed::MissingCommentsConnection { scope } => {
+                    Self::MissingCommentsConnection { scope }
+                }
+                Typed::UnreadableThread => Self::UnreadableThread,
+                Typed::UnreadableReply { scope } => Self::UnreadableReply { scope },
+                Typed::MissingPageInfo { scope } => Self::MissingPageInfo { scope },
+                Typed::MissingCursor { scope } => Self::MissingCursor { scope },
+                Typed::StalledCursor { scope } => Self::StalledCursor { scope },
+                Typed::PageLimitReached { scope, max_pages } => {
+                    Self::PageLimitReached { scope, max_pages }
+                }
+                Typed::Legacy {
+                    message,
+                    legacy_kind,
+                } => Self::Legacy {
+                    message,
+                    legacy_kind,
+                },
+            },
+        })
+    }
+}
+
+/// Whether GitHub's own error text reports a permission denial. Applied at
+/// detection to text GitHub produced, never to our rendered messages.
+fn mentions_permission_denial(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("forbidden") || lower.contains("permission") || lower.contains("not accessible")
+}
+
+/// A pagination problem before it is attached to a scope.
+#[derive(Debug)]
+enum CursorProblem {
+    Stalled,
+    MissingCursor,
+    MissingPageInfo,
+    InvalidCursor,
+}
+
+impl CursorProblem {
+    fn at(self, scope: String) -> ThreadImportProblem {
+        match self {
+            Self::Stalled => ThreadImportProblem::StalledCursor { scope },
+            Self::MissingCursor => ThreadImportProblem::MissingCursor { scope },
+            Self::MissingPageInfo => ThreadImportProblem::MissingPageInfo { scope },
+            Self::InvalidCursor => ThreadImportProblem::PageFetchFailed {
+                scope,
+                error: "missing or invalid endCursor field".into(),
+            },
+        }
+    }
+}
+
+/// A problem reading one comments page, before it is attached to a scope.
+#[derive(Debug)]
+enum PageProblem {
+    UnreadableReply,
+    Malformed(String),
+    Replies(CursorProblem),
+}
+
+impl PageProblem {
+    fn at(self, scope: String) -> ThreadImportProblem {
+        match self {
+            Self::UnreadableReply => ThreadImportProblem::UnreadableReply { scope },
+            Self::Malformed(error) => ThreadImportProblem::PageFetchFailed { scope, error },
+            Self::Replies(c) => c.at(format!("{scope}: replies")),
+        }
+    }
+}
 
 const COMMENT_FIELDS: &str = "pageInfo { hasNextPage endCursor }
         nodes {
@@ -53,6 +341,7 @@ fn replies_query() -> String {
         "query($id: ID!, $cursor: String) {{
   node(id: $id) {{
     ... on PullRequestReviewThread {{
+      id
       comments(first: 100, after: $cursor) {{ {COMMENT_FIELDS} }}
     }}
   }}
@@ -67,12 +356,13 @@ pub(super) struct ThreadImport {
     pub threads: Vec<GithubThread>,
     pub completeness: Completeness,
     /// Why the import is not complete. Empty when `completeness` is complete.
-    pub problems: Vec<String>,
+    pub problems: Vec<ThreadImportProblem>,
 }
 
 pub(super) fn fetch_threads(gh: &dyn GhRunner, pr_ref: &PrRef) -> ThreadImport {
     let mut threads: Vec<GithubThread> = Vec::new();
-    let mut seen_threads = HashSet::new();
+    let mut seen_threads: HashMap<String, Value> = HashMap::new();
+    let mut seen_cursors = HashSet::new();
     let mut problems = Vec::new();
     let mut fetched_any_page = false;
     let query = format!("query={}", threads_query());
@@ -95,23 +385,44 @@ pub(super) fn fetch_threads(gh: &dyn GhRunner, pr_ref: &PrRef) -> ThreadImport {
         };
         let page = &v["data"]["repository"]["pullRequest"]["reviewThreads"];
         if !page.is_object() {
-            problems.push("review threads page had no reviewThreads connection".into());
+            problems.push(ThreadImportProblem::MissingThreadsConnection);
             break;
         }
+        let Some(nodes) = page["nodes"].as_array() else {
+            problems.push(ThreadImportProblem::PageFetchFailed {
+                scope: "review threads".into(),
+                error: "missing nodes array".into(),
+            });
+            break;
+        };
         fetched_any_page = true;
-        for node in page["nodes"].as_array().into_iter().flatten() {
-            if node.is_null() {
-                problems.push("a review thread could not be read (null node)".into());
+        for (index, node) in nodes.iter().enumerate() {
+            let Some(id) = valid_id(node) else {
+                problems.push(ThreadImportProblem::UnreadableThread);
+                continue;
+            };
+            if let Some(previous) = seen_threads.get(id) {
+                if previous != node {
+                    problems.push(ThreadImportProblem::PageFetchFailed {
+                        scope: "review threads".into(),
+                        error: format!("conflicting duplicate thread ID {id}"),
+                    });
+                }
                 continue;
             }
             let mut thread = parse_thread(node);
-            if !seen_threads.insert(thread.node_id.clone()) {
-                continue;
-            }
-            let mut seen = HashSet::new();
+            seen_threads.insert(id.to_owned(), node.clone());
+            let mut seen = HashMap::new();
             let first = collect_comments(&node["comments"], &mut thread.comments, &mut seen);
+            mark_errors(
+                &v,
+                &["repository", "pullRequest", "reviewThreads", "nodes"],
+                index,
+                &node["comments"],
+                &mut thread,
+            );
             match first {
-                Err(reason) => problems.push(format!("thread {}: {reason}", thread.node_id)),
+                Err(reason) => problems.push(reason.at(format!("thread {}", thread.node_id))),
                 Ok(Some(next)) => {
                     fetch_remaining_replies(gh, &mut thread, &mut seen, next, &mut problems)
                 }
@@ -125,17 +436,25 @@ pub(super) fn fetch_threads(gh: &dyn GhRunner, pr_ref: &PrRef) -> ThreadImport {
                 finished = true;
                 break;
             }
-            Ok(Some(next)) => cursor = Some(next),
+            Ok(Some(next)) if seen_cursors.insert(next.clone()) => cursor = Some(next),
+            Ok(Some(_)) => {
+                problems.push(ThreadImportProblem::PageFetchFailed {
+                    scope: "review threads".into(),
+                    error: "cyclic cursor".into(),
+                });
+                break;
+            }
             Err(reason) => {
-                problems.push(format!("review threads: {reason}"));
+                problems.push(reason.at("review threads".into()));
                 break;
             }
         }
     }
     if !finished && problems.is_empty() {
-        problems.push(format!(
-            "review threads exceed {MAX_PAGES} pages; stopped early"
-        ));
+        problems.push(ThreadImportProblem::PageLimitReached {
+            scope: "review threads".into(),
+            max_pages: MAX_PAGES,
+        });
     }
     let completeness = if problems.is_empty() {
         Completeness::Complete
@@ -155,41 +474,51 @@ pub(super) fn fetch_threads(gh: &dyn GhRunner, pr_ref: &PrRef) -> ThreadImport {
 fn fetch_remaining_replies(
     gh: &dyn GhRunner,
     thread: &mut GithubThread,
-    seen: &mut HashSet<String>,
+    seen: &mut HashMap<String, Value>,
     mut cursor: String,
-    problems: &mut Vec<String>,
+    problems: &mut Vec<ThreadImportProblem>,
 ) {
     let query = format!("query={}", replies_query());
     let id = format!("id={}", thread.node_id);
-    for _ in 0..MAX_PAGES {
+    let mut seen_cursors = HashSet::from([cursor.clone()]);
+    for _ in 1..MAX_PAGES {
         let cursor_arg = format!("cursor={cursor}");
         let args = ["api", "graphql", "-f", &query, "-f", &id, "-f", &cursor_arg];
         let what = format!("replies of thread {}", thread.node_id);
         let Some(v) = fetch_page(gh, &args, problems, &what) else {
             return;
         };
-        let conn = &v["data"]["node"]["comments"];
-        if !conn.is_object() {
-            problems.push(format!("{what}: page had no comments connection"));
+        if valid_id(&v["data"]["node"]) != Some(thread.node_id.as_str()) {
+            problems.push(ThreadImportProblem::PageFetchFailed {
+                scope: what,
+                error: "comments returned wrong thread ID".into(),
+            });
             return;
         }
-        match collect_comments(conn, &mut thread.comments, seen) {
+        let conn = &v["data"]["node"]["comments"];
+        if !conn.is_object() {
+            problems.push(ThreadImportProblem::MissingCommentsConnection { scope: what });
+            return;
+        }
+        let collected = collect_comments(conn, &mut thread.comments, seen);
+        mark_reply_errors(&v, conn, thread);
+        match collected {
             Ok(None) => return,
-            Ok(Some(next)) if next == cursor => {
-                problems.push(format!("{what}: cursor did not advance"));
+            Ok(Some(next)) if !seen_cursors.insert(next.clone()) => {
+                problems.push(ThreadImportProblem::StalledCursor { scope: what });
                 return;
             }
             Ok(Some(next)) => cursor = next,
             Err(reason) => {
-                problems.push(format!("{what}: {reason}"));
+                problems.push(reason.at(what));
                 return;
             }
         }
     }
-    problems.push(format!(
-        "replies of thread {} exceed {MAX_PAGES} pages; stopped early",
-        thread.node_id
-    ));
+    problems.push(ThreadImportProblem::PageLimitReached {
+        scope: format!("replies of thread {}", thread.node_id),
+        max_pages: MAX_PAGES,
+    });
 }
 
 /// Run one GraphQL page. Records a problem and returns `None` when the page
@@ -198,23 +527,47 @@ fn fetch_remaining_replies(
 fn fetch_page(
     gh: &dyn GhRunner,
     args: &[&str],
-    problems: &mut Vec<String>,
+    problems: &mut Vec<ThreadImportProblem>,
     what: &str,
 ) -> Option<Value> {
     let v: Value = match run_json(gh, args) {
         Ok(v) => v,
         Err(e) => {
-            problems.push(format!("{what}: {e}"));
+            let error = e.to_string();
+            problems.push(if mentions_permission_denial(&error) {
+                ThreadImportProblem::PermissionDenied {
+                    scope: what.into(),
+                    detail: error,
+                    via: DeniedVia::FailedRequest,
+                }
+            } else {
+                ThreadImportProblem::PageFetchFailed {
+                    scope: what.into(),
+                    error,
+                }
+            });
             return None;
         }
     };
     for err in v["errors"].as_array().into_iter().flatten() {
         let msg = err["message"].as_str().unwrap_or("unknown GraphQL error");
-        problems.push(format!("{what}: GraphQL error: {msg}"));
+        let forbidden = err["type"].as_str() == Some("FORBIDDEN");
+        problems.push(if forbidden || mentions_permission_denial(msg) {
+            ThreadImportProblem::PermissionDenied {
+                scope: what.into(),
+                detail: msg.into(),
+                via: DeniedVia::GraphqlError,
+            }
+        } else {
+            ThreadImportProblem::GraphqlError {
+                scope: what.into(),
+                message: msg.into(),
+            }
+        });
     }
     if v["data"].is_null() {
         if v["errors"].as_array().is_none_or(|e| e.is_empty()) {
-            problems.push(format!("{what}: response had no data"));
+            problems.push(ThreadImportProblem::NoData { scope: what.into() });
         }
         return None;
     }
@@ -226,31 +579,137 @@ fn fetch_page(
 fn collect_comments(
     conn: &Value,
     out: &mut Vec<GithubComment>,
-    seen: &mut HashSet<String>,
-) -> Result<Option<String>, String> {
-    for c in conn["nodes"].as_array().into_iter().flatten() {
-        let comment = parse_comment(c);
-        if comment.node_id.is_empty() {
-            return Err("a reply could not be read (missing ID)".into());
+    seen: &mut HashMap<String, Value>,
+) -> Result<Option<String>, PageProblem> {
+    let nodes = conn["nodes"]
+        .as_array()
+        .ok_or(PageProblem::Malformed("missing replies nodes array".into()))?;
+    let mut problem = None;
+    for c in nodes {
+        let Some(id) = valid_id(c) else {
+            problem.get_or_insert(PageProblem::UnreadableReply);
+            continue;
+        };
+        if let Some(previous) = seen.get(id) {
+            if previous != c {
+                problem.get_or_insert(PageProblem::Malformed(format!(
+                    "conflicting duplicate comment ID {id}"
+                )));
+            }
+            continue;
         }
-        if seen.insert(comment.node_id.clone()) {
-            out.push(comment);
+        out.push(parse_comment(c));
+        seen.insert(id.to_owned(), c.clone());
+    }
+    if let Some(problem) = problem {
+        return Err(problem);
+    }
+    next_cursor(&conn["pageInfo"], None).map_err(PageProblem::Replies)
+}
+
+/// Attach only errors targeting this record. A missing error path is treated
+/// conservatively as unavailable metadata on every returned record.
+fn retained_comment<'a>(
+    thread: &'a mut GithubThread,
+    conn: &Value,
+    node_index: usize,
+) -> Option<&'a mut GithubComment> {
+    let id = valid_id(&conn["nodes"][node_index])?;
+    thread
+        .comments
+        .iter_mut()
+        .find(|comment| comment.node_id == id)
+}
+
+fn mark_errors(v: &Value, prefix: &[&str], index: usize, conn: &Value, thread: &mut GithubThread) {
+    for error in v["errors"].as_array().into_iter().flatten() {
+        let Some(path) = error["path"].as_array() else {
+            thread.unavailable_fields.push("*".into());
+            for comment in &mut thread.comments {
+                comment.unavailable_fields.push("*".into());
+            }
+            continue;
+        };
+        if !prefix
+            .iter()
+            .enumerate()
+            .all(|(i, part)| path.get(i).and_then(Value::as_str) == Some(*part))
+            || path.get(prefix.len()).and_then(Value::as_u64) != Some(index as u64)
+        {
+            continue;
+        }
+        let rest = &path[prefix.len() + 1..];
+        if rest.first().and_then(Value::as_str) == Some("comments") {
+            if let Some(comment_index) = rest.get(2).and_then(Value::as_u64)
+                && rest.get(1).and_then(Value::as_str) == Some("nodes")
+                && let Some(comment) = retained_comment(thread, conn, comment_index as usize)
+            {
+                comment
+                    .unavailable_fields
+                    .push(rest.get(3).and_then(Value::as_str).unwrap_or("*").into());
+            }
+        } else {
+            thread
+                .unavailable_fields
+                .push(rest.first().and_then(Value::as_str).unwrap_or("*").into());
         }
     }
-    next_cursor(&conn["pageInfo"], None).map_err(|r| format!("replies: {r}"))
+}
+
+fn mark_reply_errors(v: &Value, conn: &Value, thread: &mut GithubThread) {
+    for error in v["errors"].as_array().into_iter().flatten() {
+        let path = error["path"].as_array();
+        let index = path.and_then(|p| {
+            if p.first().and_then(Value::as_str) == Some("node")
+                && p.get(1).and_then(Value::as_str) == Some("comments")
+                && p.get(2).and_then(Value::as_str) == Some("nodes")
+            {
+                p.get(3).and_then(Value::as_u64)
+            } else {
+                None
+            }
+        });
+        if let Some(index) = index {
+            if let Some(comment) = retained_comment(thread, conn, index as usize) {
+                comment.unavailable_fields.push(
+                    path.and_then(|p| p.get(4))
+                        .and_then(Value::as_str)
+                        .unwrap_or("*")
+                        .into(),
+                );
+            }
+        } else if path.is_none()
+            && let Some(nodes) = conn["nodes"].as_array()
+        {
+            for index in 0..nodes.len() {
+                if let Some(comment) = retained_comment(thread, conn, index) {
+                    comment.unavailable_fields.push("*".into());
+                }
+            }
+        }
+    }
+}
+
+fn valid_id(node: &Value) -> Option<&str> {
+    node["id"].as_str().filter(|id| !id.is_empty())
 }
 
 /// `Ok(None)` when there are no more pages. Missing `pageInfo` is an error:
 /// without it we cannot claim to have every item.
-fn next_cursor(page_info: &Value, previous: Option<&str>) -> Result<Option<String>, String> {
+fn next_cursor(page_info: &Value, previous: Option<&str>) -> Result<Option<String>, CursorProblem> {
+    if page_info.get("endCursor").is_none()
+        || (!page_info["endCursor"].is_null() && !page_info["endCursor"].is_string())
+    {
+        return Err(CursorProblem::InvalidCursor);
+    }
     match page_info["hasNextPage"].as_bool() {
         Some(false) => Ok(None),
         Some(true) => match page_info["endCursor"].as_str() {
-            Some(c) if Some(c) == previous => Err("cursor did not advance".into()),
+            Some(c) if c.is_empty() || Some(c) == previous => Err(CursorProblem::Stalled),
             Some(c) => Ok(Some(c.to_string())),
-            None => Err("next page reported without a cursor".into()),
+            None => Err(CursorProblem::MissingCursor),
         },
-        None => Err("pageInfo missing; cannot confirm every item was fetched".into()),
+        None => Err(CursorProblem::MissingPageInfo),
     }
 }
 
@@ -281,6 +740,7 @@ fn parse_thread(node: &Value) -> GithubThread {
         viewer_can_reply: node["viewerCanReply"].as_bool(),
         viewer_can_resolve: node["viewerCanResolve"].as_bool(),
         viewer_can_unresolve: node["viewerCanUnresolve"].as_bool(),
+        unavailable_fields: Vec::new(),
     }
 }
 
@@ -300,6 +760,7 @@ fn parse_comment(c: &Value) -> GithubComment {
         commit_oid: string(&c["commit"]["oid"]),
         original_commit_oid: string(&c["originalCommit"]["oid"]),
         outdated: c["outdated"].as_bool(),
+        unavailable_fields: Vec::new(),
     }
 }
 

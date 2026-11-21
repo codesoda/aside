@@ -12,7 +12,7 @@ use crate::model::{
     EvidenceKind, FindingKeyInput, FindingKind, FindingSource, NativeSourceKey, RunKeyInput,
     Severity, SeverityRecord, SourceKind, SourceStatus, ValidationRecord, ValidationStatus,
 };
-use crate::store::schema::MIGRATIONS;
+use crate::store::schema::{self, MIGRATIONS};
 
 const REPO: &str = "R_test";
 
@@ -277,7 +277,7 @@ fn migrates_released_v2_schema_and_keeps_review_data() {
     released_v2_database(&path);
     let mut s = Store::open(&path).unwrap();
     assert_eq!(user_version(&s.conn), MIGRATIONS.len() as i64);
-    assert_eq!(recorded_versions(&s.conn), vec![1, 2, 3]);
+    assert_eq!(recorded_versions(&s.conn), vec![1, 2, 3, 4]);
     let acks = s.list_acknowledgements("pr1").unwrap();
     assert_eq!(acks.len(), 1);
     assert_eq!(acks[0].path, "src/a.rs");
@@ -289,8 +289,123 @@ fn migrates_released_v2_schema_and_keeps_review_data() {
     drop(s);
     // Re-opening is a no-op: migrations are forward-only and applied once.
     let s = Store::open(&path).unwrap();
-    assert_eq!(recorded_versions(&s.conn), vec![1, 2, 3]);
+    assert_eq!(recorded_versions(&s.conn), vec![1, 2, 3, 4]);
     assert_eq!(s.current_analysis_snapshot("pr1").unwrap(), Some(id));
+}
+
+#[test]
+fn colliding_v3_schemas_converge_without_losing_rows() {
+    for main_v3 in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("collision.db");
+        released_v2_database(&path);
+        let conn = Connection::open(&path).unwrap();
+        if main_v3 {
+            for &(table, column, kind) in schema::GITHUB_METADATA {
+                conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {kind}"))
+                    .unwrap();
+            }
+        } else {
+            conn.execute_batch(MIGRATIONS[2]).unwrap();
+            conn.execute_batch(
+                "INSERT INTO analysis_snapshots
+                 (id, pr_id, base_sha, head_sha, registered_at, seq)
+                 VALUES ('historical', 'pr1', 'b', 'h', '2025-01-01', 1);
+                 INSERT INTO finding_user_state
+                 (session_id, finding_id, pr_id, disposition, updated_at, revision)
+                 VALUES ('session', 'finding', 'pr1', 'investigating', '2025-01-01', 1);",
+            )
+            .unwrap();
+        }
+        conn.execute_batch(
+            "INSERT INTO review_threads
+             (id, pr_id, source, path, side, head_sha, anchor_state, created_at, updated_at)
+             VALUES ('thread', 'pr1', 'github', 'src/a.rs', 'RIGHT', 'h', 'current', '2025-01-01', '2025-01-01');
+             INSERT INTO review_comments
+             (id, thread_id, author_kind, author, body, publish_state, created_at, updated_at, seq)
+             VALUES ('comment', 'thread', 'github', 'alice', 'original', 'published', '2025-01-01', '2025-01-01', 1);",
+        ).unwrap();
+        if main_v3 {
+            conn.execute(
+                "UPDATE review_threads SET original_line = 7 WHERE id = 'thread'",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE review_comments SET author_node_id = 'author' WHERE id = 'comment'",
+                [],
+            )
+            .unwrap();
+        }
+        conn.pragma_update(None, "user_version", 3).unwrap();
+        drop(conn);
+        for _ in 0..2 {
+            let s = Store::open(&path).unwrap();
+            assert_eq!(user_version(&s.conn), 4);
+            assert_eq!(recorded_versions(&s.conn), vec![1, 2, 3, 4]);
+            let body: String = s
+                .conn
+                .query_row(
+                    "SELECT body FROM review_comments WHERE id = 'comment'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(body, "original");
+            let line: Option<i64> = s
+                .conn
+                .query_row(
+                    "SELECT original_line FROM review_threads WHERE id = 'thread'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(line, main_v3.then_some(7));
+            let author: Option<String> = s
+                .conn
+                .query_row(
+                    "SELECT author_node_id FROM review_comments WHERE id = 'comment'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(author.as_deref(), main_v3.then_some("author"));
+            let count: i64 = s
+                .conn
+                .query_row("SELECT COUNT(*) FROM analysis_snapshots", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(count, usize::from(!main_v3) as i64);
+            let triage: i64 = s
+                .conn
+                .query_row("SELECT COUNT(*) FROM finding_user_state", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(triage, count);
+            assert_eq!(s.list_acknowledgements("pr1").unwrap().len(), 1);
+        }
+    }
+}
+
+#[test]
+fn partial_v3_refuses_upgrade_without_changing_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("partial.db");
+    released_v2_database(&path);
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch("ALTER TABLE review_threads ADD COLUMN original_line INTEGER;")
+        .unwrap();
+    conn.pragma_update(None, "user_version", 3).unwrap();
+    drop(conn);
+    assert!(Store::open(&path).is_err());
+    let conn = Connection::open(&path).unwrap();
+    assert_eq!(user_version(&conn), 3);
+    let ledger: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'schema_migrations'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(ledger, 0);
 }
 
 #[test]

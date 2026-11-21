@@ -165,6 +165,7 @@ pub fn router(state: AppState) -> Router {
         .route("/events", get(events))
         .route("/analysis/summary", get(analysis::summary))
         .route("/analysis/runs", get(analysis::runs))
+        .route("/analysis/queue", get(analysis::queue))
         .route("/analysis/findings", get(analysis::findings))
         .route("/analysis/findings/{id}/evidence", get(analysis::evidence))
         .route("/github-feedback/threads", get(analysis::feedback))

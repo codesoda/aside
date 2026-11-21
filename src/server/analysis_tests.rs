@@ -158,6 +158,7 @@ async fn routes(app: &Router) -> Vec<String> {
     let (id, _) = some_finding(app).await;
     vec![
         "/api/v1/analysis/summary".into(),
+        "/api/v1/analysis/queue".into(),
         "/api/v1/analysis/runs".into(),
         "/api/v1/analysis/findings".into(),
         format!("/api/v1/analysis/findings/{id}/evidence"),
@@ -514,4 +515,86 @@ fn revision_conflict_surfaces_as_a_recoverable_409() {
     let details = error.details.unwrap();
     assert_eq!(details["retryable"], true);
     assert_eq!(details["currentRevision"], 0);
+}
+
+// Review queue (#30 exposed for the Review screen, #38).
+
+fn queue_paths(queue: &Value) -> Vec<(String, String)> {
+    queue["queue"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| {
+            (
+                i["path"].as_str().unwrap().to_string(),
+                i["bucket"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn queue_lists_every_file_once_with_reasons_and_never_acknowledges() {
+    let session = fixture_session().await;
+    let app = app(&session);
+    let before = serde_json::to_value(session.view(Actor::Agent).unwrap()).unwrap();
+    let queue = ok(&app, "/api/v1/analysis/queue").await;
+    let items = queue["queue"]["items"].as_array().unwrap();
+    assert_eq!(items.len(), before["files"].as_array().unwrap().len());
+    for item in items {
+        assert!(!item["reasons"].as_array().unwrap().is_empty(), "{item}");
+        // Analysis never acknowledges: nothing was reviewed by a human.
+        assert_ne!(item["acknowledgement"], "reviewed-current");
+    }
+    assert_eq!(queue["snapshotId"], before["analysis"]["snapshotId"]);
+    assert_eq!(queue["counts"]["files"]["total"], items.len());
+    // Reading the queue writes nothing.
+    let after = serde_json::to_value(session.view(Actor::Agent).unwrap()).unwrap();
+    assert_eq!(before["fileStates"], after["fileStates"]);
+    assert_eq!(before["progress"], after["progress"]);
+}
+
+#[tokio::test]
+async fn excluding_and_reincluding_reranks_without_new_runs() {
+    let session = fixture_session().await;
+    let app = app(&session);
+    let (_, path) = some_finding(&app).await;
+    let runs = ok(&app, "/api/v1/analysis/runs?limit=200").await["total"].clone();
+    let original = ok(&app, "/api/v1/analysis/queue").await;
+    let rule = session
+        .store
+        .lock()
+        .unwrap()
+        .create_rule(
+            &session.repository.id,
+            RuleAction::Exclude,
+            RuleKind::File,
+            &path,
+            None,
+            Actor::Human,
+        )
+        .unwrap();
+    let excluded = ok(&app, "/api/v1/analysis/queue").await;
+    assert!(queue_paths(&excluded).contains(&(path.clone(), "ignored".into())));
+    assert_eq!(excluded["counts"]["files"]["ignored"], 1);
+    session
+        .store
+        .lock()
+        .unwrap()
+        .delete_rule(&session.repository.id, &rule.id)
+        .unwrap();
+    let restored = ok(&app, "/api/v1/analysis/queue").await;
+    assert_eq!(restored["queue"], original["queue"]);
+    assert_eq!(
+        ok(&app, "/api/v1/analysis/runs?limit=200").await["total"],
+        runs
+    );
+}
+
+#[tokio::test]
+async fn empty_queue_from_a_partial_run_is_not_all_clear() {
+    let partial = session(vec![Empty::new(RunStatus::Partial, Completeness::Partial)]).await;
+    let queue = ok(&app(&partial), "/api/v1/analysis/queue").await;
+    assert_eq!(queue["queue"]["coverage"], "incomplete");
+    assert_ne!(queue["queue"]["verdict"]["kind"], "all_clear");
 }
