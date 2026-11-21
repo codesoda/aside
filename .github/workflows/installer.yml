@@ -1,0 +1,27 @@
+name: Installer tests
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'install.sh'
+      - 'tests/install_test.py'
+      - '.github/workflows/installer.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: installer-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  installer:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Run offline installer contract tests
+        run: python3 tests/install_test.py

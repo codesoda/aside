@@ -18,6 +18,7 @@ Check the trailer with `git log -1 --format=%B` before pushing. This is a sign-o
 
 - Rust with edition 2024 support, Node.js 24, and pnpm 10 or later.
 - For live PRs: install `gh` and run `gh auth login`. The demo works offline.
+- For Unix installer tests: Python 3 on Linux or macOS (standard library only).
 - For workflow validation: install `actionlint`, or leave that check to CI.
 
 ```sh
@@ -65,6 +66,7 @@ The marketing website in `web/` is separate from the CLI frontend in `app/`. Fro
 ## Checks before a PR
 
 ```sh
+python3 tests/install_test.py
 pnpm -C app check
 pnpm -C app build
 cargo fmt --check
@@ -72,5 +74,7 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 actionlint .github/workflows/*.yml
 ```
+
+The Unix installer tests use a temporary home directory and mocked downloads/build tools, so they do not install Aside into your real home or fetch releases. The `Installer tests` workflow runs this suite on Ubuntu for changes to `install.sh`, `tests/install_test.py`, or the workflow itself; it does not cover `install.ps1`.
 
 Do not test GitHub publication against another person's PR. Use the offline demo or fake GitHub runner for mutation tests. See [`aside-prd.md`](docs/plans/aside-prd.md) for the behavior and security contracts.
