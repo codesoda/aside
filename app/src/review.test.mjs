@@ -80,7 +80,7 @@ function workspaceRoutes(view = sessionView) {
   routes['GET /api/v1/analysis/findings'] = () => json(page(findings));
 }
 
-test('first paint renders the full review while analysis is still pending, then updates in place', async () => {
+test('review prep is the initial view while analysis is pending, then updates in place', async () => {
   const queue = deferred();
   const findingPage = deferred();
   routes['GET /api/v1/session'] = () => json(sessionView());
@@ -88,10 +88,13 @@ test('first paint renders the full review while analysis is still pending, then 
   routes['GET /api/v1/analysis/findings'] = () => findingPage.promise;
   await start();
 
-  // Everything needed to review is on screen with analysis unresolved.
+  // Scope, focus areas, and progress are visible before opening a diff.
   assert.match(text(), /Tidy auth/);
-  assert.equal(workspaceView('files').hidden, false);
-  assert.equal(workspaceView('prep').hidden, true);
+  assert.equal(workspaceView('prep').hidden, false);
+  assert.equal(workspaceView('files').hidden, true);
+  assert.match(workspaceView('prep').textContent, /Start with the important bits/);
+  assert.match(workspaceView('prep').textContent, /Suggested places to look/);
+  assert.match(workspaceView('prep').textContent, /Loading suggested order/);
   assert.match(workspaceView('files').textContent, /verify_token\(\);/);
   assert.ok(document.querySelector('nav[aria-label="Changed files"]'));
   const viewed = [...document.querySelectorAll('input[type=checkbox]')].find((c) => c.parentElement.textContent.includes('Viewed'));
@@ -100,17 +103,18 @@ test('first paint renders the full review while analysis is still pending, then 
   assert.match(document.querySelector('[data-testid=findings-pending]').textContent, /Loading findings/);
   assert.equal(document.querySelector('[data-testid=file-indicators]'), null);
 
-  // The reviewer is reading: focus a diff control. Results must not steal it.
-  const draftButton = [...document.querySelectorAll('button[title="Draft a comment on this line"]')][0];
-  draftButton.focus();
-  assert.equal(document.activeElement, draftButton);
+  // The reviewer is reading prep: results must not steal focus.
+  const prepHeading = document.getElementById('review-prep-heading');
+  prepHeading.focus();
+  assert.equal(document.activeElement, prepHeading);
 
   queue.resolve(json(queueView()));
   findingPage.resolve(json(page(findings)));
   await settle();
 
-  assert.equal(document.activeElement, draftButton, 'insights must not move focus');
-  assert.match(text(), /verify_token\(\);/, 'diff stays rendered');
+  assert.equal(document.activeElement, prepHeading, 'insights must not move focus');
+  assert.equal(workspaceView('prep').hidden, false, 'prep remains the active view');
+  assert.match(text(), /verify_token\(\);/, 'diff remains available in the workspace');
   const indicators = document.querySelector('[data-testid=file-indicators]');
   assert.ok(indicators, 'file-tree indicators appear when results arrive');
   const authButton = byLabel('Review src/auth.rs. High attention, 1 unresolved GitHub thread');
@@ -309,6 +313,20 @@ test('workspace navigation keeps drafts and opens the actual file thread without
   assert.deepEqual(mutations(), []);
 });
 
+test('adding a line draft focuses the comment field', async () => {
+  workspaceRoutes();
+  await start();
+  viewButton('files').click();
+  await tick();
+
+  workspaceView('files').querySelector('[title="Draft a comment on this line"]').click();
+  await tick();
+
+  const comment = document.getElementById('draft');
+  assert.ok(comment);
+  assert.equal(document.activeElement, comment);
+});
+
 test('review prep shows real suggestions and editable file scope without leaving the view', async () => {
   const view = sessionView();
   workspaceRoutes(() => view);
@@ -382,6 +400,73 @@ test('the diff still submits a line draft, replies locally and advances after Vi
   ]);
   assert.match(diff.querySelector('#file-review h3').textContent, /gen\/out\.rs/);
 });
+
+for (const modifier of ['metaKey', 'ctrlKey']) {
+  test(`${modifier}+Enter saves a local draft without clicking Save draft`, async () => {
+    workspaceRoutes();
+    const pending = deferred();
+    routes['POST /api/v1/threads'] = () => pending.promise;
+    await start();
+    document.querySelector('[title="Draft a comment on this line"]').click();
+    await tick();
+    const input = document.getElementById('draft');
+    const press = (options = {}) => {
+      const event = new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...options });
+      input.dispatchEvent(event);
+      return event;
+    };
+    press({ [modifier]: true });
+    assert.equal(mutations().length, 0, 'empty drafts are not saved');
+    input.value = 'My keyboard draft';
+    input.dispatchEvent(new window.Event('input', { bubbles: true }));
+    await tick();
+    assert.equal(press().defaultPrevented, false, 'plain Enter keeps newline behavior');
+    press({ [modifier]: true, isComposing: true });
+    press({ [modifier]: true, repeat: true });
+    assert.equal(mutations().length, 0, 'composition and key repeats do not submit');
+    assert.equal(press({ [modifier]: true }).defaultPrevented, true);
+    press({ [modifier]: true });
+    assert.equal(mutations().length, 1, 'busy saves are not duplicated');
+    assert.deepEqual(JSON.parse(mutations()[0].body), {
+      fileId: 'f-auth', diffDigest: 'digest-f-auth', side: 'RIGHT', line: 1, body: 'My keyboard draft',
+    });
+    pending.resolve(json({}));
+    await settle();
+    assert.equal(document.getElementById('draft'), null);
+  });
+}
+
+for (const modifier of ['metaKey', 'ctrlKey']) {
+  test(`${modifier}+Enter saves a local reply without clicking Save reply`, async () => {
+    workspaceRoutes();
+    const pending = deferred();
+    routes['POST /api/v1/threads/t1/replies'] = () => pending.promise;
+    await start();
+    const input = document.getElementById('reply-t1');
+    const press = (options = {}) => {
+      const event = new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...options });
+      input.dispatchEvent(event);
+      return event;
+    };
+    press({ [modifier]: true });
+    assert.equal(mutations().length, 0, 'empty replies are not saved');
+    input.value = 'My keyboard reply';
+    input.dispatchEvent(new window.Event('input', { bubbles: true }));
+    await tick();
+    assert.equal(press().defaultPrevented, false, 'plain Enter keeps newline behavior');
+    press({ [modifier]: true, isComposing: true });
+    press({ [modifier]: true, repeat: true });
+    assert.equal(mutations().length, 0, 'composition and key repeats do not submit');
+    assert.equal(press({ [modifier]: true }).defaultPrevented, true);
+    press({ [modifier]: true });
+    assert.equal(mutations().length, 1, 'busy saves are not duplicated');
+    assert.equal(mutations()[0].path, '/api/v1/threads/t1/replies');
+    assert.deepEqual(JSON.parse(mutations()[0].body), { body: 'My keyboard reply' });
+    pending.resolve(json({}));
+    await settle();
+    assert.equal(document.getElementById('reply-t1').value, '');
+  });
+}
 
 test('selecting adjacent code lines creates a contextual thread anchored to the range', async () => {
   workspaceRoutes();

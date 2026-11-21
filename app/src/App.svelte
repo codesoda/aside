@@ -31,8 +31,8 @@
     { id: 'conversations', label: 'Conversations' },
   ] as const;
   type WorkspaceView = (typeof views)[number]['id'];
-  // Opening a review still lands directly on the diff, even while insights load.
-  let activeView = $state<WorkspaceView>('files');
+  // Start with review prep so focus areas are visible before opening a diff.
+  let activeView = $state<WorkspaceView>('prep');
   const fileStatusLabels: Record<FileStatus, string> = {
     ignored: 'Ignored',
     'reviewed-current': 'Viewed',
@@ -186,6 +186,7 @@
     anchor = { fileId: file.id, digest: file.diffDigest, side, line: number };
     draft = '';
     actionError = null;
+    void tick().then(() => document.getElementById('draft')?.focus());
   }
 
   async function showThread(threadId: string) {
@@ -456,7 +457,12 @@
                           {#if !fileState?.scope.ignored && anchor?.fileId === file.id && anchor.digest === file.diffDigest && anchor.side === lineSide(line) && anchor.line === (anchor.side === 'LEFT' ? line.oldLine : line.newLine)}
                             <div class="min-w-0 border-y border-line bg-canvas p-3 font-sans whitespace-normal">
                               <label for="draft" class="block text-sm font-semibold">Draft on {anchor.side === 'LEFT' ? 'old' : 'new'} {anchor.startLine ? `lines ${anchor.startLine}–${anchor.line}` : `line ${anchor.line}`}</label>
-                              <textarea id="draft" bind:value={draft} rows="3" class="workspace-input mt-2 w-full" placeholder="Write a review comment"></textarea>
+                              <textarea id="draft" bind:value={draft} rows="3" class="workspace-input mt-2 w-full" placeholder="Write a review comment" onkeydown={(event) => {
+                                if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.isComposing && !event.repeat) {
+                                  event.preventDefault();
+                                  saveDraft();
+                                }
+                              }}></textarea>
                               <div class="mt-2 flex gap-2">
                                 <button type="button" disabled={busy || !draft.trim()} onclick={saveDraft} class="workspace-button primary-button">Save draft</button>
                                 <button type="button" onclick={() => { anchor = null; draft = ''; }} class="workspace-button">Cancel</button>
@@ -494,7 +500,12 @@
                         {#if !fileState?.scope.ignored}
                           <form class="mt-3" onsubmit={(event) => { event.preventDefault(); saveReply(thread.id); }}>
                             <label for={'reply-' + thread.id} class="text-xs font-semibold">Reply</label>
-                            <textarea id={'reply-' + thread.id} rows="2" value={replies[thread.id] ?? ''} oninput={(event) => { replies[thread.id] = event.currentTarget.value; }} class="workspace-input mt-1 w-full" placeholder="Write a reply"></textarea>
+                            <textarea id={'reply-' + thread.id} rows="2" value={replies[thread.id] ?? ''} oninput={(event) => { replies[thread.id] = event.currentTarget.value; }} class="workspace-input mt-1 w-full" placeholder="Write a reply" onkeydown={(event) => {
+                              if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.isComposing && !event.repeat) {
+                                event.preventDefault();
+                                saveReply(thread.id);
+                              }
+                            }}></textarea>
                             <button type="submit" disabled={busy || !replies[thread.id]?.trim()} class="workspace-button mt-1">Save reply</button>
                           </form>
                         {/if}
