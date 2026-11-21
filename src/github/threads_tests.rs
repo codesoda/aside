@@ -235,7 +235,7 @@ fn failed_reply_page_is_partial_not_complete() {
     let import = fetch_threads(&gh, &pr());
     assert_eq!(import.completeness, Completeness::Partial);
     assert!(
-        import.problems.iter().any(|p| p.contains("T1")),
+        import.problems.iter().any(|p| p.to_string().contains("T1")),
         "{:?}",
         import.problems
     );
@@ -250,7 +250,18 @@ fn graphql_permission_error_is_partial() {
     let gh = PagedGh::default().on("threads", None, Ok(page));
     let import = fetch_threads(&gh, &pr());
     assert_eq!(import.completeness, Completeness::Partial);
-    assert!(import.problems[0].contains("not accessible"));
+    assert!(import.problems[0].to_string().contains("not accessible"));
+    assert!(matches!(
+        import.problems[0],
+        ThreadImportProblem::PermissionDenied {
+            via: DeniedVia::GraphqlError,
+            ..
+        }
+    ));
+    assert_eq!(
+        import.problems[0].to_string(),
+        "review threads: GraphQL error: Resource not accessible by integration"
+    );
     assert_eq!(import.threads.len(), 1);
 }
 
@@ -317,4 +328,53 @@ fn queries_request_page_info_on_every_paged_connection() {
     assert_eq!(threads_query().matches("pageInfo").count(), 2);
     assert!(replies_query().contains("pageInfo"));
     assert!(replies_query().contains("after: $cursor"));
+}
+
+#[test]
+fn typed_problems_round_trip_and_legacy_strings_still_decode() {
+    let typed = vec![
+        ThreadImportProblem::PageLimitReached {
+            scope: "review threads".into(),
+            max_pages: MAX_PAGES,
+        },
+        ThreadImportProblem::StalledCursor {
+            scope: "thread T1: replies".into(),
+        },
+    ];
+    let json = serde_json::to_value(&typed).unwrap();
+    assert_eq!(json[0]["kind"], "page_limit_reached");
+    assert_eq!(json[0]["maxPages"], 50);
+    let back: Vec<ThreadImportProblem> = serde_json::from_value(json).unwrap();
+    assert_eq!(back, typed);
+    assert_eq!(
+        typed[0].to_string(),
+        "review threads exceed 50 pages; stopped early"
+    );
+    assert_eq!(
+        typed[1].to_string(),
+        "thread T1: replies: cursor did not advance"
+    );
+
+    let legacy: Vec<ThreadImportProblem> = serde_json::from_value(json!([
+        "review threads: FORBIDDEN: Resource not accessible by integration",
+        "review threads exceed 50 pages; stopped early",
+        "thread T: cursor did not advance",
+    ]))
+    .unwrap();
+    let kinds: Vec<_> = legacy
+        .iter()
+        .map(|p| match p {
+            ThreadImportProblem::Legacy { legacy_kind, .. } => *legacy_kind,
+            other => panic!("expected legacy, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            LegacyKind::PermissionDenied,
+            LegacyKind::PageLimitReached,
+            LegacyKind::Other
+        ]
+    );
+    assert_eq!(legacy[2].to_string(), "thread T: cursor did not advance");
 }

@@ -8,6 +8,9 @@ mod review;
 mod runner;
 mod snapshot;
 mod threads;
+#[cfg(test)]
+pub use threads::DeniedVia;
+pub use threads::{LegacyKind, ThreadImportProblem};
 
 pub use review::{
     NewReviewComment, create_review, fetch_head_sha, reply_to_comment, review_comments,

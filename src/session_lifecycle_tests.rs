@@ -14,6 +14,7 @@ use serde_json::Value;
 use tokio::sync::{Semaphore, broadcast};
 
 use super::{Session, source};
+use crate::github::{DeniedVia, ThreadImportProblem};
 use crate::{
     analysis::{
         AnalysisProvider, ProviderContext, ProviderDescriptor, ProviderKind, ProviderOutput,
@@ -174,7 +175,10 @@ fn complete_thread_import_with_no_threads_is_clean() {
 fn partial_thread_import_with_no_threads_is_never_clean() {
     let mut snapshot = complete_snapshot_without_feedback();
     snapshot.github_threads_completeness = Completeness::Partial;
-    snapshot.github_threads_problems = vec!["review threads exceed 50 pages; stopped early".into()];
+    snapshot.github_threads_problems = vec![ThreadImportProblem::PageLimitReached {
+        scope: "review threads".into(),
+        max_pages: 50,
+    }];
     let session = session_with(snapshot, vec![]);
     let view = session.view(Actor::Human).unwrap();
     let threads = source_of(&view, source::REVIEW_THREADS);
@@ -201,8 +205,11 @@ fn partial_thread_import_with_no_threads_is_never_clean() {
 fn failed_or_denied_thread_import_is_failed_with_unknown_count() {
     let mut snapshot = complete_snapshot_without_feedback();
     snapshot.github_threads_completeness = Completeness::Failed;
-    snapshot.github_threads_problems =
-        vec!["review threads: FORBIDDEN: Resource not accessible by integration".into()];
+    snapshot.github_threads_problems = vec![ThreadImportProblem::PermissionDenied {
+        scope: "review threads".into(),
+        detail: "Resource not accessible by integration".into(),
+        via: DeniedVia::GraphqlError,
+    }];
     let session = session_with(snapshot, vec![]);
     let view = session.view(Actor::Human).unwrap();
     let threads = source_of(&view, source::REVIEW_THREADS);
@@ -286,7 +293,9 @@ async fn real_diff_provider_partial_status_is_incomplete() {
 async fn complete_sources_are_persisted_per_snapshot_with_their_limitations() {
     let mut snapshot = demo::snapshot(0);
     snapshot.github_threads_completeness = Completeness::Partial;
-    snapshot.github_threads_problems = vec!["thread T: cursor did not advance".into()];
+    snapshot.github_threads_problems = vec![ThreadImportProblem::StalledCursor {
+        scope: "thread T".into(),
+    }];
     let session = session_with(snapshot, vec![]);
     session.start_analysis().unwrap();
     // Recording the same import again is idempotent.
@@ -672,4 +681,66 @@ fn refresh_event_payload_is_versioned_and_small() {
     assert_eq!(payload["eventVersion"], 1);
     assert!(payload["sources"].as_array().unwrap().len() >= 3);
     assert!(payload.get("files").is_none());
+}
+
+/// Reason codes come from the problem's kind, not its wording: these problems
+/// carry text that matches none of the old substrings.
+#[test]
+fn typed_thread_problems_map_to_reason_codes_without_reading_text() {
+    for (problem, code) in [
+        (
+            ThreadImportProblem::PermissionDenied {
+                scope: "x".into(),
+                detail: "nope".into(),
+                via: DeniedVia::FailedRequest,
+            },
+            "github_permission_denied",
+        ),
+        (
+            ThreadImportProblem::PageLimitReached {
+                scope: "x".into(),
+                max_pages: 3,
+            },
+            "page_limit_reached",
+        ),
+    ] {
+        let mut snapshot = complete_snapshot_without_feedback();
+        snapshot.github_threads_completeness = Completeness::Partial;
+        snapshot.github_threads_problems = vec![problem];
+        let session = session_with(snapshot, vec![]);
+        let view = session.view(Actor::Human).unwrap();
+        let threads = source_of(&view, source::REVIEW_THREADS);
+        assert_eq!(
+            threads.reason_codes,
+            vec!["github_source_partial".to_string(), code.to_string()]
+        );
+    }
+}
+
+/// Snapshots stored before problems were typed held plain strings; they still
+/// load and keep their reason codes.
+#[test]
+fn legacy_string_thread_problems_keep_their_reason_codes() {
+    let mut json = serde_json::to_value(complete_snapshot_without_feedback()).unwrap();
+    json["githubThreadsCompleteness"] = "partial".into();
+    json["githubThreadsProblems"] = serde_json::json!([
+        "review threads: GraphQL error: Resource not accessible by integration",
+        "review threads exceed 50 pages; stopped early",
+    ]);
+    let snapshot = serde_json::from_value(json).unwrap();
+    let session = session_with(snapshot, vec![]);
+    let view = session.view(Actor::Human).unwrap();
+    let threads = source_of(&view, source::REVIEW_THREADS);
+    assert_eq!(
+        threads.reason_codes,
+        vec![
+            "github_source_partial".to_string(),
+            "github_permission_denied".to_string(),
+            "page_limit_reached".to_string(),
+        ]
+    );
+    assert_eq!(
+        threads.limitations[1],
+        "review threads exceed 50 pages; stopped early"
+    );
 }

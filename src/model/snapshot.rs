@@ -262,7 +262,7 @@ pub struct PrSnapshot {
     pub github_threads_completeness: super::Completeness,
     /// Why the thread import is not complete. Empty when it is.
     #[serde(default)]
-    pub github_threads_problems: Vec<String>,
+    pub github_threads_problems: Vec<crate::github::ThreadImportProblem>,
     pub reviews: Vec<ImportedReview>,
     pub issue_comments: Vec<IssueComment>,
     pub warnings: Vec<String>,
