@@ -463,6 +463,31 @@ pub(super) fn fetch_threads(gh: &dyn GhRunner, pr_ref: &PrRef) -> ThreadImport {
     } else {
         Completeness::Failed
     };
+    // REST review comments supplement GraphQL's thread connection and provide
+    // stable database IDs even when the GraphQL connection is inaccessible.
+    let rest = fetch_rest(gh, pr_ref);
+    let mut completeness = completeness;
+    match rest {
+        Ok(rows) => merge_rest(&mut threads, rows),
+        Err(error) => {
+            problems.push(ThreadImportProblem::PageFetchFailed {
+                scope: "REST review comments".into(),
+                error: error.to_string(),
+            });
+            completeness = if threads.is_empty() {
+                Completeness::Failed
+            } else {
+                Completeness::Partial
+            };
+        }
+    }
+    if !problems.is_empty() && !threads.is_empty() {
+        completeness = Completeness::Partial;
+    }
+    let complete = completeness == Completeness::Complete;
+    for thread in &mut threads {
+        thread.enumeration_complete = complete;
+    }
     ThreadImport {
         threads,
         completeness,
@@ -721,6 +746,144 @@ fn string(v: &Value) -> Option<String> {
     v.as_str().map(str::to_string)
 }
 
+fn fetch_rest(gh: &dyn GhRunner, pr_ref: &PrRef) -> anyhow::Result<Vec<Value>> {
+    use anyhow::bail;
+    let mut all = Vec::new();
+    for page in 1..=500 {
+        let endpoint = format!("{}/comments?per_page=100&page={page}", pr_ref.api_base());
+        let rows: Vec<Value> = run_json(gh, &["api", &endpoint])?;
+        let count = rows.len();
+        for row in &rows {
+            if row["id"].as_i64().is_none()
+                || row["body"].as_str().is_none()
+                || row["path"].as_str().is_none()
+                || row["created_at"].as_str().is_none()
+            {
+                bail!("malformed REST review comment on page {page}");
+            }
+        }
+        all.extend(rows);
+        if count < 100 {
+            return Ok(all);
+        }
+    }
+    bail!("too many REST review comment pages")
+}
+
+fn merge_rest(threads: &mut Vec<GithubThread>, rows: Vec<Value>) {
+    let mut locations = HashMap::new();
+    let mut nodes = HashMap::new();
+    for (ti, thread) in threads.iter().enumerate() {
+        for (ci, comment) in thread.comments.iter().enumerate() {
+            if let Some(id) = comment.database_id {
+                locations.insert(id, (ti, ci));
+            }
+            nodes.insert(comment.node_id.clone(), (ti, ci));
+        }
+    }
+    let roots: HashMap<i64, i64> = rows
+        .iter()
+        .map(|r| {
+            let id = r["id"].as_i64().unwrap();
+            (id, r["in_reply_to_id"].as_i64().unwrap_or(id))
+        })
+        .collect();
+    for row in rows {
+        let id = row["id"].as_i64().unwrap();
+        let node = row["node_id"].as_str().unwrap_or_default();
+        let parent = row["in_reply_to_id"].as_i64();
+        let root = parent
+            .map(|p| roots.get(&p).copied().unwrap_or(p))
+            .unwrap_or(id);
+        let found = locations
+            .get(&id)
+            .copied()
+            .or_else(|| nodes.get(node).copied());
+        let ti = found
+            .map(|(ti, _)| ti)
+            .or_else(|| locations.get(&root).map(|(ti, _)| *ti))
+            .or_else(|| {
+                threads
+                    .iter()
+                    .position(|t| t.node_id == format!("rest:{root}"))
+            })
+            .unwrap_or_else(|| {
+                threads.push(GithubThread {
+                    node_id: format!("rest:{root}"),
+                    path: row["path"].as_str().unwrap().into(),
+                    side: row["side"].as_str().and_then(Side::parse),
+                    line: None,
+                    start_line: None,
+                    original_line: None,
+                    is_outdated: false,
+                    is_resolved: false,
+                    comments: Vec::new(),
+                    rest_only: true,
+                    enumeration_complete: false,
+                    url: None,
+                    original_start_line: None,
+                    start_side: None,
+                    subject_type: None,
+                    resolved_by: None,
+                    viewer_can_reply: None,
+                    viewer_can_resolve: None,
+                    viewer_can_unresolve: None,
+                    unavailable_fields: Vec::new(),
+                });
+                threads.len() - 1
+            });
+        let comment = GithubComment {
+            node_id: node.into(),
+            database_id: Some(id),
+            author: row["user"]["login"].as_str().unwrap_or("ghost").into(),
+            body: row["body"].as_str().unwrap().into(),
+            created_at: row["created_at"].as_str().unwrap().into(),
+            in_reply_to_id: parent,
+            author_id: None,
+            author_type: None,
+            updated_at: row["updated_at"].as_str().map(str::to_owned),
+            url: row["html_url"].as_str().map(str::to_owned),
+            line: None,
+            original_line: None,
+            commit_oid: None,
+            original_commit_oid: None,
+            outdated: None,
+            unavailable_fields: Vec::new(),
+        };
+        if let Some((old_ti, ci)) = found {
+            let old = &mut threads[old_ti].comments[ci];
+            old.database_id = Some(id);
+            old.in_reply_to_id = parent;
+            // A field-level GraphQL error must not overwrite a valid REST value.
+            if unavailable_field(&old.unavailable_fields, "body") {
+                old.body = comment.body;
+            }
+            if unavailable_field(&old.unavailable_fields, "author") {
+                old.author = comment.author;
+            }
+            if unavailable_field(&old.unavailable_fields, "updatedAt") {
+                old.updated_at = comment.updated_at;
+            }
+        } else {
+            let ci = threads[ti].comments.len();
+            threads[ti].comments.push(comment);
+            locations.insert(id, (ti, ci));
+        }
+    }
+    for thread in threads {
+        thread
+            .comments
+            .sort_by_key(|c| (c.created_at.clone(), c.database_id.unwrap_or_default()));
+        if thread.url.is_none() {
+            thread.url = thread.comments.first().and_then(|c| c.url.clone());
+        }
+    }
+}
+
+fn unavailable_field(fields: &[String], name: &str) -> bool {
+    fields.iter().any(|field| field == "*" || field == name)
+}
+
 fn parse_thread(node: &Value) -> GithubThread {
     GithubThread {
         node_id: node["id"].as_str().unwrap_or_default().into(),
@@ -732,6 +895,8 @@ fn parse_thread(node: &Value) -> GithubThread {
         is_outdated: node["isOutdated"].as_bool().unwrap_or(false),
         is_resolved: node["isResolved"].as_bool().unwrap_or(false),
         comments: Vec::new(),
+        rest_only: false,
+        enumeration_complete: false,
         url: None,
         original_start_line: num(node, "originalStartLine"),
         start_side: string(&node["startDiffSide"]),
@@ -751,6 +916,7 @@ fn parse_comment(c: &Value) -> GithubComment {
         author: c["author"]["login"].as_str().unwrap_or("ghost").into(),
         body: c["body"].as_str().unwrap_or_default().into(),
         created_at: c["createdAt"].as_str().unwrap_or_default().into(),
+        in_reply_to_id: None,
         author_id: string(&c["author"]["id"]),
         author_type: string(&c["author"]["__typename"]),
         updated_at: string(&c["updatedAt"]),

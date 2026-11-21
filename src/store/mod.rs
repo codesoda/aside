@@ -83,6 +83,9 @@ impl Store {
                 // transaction before applying only the missing half.
                 migrate_colliding_v3(&tx)?;
             } else {
+                if i + 1 == 5 || i + 1 == 6 {
+                    migrate_rest_columns(&tx)?;
+                }
                 tx.execute_batch(sql)
                     .with_context(|| format!("migration v{} failed", i + 1))?;
             }
@@ -158,6 +161,45 @@ fn migrate_colliding_v3(tx: &rusqlite::Transaction<'_>) -> Result<()> {
         for &(table, column, kind) in schema::GITHUB_METADATA {
             tx.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {kind}"))?;
         }
+    }
+    Ok(())
+}
+
+/// The PR branch also shipped a v4 with REST columns but without main's
+/// analysis tables or GitHub metadata. Reconcile that shape transactionally.
+fn migrate_rest_columns(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    let has_column = |table: &str, column: &str| -> Result<bool> {
+        let mut stmt = tx.prepare(&format!("PRAGMA table_info({table})"))?;
+        let columns = stmt
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(columns.iter().any(|name| name == column))
+    };
+    let has_analysis: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'analysis_snapshots')",
+        [], |r| r.get(0))?;
+    if !has_analysis {
+        // Only the legacy PR v4 has these columns without the main v3 schema.
+        if !has_column("review_comments", "source_status")? {
+            bail!("ambiguous v4 schema: missing analysis tables and REST status");
+        }
+        tx.execute_batch(schema::MIGRATIONS[2])?;
+        tx.execute(
+            "INSERT INTO schema_migrations (version, applied_at) VALUES (4, ?1)",
+            [crate::util::now_rfc3339()],
+        )?;
+        for &(table, column, kind) in schema::GITHUB_METADATA {
+            if !has_column(table, column)? {
+                tx.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {kind}"))?;
+            }
+        }
+    }
+    if !has_column("review_comments", "in_reply_to_id")? {
+        tx.execute_batch("ALTER TABLE review_comments ADD COLUMN in_reply_to_id INTEGER")?;
+    }
+    tx.execute_batch("CREATE INDEX IF NOT EXISTS idx_comments_github_database_id ON review_comments(github_comment_id)")?;
+    if !has_column("review_comments", "source_status")? {
+        tx.execute_batch("ALTER TABLE review_comments ADD COLUMN source_status TEXT NOT NULL DEFAULT 'available' CHECK (source_status IN ('available', 'source_deleted_or_unavailable'))")?;
     }
     Ok(())
 }

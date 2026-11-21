@@ -354,6 +354,19 @@ pub(super) const MIGRATIONS: &[&str] = &[
     CREATE INDEX idx_imported_source_prs_pr ON imported_source_prs(pr_id, source_record_id);
     INSERT INTO imported_source_prs (source_record_id, pr_id, available, first_seen_at, last_seen_at)
     SELECT id, pr_id, available, first_seen_at, last_seen_at FROM imported_source_records;",
+    // v6: reconcile the two independently shipped v5 schemas. The migration
+    // runner also installs the REST columns if this database came from main.
+    "CREATE TABLE IF NOT EXISTS imported_source_prs (
+        source_record_id INTEGER NOT NULL REFERENCES imported_source_records(id) ON DELETE CASCADE,
+        pr_id TEXT NOT NULL REFERENCES pull_requests(id),
+        available INTEGER NOT NULL DEFAULT 1,
+        first_seen_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        PRIMARY KEY (source_record_id, pr_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_imported_source_prs_pr ON imported_source_prs(pr_id, source_record_id);
+    INSERT OR IGNORE INTO imported_source_prs (source_record_id, pr_id, available, first_seen_at, last_seen_at)
+    SELECT id, pr_id, available, first_seen_at, last_seen_at FROM imported_source_records;"
 ];
 
 pub(super) const GITHUB_METADATA: &[(&str, &str, &str)] = &[

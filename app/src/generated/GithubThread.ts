@@ -7,6 +7,10 @@ import type { Side } from "./Side";
  */
 export type GithubThread = { nodeId: string, path: string, side: Side | null, line: number | null, startLine: number | null, originalLine: number | null, isOutdated: boolean, isResolved: boolean, comments: Array<GithubComment>, 
 /**
+ * REST-only records have no verified GraphQL anchor or resolution.
+ */
+restOnly?: boolean, enumerationComplete?: boolean, 
+/**
  * Permalink to the thread (GitHub has no thread URL; this is the root
  * comment's URL).
  */

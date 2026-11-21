@@ -59,14 +59,22 @@ impl Store {
         pr_id: &str,
         head_sha: &str,
         threads: &[crate::model::GithubThread],
+        enumeration_complete: bool,
     ) -> Result<()> {
         let tx = self.conn.transaction()?;
         let now = now_rfc3339();
         for t in threads {
             let existing: Option<String> = tx
                 .query_row(
-                    "SELECT id FROM review_threads WHERE github_thread_id = ?1",
-                    [&t.node_id],
+                    "SELECT id FROM review_threads WHERE github_thread_id = ?1 OR
+                     (source = 'github' AND github_thread_id = ?2)",
+                    params![
+                        t.node_id,
+                        t.comments
+                            .first()
+                            .and_then(|c| c.database_id)
+                            .map(|id| format!("rest:{id}"))
+                    ],
                     |r| r.get(0),
                 )
                 .optional()?;
@@ -80,8 +88,9 @@ impl Store {
             };
             let thread_id = match existing {
                 Some(id) => {
-                    tx.execute(
-                        "UPDATE review_threads SET
+                    if !t.rest_only {
+                        tx.execute(
+                        "UPDATE review_threads SET github_thread_id = ?22, path = CASE WHEN ?25 THEN path ELSE ?23 END, side = COALESCE(?24, side),
                             resolved = CASE WHEN ?13 THEN resolved ELSE ?1 END,
                             line = CASE WHEN ?14 THEN line ELSE ?2 END,
                             start_line = CASE WHEN ?15 THEN start_line ELSE ?3 END,
@@ -100,8 +109,10 @@ impl Store {
                             unavailable(&t.unavailable_fields, "startLine"), unavailable(&t.unavailable_fields, "isOutdated"),
                             unavailable(&t.unavailable_fields, "originalLine"), unavailable(&t.unavailable_fields, "originalStartLine"),
                             unavailable(&t.unavailable_fields, "startDiffSide"), unavailable(&t.unavailable_fields, "viewerCanResolve"),
-                            unavailable(&t.unavailable_fields, "viewerCanUnresolve")],
+                            unavailable(&t.unavailable_fields, "viewerCanUnresolve"), t.node_id, t.path, t.side.map(Side::as_str),
+                            unavailable(&t.unavailable_fields, "path")],
                     )?;
+                    }
                     id
                 }
                 None => {
@@ -113,7 +124,9 @@ impl Store {
                          VALUES (?1, ?2, 'github', ?3, ?4, ?5, ?6, ?7, NULL, NULL, ?8, ?9, ?10, ?11, ?12, ?12, ?13, ?14, ?15, ?16, ?17)",
                         params![
                             id, pr_id, t.node_id, t.path, t.side.unwrap_or(Side::Right).as_str(),
-                            t.line.or(t.original_line), t.start_line, head_sha, state.as_str(), reason, t.is_resolved,
+                            t.line.or(t.original_line), t.start_line, head_sha,
+                            if t.rest_only { AnchorState::Orphaned.as_str() } else { state.as_str() },
+                            if t.rest_only { Some("REST has no verified thread anchor") } else { reason }, t.is_resolved,
                             t.comments.first().map(|c| c.created_at.clone()).unwrap_or_else(|| now.clone()),
                             t.original_line, t.original_start_line, t.start_side.as_deref(),
                             t.viewer_can_resolve, t.viewer_can_unresolve
@@ -123,11 +136,37 @@ impl Store {
                 }
             };
             for c in &t.comments {
+                let found: Option<String> = tx.query_row(
+                    "SELECT c.id FROM review_comments c JOIN review_threads t ON t.id = c.thread_id
+                     WHERE t.pr_id = ?1 AND ((?2 IS NOT NULL AND c.github_comment_id = ?2)
+                        OR (?3 != '' AND c.github_node_id = ?3)) LIMIT 1",
+                    params![pr_id, c.database_id, c.node_id], |r| r.get(0),
+                ).optional()?;
+                if let Some(id) = found {
+                    tx.execute(
+                        "UPDATE review_comments SET github_comment_id = COALESCE(?1, github_comment_id),
+                         in_reply_to_id = COALESCE(?2, in_reply_to_id), source_status = 'available',
+                         github_node_id = CASE WHEN ?3 = '' THEN github_node_id ELSE ?3 END,
+                         body = CASE WHEN ?4 THEN body ELSE ?5 END,
+                         author = CASE WHEN ?6 THEN author ELSE ?7 END,
+                         updated_at = CASE WHEN ?8 THEN updated_at ELSE COALESCE(?9, updated_at) END,
+                         github_updated_at = CASE WHEN ?8 THEN github_updated_at ELSE ?9 END,
+                         author_node_id = CASE WHEN ?6 THEN author_node_id ELSE ?11 END,
+                         author_type = CASE WHEN ?6 THEN author_type ELSE ?12 END
+                         WHERE id = ?10 AND publish_state = 'imported'",
+                        params![c.database_id, c.in_reply_to_id, c.node_id,
+                            unavailable(&c.unavailable_fields, "body"), c.body,
+                            unavailable(&c.unavailable_fields, "author"), c.author,
+                            unavailable(&c.unavailable_fields, "updatedAt"), c.updated_at, id,
+                            c.author_id, c.author_type],
+                    )?;
+                    continue;
+                }
                 tx.execute(
                     "INSERT INTO review_comments (id, thread_id, author_kind, author, body, publish_state, github_comment_id,
-                        github_node_id, created_at, updated_at, seq, author_node_id, author_type, github_updated_at)
+                        github_node_id, created_at, updated_at, seq, author_node_id, author_type, github_updated_at, in_reply_to_id)
                      VALUES (?1, ?2, 'github', ?3, ?4, 'imported', ?5, ?6, ?7, COALESCE(?8, ?7),
-                        (SELECT COALESCE(MAX(seq), 0) + 1 FROM review_comments), ?9, ?10, ?8)
+                        (SELECT COALESCE(MAX(seq), 0) + 1 FROM review_comments), ?9, ?10, ?8, ?14)
                      ON CONFLICT(github_node_id) DO UPDATE SET
                         body = CASE WHEN ?11 THEN review_comments.body ELSE excluded.body END,
                         updated_at = CASE WHEN ?12 THEN review_comments.updated_at ELSE excluded.updated_at END,
@@ -138,8 +177,31 @@ impl Store {
                     params![new_id("cmt"), thread_id, c.author, c.body, c.database_id, c.node_id, c.created_at,
                         c.updated_at, c.author_id, c.author_type,
                         unavailable(&c.unavailable_fields, "body"), unavailable(&c.unavailable_fields, "updatedAt"),
-                        unavailable(&c.unavailable_fields, "author")],
+                        unavailable(&c.unavailable_fields, "author"), c.in_reply_to_id],
                 )?;
+            }
+        }
+        if enumeration_complete {
+            let seen: std::collections::HashSet<i64> = threads
+                .iter()
+                .flat_map(|t| &t.comments)
+                .filter_map(|c| c.database_id)
+                .collect();
+            let mut stmt = tx.prepare(
+                "SELECT c.id, c.github_comment_id FROM review_comments c
+                JOIN review_threads t ON t.id = c.thread_id WHERE t.pr_id = ?1
+                AND c.publish_state = 'imported' AND c.github_comment_id IS NOT NULL",
+            )?;
+            let known = stmt
+                .query_map([pr_id], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            drop(stmt);
+            for (id, remote) in known {
+                if !seen.contains(&remote) {
+                    tx.execute("UPDATE review_comments SET source_status = 'source_deleted_or_unavailable' WHERE id = ?1", [&id])?;
+                }
             }
         }
         tx.commit()?;
@@ -339,7 +401,7 @@ mod tests {
         }))
         .unwrap();
         store
-            .sync_github_threads(&pr, "head", std::slice::from_ref(&thread))
+            .sync_github_threads(&pr, "head", std::slice::from_ref(&thread), false)
             .unwrap();
         type SavedMetadata = (
             Option<u32>,
@@ -381,13 +443,29 @@ mod tests {
         updated.original_start_line = Some(5);
         updated.viewer_can_resolve = Some(false);
         updated.comments[0].body = "edited".into();
+        updated.comments[0].author_id = Some("new-user".into());
+        updated.comments[0].author_type = Some("Bot".into());
         updated.comments[0].updated_at = Some("2024-01-03T00:00:00Z".into());
-        store.sync_github_threads(&pr, "head", &[updated]).unwrap();
+        store
+            .sync_github_threads(&pr, "head", &[updated], false)
+            .unwrap();
         let threads = store.list_threads(&pr).unwrap();
         assert_eq!(threads.len(), 1);
         assert_eq!(threads[0].comments.len(), 1);
         assert_eq!(threads[0].comments[0].body, "edited");
         assert_eq!(threads[0].comments[0].updated_at, "2024-01-03T00:00:00Z");
+        let comment_meta: (Option<String>, Option<String>, Option<String>) = store.conn.query_row(
+            "SELECT author_node_id, author_type, github_updated_at FROM review_comments WHERE github_node_id = 'comment-node'",
+            [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        ).unwrap();
+        assert_eq!(
+            comment_meta,
+            (
+                Some("new-user".into()),
+                Some("Bot".into()),
+                Some("2024-01-03T00:00:00Z".into())
+            )
+        );
         let refreshed: (Option<u32>, Option<bool>) = store.conn.query_row(
             "SELECT original_start_line, viewer_can_resolve FROM review_threads WHERE github_thread_id = ?1",
             ["thread-node"], |r| Ok((r.get(0)?, r.get(1)?))
@@ -400,7 +478,7 @@ mod tests {
         unavailable.unavailable_fields =
             vec!["originalStartLine".into(), "viewerCanResolve".into()];
         store
-            .sync_github_threads(&pr, "head", &[unavailable])
+            .sync_github_threads(&pr, "head", &[unavailable], false)
             .unwrap();
         let preserved: (Option<u32>, Option<bool>) = store.conn.query_row(
             "SELECT original_start_line, viewer_can_resolve FROM review_threads WHERE github_thread_id = ?1",
@@ -411,12 +489,109 @@ mod tests {
         let mut cleared = thread;
         cleared.original_start_line = None;
         cleared.viewer_can_resolve = None;
-        store.sync_github_threads(&pr, "head", &[cleared]).unwrap();
+        store
+            .sync_github_threads(&pr, "head", &[cleared], false)
+            .unwrap();
         let cleared_meta: (Option<u32>, Option<bool>) = store.conn.query_row(
             "SELECT original_start_line, viewer_can_resolve FROM review_threads WHERE github_thread_id = ?1",
             ["thread-node"], |r| Ok((r.get(0)?, r.get(1)?))
         ).unwrap();
         assert_eq!(cleared_meta, (None, None));
+    }
+
+    #[test]
+    fn rest_first_comment_recovers_graphql_metadata() {
+        let mut store = Store::open_in_memory().unwrap();
+        let repo = store
+            .resolve_repository("github.com", "o", "r", None)
+            .unwrap();
+        let pr = store
+            .upsert_pull_request(&repo.id, 1, "title", "url")
+            .unwrap();
+        let graphql: crate::model::GithubThread = serde_json::from_value(json!({
+            "nodeId": "thread-node", "path": "src/a.rs", "side": "RIGHT",
+            "isOutdated": false, "isResolved": false,
+            "comments": [{"nodeId": "comment-node", "databaseId": 42, "author": "alice",
+                "authorNodeId": "user-node", "authorType": "User", "body": "first",
+                "createdAt": "2024-01-01T00:00:00Z", "updatedAt": "2024-01-02T00:00:00Z"}]
+        }))
+        .unwrap();
+        let mut rest = graphql.clone();
+        rest.node_id = "rest:42".into();
+        rest.rest_only = true;
+        rest.comments[0].author_id = None;
+        rest.comments[0].author_type = None;
+        rest.comments[0].updated_at = None;
+        store
+            .sync_github_threads(&pr, "head", &[rest], false)
+            .unwrap();
+        store
+            .sync_github_threads(&pr, "head", &[graphql], true)
+            .unwrap();
+        let threads = store.list_threads(&pr).unwrap();
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].comments.len(), 1);
+        assert_eq!(threads[0].github_thread_id.as_deref(), Some("thread-node"));
+        let meta: (Option<String>, Option<String>, Option<String>) = store.conn.query_row(
+            "SELECT author_node_id, author_type, github_updated_at FROM review_comments WHERE github_node_id = 'comment-node'",
+            [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        ).unwrap();
+        assert_eq!(
+            meta,
+            (
+                Some("user-node".into()),
+                Some("User".into()),
+                Some("2024-01-02T00:00:00Z".into())
+            )
+        );
+    }
+
+    #[test]
+    fn unavailable_path_and_comment_metadata_keep_prior_values() {
+        let mut store = Store::open_in_memory().unwrap();
+        let repo = store
+            .resolve_repository("github.com", "o", "r", None)
+            .unwrap();
+        let pr = store
+            .upsert_pull_request(&repo.id, 1, "title", "url")
+            .unwrap();
+        let original: crate::model::GithubThread = serde_json::from_value(json!({
+            "nodeId": "thread-node", "path": "src/original.rs", "side": "RIGHT",
+            "isOutdated": false, "isResolved": false,
+            "comments": [{"nodeId": "comment-node", "databaseId": 42, "author": "alice",
+                "authorNodeId": "user-node", "authorType": "User", "body": "first",
+                "createdAt": "2024-01-01T00:00:00Z", "updatedAt": "2024-01-02T00:00:00Z"}]
+        }))
+        .unwrap();
+        store
+            .sync_github_threads(&pr, "head", std::slice::from_ref(&original), true)
+            .unwrap();
+        for fields in [vec!["path", "author", "updatedAt"], vec!["*", "*"]] {
+            let mut unavailable = original.clone();
+            unavailable.path = String::new();
+            unavailable.unavailable_fields = vec![fields[0].into()];
+            unavailable.comments[0].author_id = None;
+            unavailable.comments[0].author_type = None;
+            unavailable.comments[0].updated_at = None;
+            unavailable.comments[0].unavailable_fields =
+                fields[1..].iter().map(|s| (*s).into()).collect();
+            store
+                .sync_github_threads(&pr, "head", &[unavailable], false)
+                .unwrap();
+            assert_eq!(store.list_threads(&pr).unwrap()[0].path, "src/original.rs");
+            let meta: (Option<String>, Option<String>, Option<String>) = store.conn.query_row(
+                "SELECT author_node_id, author_type, github_updated_at FROM review_comments WHERE github_node_id = 'comment-node'",
+                [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            ).unwrap();
+            assert_eq!(
+                meta,
+                (
+                    Some("user-node".into()),
+                    Some("User".into()),
+                    Some("2024-01-02T00:00:00Z".into())
+                )
+            );
+        }
     }
 
     #[test]

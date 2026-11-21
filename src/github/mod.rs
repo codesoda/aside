@@ -279,6 +279,10 @@ mod tests {
         );
         gh.on(&["api", "--paginate"], Ok(r#"[[{"filename":"a.rs","status":"modified","patch":null,"additions":1,"deletions":1}]]"#));
         gh.on(&["api", "graphql"], Ok(&threads_json()));
+        gh.on(
+            &["api", "repos/o/r/pulls/7/comments?per_page=100&page=1"],
+            Ok("[]"),
+        );
         let pr = PrRef {
             owner: "o".into(),
             repo: "r".into(),
@@ -853,6 +857,10 @@ mod tests {
             Ok(r#"[[{"filename":"a.rs","status":"modified","patch":"@@ -1 +1 @@\n-x\n+y","sha":"s1","additions":1,"deletions":1}]]"#),
         );
         gh.on(&["api", "graphql"], Ok(&threads_json()));
+        gh.on(
+            &["api", "repos/o/r/pulls/7/comments?per_page=100&page=1"],
+            Ok("[]"),
+        );
         let pr = PrRef {
             owner: "o".into(),
             repo: "r".into(),

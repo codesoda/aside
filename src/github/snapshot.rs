@@ -92,6 +92,8 @@ pub fn fetch_snapshot(gh: &dyn GhRunner, pr_ref: &PrRef, limits: &Limits) -> Res
     }
 
     let thread_import = fetch_threads(gh, pr_ref);
+    let github_threads_complete =
+        thread_import.completeness == crate::model::Completeness::Complete;
     for problem in &thread_import.problems {
         warnings.push(format!("review threads incomplete: {problem}"));
     }
@@ -153,6 +155,7 @@ pub fn fetch_snapshot(gh: &dyn GhRunner, pr_ref: &PrRef, limits: &Limits) -> Res
         provider_repository_id,
         files,
         github_threads,
+        github_threads_complete,
         github_threads_completeness,
         github_threads_problems,
         reviews: reviews.records,

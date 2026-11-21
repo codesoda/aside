@@ -216,6 +216,11 @@ pub struct GithubThread {
     pub is_outdated: bool,
     pub is_resolved: bool,
     pub comments: Vec<GithubComment>,
+    /// REST-only records have no verified GraphQL anchor or resolution.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub rest_only: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub enumeration_complete: bool,
     // Fields below are optional so older snapshots and fixtures still decode.
     // GitHub enum values are kept as raw strings, never decoded into lossy
     // contract enums.
@@ -264,6 +269,9 @@ pub struct GithubComment {
     pub author: String,
     pub body: String,
     pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub in_reply_to_id: Option<i64>,
     // Optional so older snapshots and fixtures still decode.
     /// GitHub node ID of the author (absent for deleted "ghost" users).
     #[serde(
@@ -315,6 +323,8 @@ pub struct PrSnapshot {
     pub provider_repository_id: Option<String>,
     pub files: Vec<ChangedFile>,
     pub github_threads: Vec<GithubThread>,
+    #[serde(default)]
+    pub github_threads_complete: bool,
     /// Whether `github_threads` holds every thread and every reply. Anything
     /// but `complete` means some data could not be fetched (see `warnings`).
     /// Snapshots stored before this field existed decode as `unknown`.

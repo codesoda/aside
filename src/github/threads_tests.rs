@@ -30,6 +30,9 @@ impl PagedGh {
 
 impl GhRunner for PagedGh {
     fn run(&self, args: &[&str], _stdin: Option<&[u8]>) -> Result<Vec<u8>> {
+        if args.get(1).is_some_and(|arg| arg.starts_with("repos/")) {
+            return Ok(b"[]".to_vec());
+        }
         let arg = |k: &str| {
             args.iter()
                 .find_map(|a| a.strip_prefix(&format!("{k}=")))
@@ -44,6 +47,26 @@ impl GhRunner for PagedGh {
             None => Err(anyhow!("no scripted response for {key:?}")),
         }
     }
+}
+
+#[test]
+fn rest_fallback_groups_replies_without_claiming_graphql_anchor() {
+    let gh = FakeGh::default();
+    gh.on(&["api", "graphql"], Err("unavailable"));
+    gh.on(&["api", "repos/o/r/pulls/1/comments?per_page=100&page=1"],
+        Ok(r#"[{"id":1,"node_id":"N1","path":"a.rs","body":"root","created_at":"now"},{"id":2,"node_id":"N2","path":"a.rs","body":"reply","created_at":"later","in_reply_to_id":1}]"#));
+    let result = fetch_threads(&gh, &pr());
+    assert_eq!(result.threads.len(), 1);
+    assert!(result.threads[0].rest_only);
+    assert_eq!(result.completeness, Completeness::Partial);
+    assert!(!result.problems.is_empty());
+    assert!(!result.threads[0].enumeration_complete);
+    assert!(
+        result.threads[0]
+            .comments
+            .iter()
+            .any(|c| c.in_reply_to_id == Some(1))
+    );
 }
 
 fn pr() -> PrRef {
@@ -564,10 +587,10 @@ fn complete_import_then_field_error_refresh_preserves_only_unavailable_metadata(
         .upsert_pull_request(&repo.id, 1, "title", "url")
         .unwrap();
     store
-        .sync_github_threads(&pr_id, "head", &complete.threads)
+        .sync_github_threads(&pr_id, "head", &complete.threads, true)
         .unwrap();
     store
-        .sync_github_threads(&pr_id, "head", &partial.threads)
+        .sync_github_threads(&pr_id, "head", &partial.threads, false)
         .unwrap();
     let threads = store.list_threads(&pr_id).unwrap();
     assert_eq!(threads.len(), 1);
