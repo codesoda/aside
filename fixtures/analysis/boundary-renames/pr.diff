@@ -1,0 +1,30 @@
+diff --git a/src/old_api.rs b/src/new_api.rs
+similarity index 100%
+rename from src/old_api.rs
+rename to src/new_api.rs
+diff --git a/src/parser.rs b/src/parse/mod.rs
+similarity index 88%
+rename from src/parser.rs
+rename to src/parse/mod.rs
+index 1111111..2222222 100644
+--- a/src/parser.rs
++++ b/src/parse/mod.rs
+@@ -1,4 +1,4 @@
+ use std::str;
+-pub fn parse(input: &str) -> Vec<u8> {
++pub fn parse(input: &str) -> Result<Vec<u8>, String> {
+     input.bytes().collect()
+ }
+diff --git a/tests/parser.rs b/tests/parse.rs
+similarity index 92%
+rename from tests/parser.rs
+rename to tests/parse.rs
+index 3333333..4444444 100644
+--- a/tests/parser.rs
++++ b/tests/parse.rs
+@@ -1,4 +1,4 @@
+ #[test]
+ fn parses() {
+-    assert_eq!(parse("a"), vec![97]);
++    assert_eq!(parse("a"), Ok(vec![97]));
+ }

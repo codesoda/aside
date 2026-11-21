@@ -22,6 +22,8 @@
 //!   files, oversized files and unsupported languages each get an explicit
 //!   coverage outcome instead of a silent skip or a guessed fact.
 
+#[cfg(test)]
+mod boundary_tests;
 mod classify;
 #[cfg(test)]
 mod tests;
@@ -515,6 +517,12 @@ fn content_gate(
     } else if !file.patch_complete {
         Some(ScopeOutcome::Unknown {
             reason: "patch_incomplete".into(),
+        })
+    } else if operation(file) == "mode-only" {
+        // No content changed: line rules have nothing to read, which is not
+        // the same as "read it and found nothing" (#36).
+        Some(ScopeOutcome::NotApplicable {
+            reason: "mode_only".into(),
         })
     } else if generated && !config.scan_generated_files {
         Some(ScopeOutcome::NotRun {

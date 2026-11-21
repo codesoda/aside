@@ -1,0 +1,66 @@
+[
+  {
+    "ruleId": "aside.diff.pr_summary",
+    "path": null,
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "PR totals; null (unknown) whenever a binary, truncated or unlisted file makes them unmeasurable."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "src/new_api.rs",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "src/parse/mod.rs",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "tests/parse.rs",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.tests_touched",
+    "path": null,
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "Measured count of test files by path convention."
+  },
+  {
+    "ruleId": "aside.diff.test_assertions_added",
+    "path": "tests/parse.rs",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "questionable",
+    "note": "Same in-place edit counted as an added assertion; together with tests_removed the pair reads as churn rather than one modified assertion."
+  },
+  {
+    "ruleId": "aside.diff.tests_removed",
+    "path": "tests/parse.rs",
+    "assertionKind": "attention_hint",
+    "attention": "investigate",
+    "verdict": "questionable",
+    "note": "One assertion was edited in place inside a renamed test file. The rule reports it as a removal at investigate level because replacements are not tracked (stated in limitations); safe, but noisy."
+  },
+  {
+    "ruleId": "aside.diff.schema_contract",
+    "path": "src/parse/mod.rs",
+    "assertionKind": "attention_hint",
+    "attention": "info",
+    "verdict": "appropriate",
+    "note": "A public-looking signature really changed; info-level prompt to check callers."
+  }
+]
