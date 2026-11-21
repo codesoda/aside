@@ -1,5 +1,14 @@
 //! Deterministic offline replay of cli/cli#14921. The first revision is an
 //! unmodified public PR capture; the second is a synthetic refresh exercise.
+//!
+//! GitHub feedback (threads, reviews, issue comments) and review intelligence
+//! come from the synthetic fixture in `fixtures/analysis/demo-cli-14921/`; see
+//! [`intelligence`]. Nothing here touches the network or runs `gh`.
+
+// TODO(#33): the full bundle is only consumed by tests until the analysis API
+// serves it.
+#[allow(dead_code)]
+pub mod intelligence;
 
 use crate::{
     diff::{self, Limits},
@@ -37,10 +46,16 @@ pub fn snapshot(version: usize) -> PrSnapshot {
         pr,
         provider_repository_id: Some("212613049".into()),
         files: parsed.files,
-        github_threads: Vec::new(),
-        github_threads_complete: false,
-        reviews: Vec::new(),
-        issue_comments: Vec::new(),
+        github_threads: intelligence::github_threads(),
+        github_threads_complete: true,
+        github_threads_completeness: crate::model::Completeness::Complete,
+        github_threads_problems: Vec::new(),
+        reviews: intelligence::reviews(),
+        reviews_completeness: crate::model::Completeness::Complete,
+        reviews_problems: Vec::new(),
+        issue_comments: intelligence::issue_comments(),
+        issue_comments_completeness: crate::model::Completeness::Complete,
+        issue_comments_problems: Vec::new(),
         warnings: parsed.warnings,
         complete: true,
         fetched_at: "2026-11-20T11:40:19Z".into(),

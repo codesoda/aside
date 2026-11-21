@@ -1,0 +1,10 @@
+diff --git a/src/math.rs b/src/math.rs
+index 1212121..4646464 100644
+--- a/src/math.rs
++++ b/src/math.rs
+@@ -1,3 +1,4 @@
+-// Adds.
++// Adds two numbers.
++// Saturation is handled by the caller.
+ pub fn add(a: u32, b: u32) -> u32 {
+     a + b

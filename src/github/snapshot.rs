@@ -3,10 +3,15 @@ use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 
 use crate::diff::{self, ApiFile, Limits};
-use crate::model::{ImportedReview, IssueComment, PrSnapshot, PullRequest, SCHEMA_VERSION};
+use crate::model::{PrSnapshot, PullRequest, SCHEMA_VERSION};
 use crate::util::now_rfc3339;
 
-use super::{GhRunner, PrRef, runner::run_json, threads::fetch_threads};
+use super::{
+    GhRunner, PrRef,
+    feedback::{fetch_comments, fetch_reviews},
+    runner::run_json,
+    threads::fetch_threads,
+};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -28,35 +33,11 @@ struct GhPr {
     head_ref_oid: String,
     #[serde(default)]
     changed_files: Option<u64>,
-    #[serde(default)]
-    reviews: Vec<GhReview>,
-    #[serde(default)]
-    comments: Vec<GhIssueComment>,
 }
 
 #[derive(Deserialize)]
 struct GhLogin {
     login: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GhReview {
-    author: Option<GhLogin>,
-    #[serde(default)]
-    state: String,
-    #[serde(default)]
-    body: String,
-    submitted_at: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GhIssueComment {
-    author: Option<GhLogin>,
-    #[serde(default)]
-    body: String,
-    created_at: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -78,7 +59,7 @@ fn login(a: &Option<GhLogin>) -> String {
         .unwrap_or_else(|| "ghost".into())
 }
 
-pub(super) const PR_FIELDS: &str = "number,title,body,url,state,isDraft,author,baseRefName,baseRefOid,headRefName,headRefOid,changedFiles,reviews,comments";
+pub(super) const PR_FIELDS: &str = "number,title,body,url,state,isDraft,author,baseRefName,baseRefOid,headRefName,headRefOid,changedFiles";
 
 /// Fetch everything Aside needs for one PR revision.
 pub fn fetch_snapshot(gh: &dyn GhRunner, pr_ref: &PrRef, limits: &Limits) -> Result<PrSnapshot> {
@@ -110,10 +91,26 @@ pub fn fetch_snapshot(gh: &dyn GhRunner, pr_ref: &PrRef, limits: &Limits) -> Res
         complete = false;
     }
 
-    let (github_threads, thread_warnings, github_threads_complete) = fetch_threads(gh, pr_ref)
-        .inspect_err(|e| warnings.push(format!("could not load review threads: {e}")))
-        .unwrap_or_default();
-    warnings.extend(thread_warnings);
+    let thread_import = fetch_threads(gh, pr_ref);
+    let github_threads_complete =
+        thread_import.completeness == crate::model::Completeness::Complete;
+    for problem in &thread_import.problems {
+        warnings.push(format!("review threads incomplete: {problem}"));
+    }
+    // Persisted per snapshot and surfaced as a source (#27, see
+    // `session::import_sources`); `warnings` keeps the human-readable copy.
+    let github_threads_completeness = thread_import.completeness;
+    let github_threads_problems = thread_import.problems;
+    let github_threads = thread_import.threads;
+
+    let reviews = fetch_reviews(gh, pr_ref);
+    let comments = fetch_comments(gh, pr_ref);
+    for problem in &reviews.problems {
+        warnings.push(format!("reviews incomplete: {problem}"));
+    }
+    for problem in &comments.problems {
+        warnings.push(format!("comments incomplete: {problem}"));
+    }
 
     // The diff and paginated files API target a mutable PR number. A force push
     // or base update during ingestion must never yield a complete mixed revision.
@@ -157,25 +154,14 @@ pub fn fetch_snapshot(gh: &dyn GhRunner, pr_ref: &PrRef, limits: &Limits) -> Res
         files,
         github_threads,
         github_threads_complete,
-        reviews: meta
-            .reviews
-            .iter()
-            .map(|r| ImportedReview {
-                author: login(&r.author),
-                state: r.state.clone(),
-                body: r.body.clone(),
-                submitted_at: r.submitted_at.clone(),
-            })
-            .collect(),
-        issue_comments: meta
-            .comments
-            .iter()
-            .map(|c| IssueComment {
-                author: login(&c.author),
-                body: c.body.clone(),
-                created_at: c.created_at.clone(),
-            })
-            .collect(),
+        github_threads_completeness,
+        github_threads_problems,
+        reviews: reviews.records,
+        reviews_completeness: reviews.completeness,
+        reviews_problems: reviews.problems,
+        issue_comments: comments.records,
+        issue_comments_completeness: comments.completeness,
+        issue_comments_problems: comments.problems,
         warnings,
         complete,
         fetched_at: now_rfc3339(),
@@ -258,30 +244,58 @@ fn fetch_files(
             )
         })
         .collect();
-    // Test fakes never invoke external Git; the recovery module is tested with local repos.
-    if needs_recovery(&api_files, manifest.len(), expected_changed_files) && !cfg!(test) {
-        match super::git_fallback::recover(pr_ref, base_sha, head_sha, limits) {
-            Ok(recovered)
-                if validated_aggregate(
-                    &recovered.files,
-                    &manifest,
-                    expected_changed_files,
-                    true,
-                ) =>
-            {
-                warnings.push("recovered complete diff from captured Git commits".into());
-                return Ok(recovered.files);
+    // Test fakes never invoke external Git; the recovery module is tested with
+    // local repos. Production only attempts the fetch when the API patch is
+    // already known to be incomplete.
+    let recovery =
+        if !cfg!(test) && needs_recovery(&api_files, manifest.len(), expected_changed_files) {
+            match super::git_fallback::recover(pr_ref, base_sha, head_sha, limits) {
+                Ok(recovered) => Some(recovered),
+                Err(e) => {
+                    warnings.push(format!(
+                        "temporary Git recovery unavailable: {e}; patch remains incomplete"
+                    ));
+                    None
+                }
             }
-            Ok(_) => warnings.push(
-                "temporary Git diff did not match PR files metadata; patch remains incomplete"
-                    .into(),
-            ),
-            Err(e) => warnings.push(format!(
-                "temporary Git recovery unavailable: {e}; patch remains incomplete"
-            )),
-        }
+        } else {
+            None
+        };
+    if let Some(files) = apply_recovery(
+        &api_files,
+        &manifest,
+        expected_changed_files,
+        recovery,
+        warnings,
+    ) {
+        return Ok(files);
     }
     Ok(api_files)
+}
+
+/// Apply temporary-Git recovery to the per-file API fallback. Returns the
+/// recovered files when they validate against the manifest; otherwise the API
+/// files stand (possibly incomplete). `recovery` is `None` when recovery was
+/// not needed, was unavailable, or is disabled (tests never shell out).
+pub(super) fn apply_recovery(
+    api_files: &[crate::model::ChangedFile],
+    manifest: &[GhApiFile],
+    expected: Option<u64>,
+    recovery: Option<crate::diff::ParsedDiff>,
+    warnings: &mut Vec<String>,
+) -> Option<Vec<crate::model::ChangedFile>> {
+    if !needs_recovery(api_files, manifest.len(), expected) {
+        return None;
+    }
+    let recovered = recovery?;
+    if validated_aggregate(&recovered.files, manifest, expected, true) {
+        warnings.push("recovered complete diff from captured Git commits".into());
+        return Some(recovered.files);
+    }
+    warnings.push(
+        "temporary Git diff did not match PR files metadata; patch remains incomplete".into(),
+    );
+    None
 }
 
 pub(super) fn needs_recovery(
@@ -336,8 +350,20 @@ pub(super) fn validated_aggregate(
                 .previous_filename
                 .as_deref()
                 .is_none_or(|old| file.previous_path.as_deref() == Some(old))
-            && file.additions == api.additions
-            && file.deletions == api.deletions
+            // Counts are authoritative only when GitHub reported them alongside
+            // a patch. When aggregate truncation omits a patch it also ZEROES
+            // `additions`/`deletions`, so for a RECOVERED diff — which carries
+            // the true counts — comparing against those zeros would reject a
+            // correct recovery for exactly the files that made recovery
+            // necessary (#67). Paths, status, previous names, completeness, and
+            // hunk integrity above and below still bind for patch-less entries.
+            // The direct-aggregate path (`recovered == false`) keeps the strict
+            // comparison on purpose: both sides come from GitHub there, and a
+            // disagreement fails closed into the per-file API fallback, which
+            // then routes through recovery for a trustworthy verdict.
+            && (file.additions == api.additions
+                && file.deletions == api.deletions
+                || recovered && api.patch.is_none())
             && file.hunks.iter().all(|hunk| {
                 let old = hunk
                     .lines

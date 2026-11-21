@@ -1,6 +1,6 @@
 [package]
 name = "aside"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 [dependencies]
@@ -34,5 +34,7 @@ ts-rs = { version = "12.0.1", features = ["chrono-impl"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
+# test-util: paused clock for scheduler timeout tests.
+tokio = { version = "1.54.1", features = ["full", "test-util"] }
 http-body-util = "0.1.5"
 tower = { version = "0.5.3", features = ["util"] }

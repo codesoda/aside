@@ -69,12 +69,17 @@ pub fn parse_pr_url(input: &str) -> Result<PrRef> {
 /// Runs `gh` with arguments and optional stdin, returning stdout.
 pub trait GhRunner: Send + Sync {
     fn run(&self, args: &[&str], stdin: Option<&[u8]>) -> Result<Vec<u8>>;
+
+    /// GraphQL requests may return usable data alongside errors and a nonzero exit.
+    fn run_graphql(&self, args: &[&str]) -> Result<Vec<u8>> {
+        self.run(args, None)
+    }
 }
 
 pub struct SystemGh;
 
-impl GhRunner for SystemGh {
-    fn run(&self, args: &[&str], stdin: Option<&[u8]>) -> Result<Vec<u8>> {
+impl SystemGh {
+    fn run_impl(&self, args: &[&str], stdin: Option<&[u8]>, graphql: bool) -> Result<Vec<u8>> {
         tracing::debug!(command = %args.first().copied().unwrap_or_default(), "running gh");
         let mut child = Command::new("gh")
             .args(args)
@@ -93,11 +98,40 @@ impl GhRunner for SystemGh {
             child.stdin.take().context("gh stdin")?.write_all(input)?;
         }
         let out = child.wait_with_output()?;
-        if !out.status.success() {
-            return Err(classify_error(&String::from_utf8_lossy(&out.stderr)));
-        }
-        Ok(out.stdout)
+        output_stdout(out, graphql)
     }
+}
+
+impl GhRunner for SystemGh {
+    fn run(&self, args: &[&str], stdin: Option<&[u8]>) -> Result<Vec<u8>> {
+        self.run_impl(args, stdin, false)
+    }
+
+    fn run_graphql(&self, args: &[&str]) -> Result<Vec<u8>> {
+        self.run_impl(args, None, true)
+    }
+}
+
+pub(super) fn output_stdout(out: std::process::Output, graphql: bool) -> Result<Vec<u8>> {
+    if !out.status.success() {
+        // Never log or quote stdout: it may contain private PR content.
+        if graphql
+            && serde_json::from_slice::<serde_json::Value>(&out.stdout)
+                .ok()
+                .is_some_and(|v| {
+                    v.get("errors")
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|e| !e.is_empty())
+                        && v.get("data")
+                            .and_then(serde_json::Value::as_object)
+                            .is_some_and(|data| data.values().any(|value| !value.is_null()))
+                })
+        {
+            return Ok(out.stdout);
+        }
+        return Err(classify_error(&String::from_utf8_lossy(&out.stderr)));
+    }
+    Ok(out.stdout)
 }
 
 /// Turn `gh` stderr into a clear, token-free error.
@@ -131,6 +165,14 @@ pub fn check_gh(gh: &dyn GhRunner) -> Result<()> {
     })
 }
 
+pub(super) fn run_graphql_json<T: for<'de> Deserialize<'de>>(
+    gh: &dyn GhRunner,
+    args: &[&str],
+) -> Result<T> {
+    let out = gh.run_graphql(args)?;
+    serde_json::from_slice(&out).context("unexpected JSON from `gh api graphql`")
+}
+
 pub(super) fn run_json<T: for<'de> Deserialize<'de>>(
     gh: &dyn GhRunner,
     args: &[&str],
@@ -138,4 +180,40 @@ pub(super) fn run_json<T: for<'de> Deserialize<'de>>(
     let out = gh.run(args, None)?;
     serde_json::from_slice(&out)
         .with_context(|| format!("unexpected JSON from `gh {}`", args.join(" ")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::output_stdout;
+    use std::process::Command;
+
+    #[test]
+    fn nonzero_graphql_retains_only_valid_partial_data() {
+        let mut out = Command::new("sh")
+            .args(["-c", "printf '%s' \"$1\"; printf 'request failed' >&2; exit 1", "sh", "{\"data\":{\"repository\":{\"id\":\"R1\"}},\"errors\":[{\"message\":\"forbidden\"}]}"])
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        assert!(output_stdout(out.clone(), true).is_ok());
+        assert!(
+            output_stdout(out.clone(), false)
+                .unwrap_err()
+                .to_string()
+                .contains("request failed")
+        );
+        for invalid in [
+            br#"{"data":null,"errors":[{"message":"forbidden"}]}"#.as_slice(),
+            br#"{"data":{"repository":null},"errors":[{"message":"forbidden"}]}"#,
+            br#"{"data":{"repository":{}},"errors":[]}"#,
+            b"not JSON",
+        ] {
+            out.stdout = invalid.to_vec();
+            assert!(
+                output_stdout(out.clone(), true)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("request failed")
+            );
+        }
+    }
 }

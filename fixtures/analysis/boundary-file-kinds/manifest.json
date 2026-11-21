@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "name": "boundary-file-kinds",
+  "synthetic": true,
+  "description": "Synthetic boundary fixture (#36). Deleted source file, deleted/added/modified binary files and mode-only changes in a supported and an unsupported language.",
+  "repositoryId": "synthetic/boundary",
+  "prNumber": 9002,
+  "baseSha": "9fc88fd500b89e2767aa4bd729e5e5a9605fbedd",
+  "headSha": "e89a6b38c0b95f470417f477d91ba41a4f24d463",
+  "snapshotComplete": true,
+  "observedAt": "2026-01-01T00:00:00Z",
+  "scenarios": [
+    "19.2.deleted-binary-mode-only",
+    "19.5.17"
+  ],
+  "unsupportedPaths": [
+    "assets/logo.png",
+    "assets/new.png",
+    "assets/old.png",
+    "scripts/gen.rs",
+    "scripts/release.sh"
+  ],
+  "expectedCompleteness": "complete"
+}

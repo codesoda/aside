@@ -1,0 +1,80 @@
+[
+  {
+    "nodeId": "PRRT_synthBot0001",
+    "path": "internal/identity/ssh_command.go",
+    "side": "RIGHT",
+    "line": 24,
+    "startLine": null,
+    "originalLine": 24,
+    "isOutdated": false,
+    "isResolved": false,
+    "comments": [
+      {
+        "nodeId": "PRRC_synthBot0001a",
+        "databaseId": 9000000101,
+        "author": "coderabbitai[bot]",
+        "body": "_(synthetic fixture)_ **Potential issue:** `variant` is compared without trimming, so `\"ssh \"` is refused while `ssh` passes. Consider normalising the value first.",
+        "createdAt": "2026-11-20T10:05:00Z"
+      },
+      {
+        "nodeId": "PRRC_synthBot0001b",
+        "databaseId": 9000000102,
+        "author": "synthetic-maintainer",
+        "body": "_(synthetic fixture)_ Is trailing whitespace realistic here? Env values come from the user's shell.",
+        "createdAt": "2026-11-20T10:20:00Z"
+      },
+      {
+        "nodeId": "PRRC_synthBot0001c",
+        "databaseId": 9000000103,
+        "author": "coderabbitai[bot]",
+        "body": "_(synthetic fixture)_ It is uncommon but `export GIT_SSH_VARIANT=\"ssh \"` reproduces it.",
+        "createdAt": "2026-11-20T10:21:00Z"
+      }
+    ]
+  },
+  {
+    "nodeId": "PRRT_synthHuman0002",
+    "path": "git/client.go",
+    "side": "RIGHT",
+    "line": null,
+    "startLine": null,
+    "originalLine": 190,
+    "isOutdated": true,
+    "isResolved": true,
+    "comments": [
+      {
+        "nodeId": "PRRC_synthHuman0002a",
+        "databaseId": 9000000201,
+        "author": "synthetic-reviewer",
+        "body": "_(synthetic fixture)_ Should this be gated on the identity being bound?",
+        "createdAt": "2026-11-19T08:00:00Z"
+      },
+      {
+        "nodeId": "PRRC_synthHuman0002b",
+        "databaseId": null,
+        "author": "ghost",
+        "body": "_(synthetic fixture)_ Done in the next push. (author account deleted)",
+        "createdAt": "2026-11-19T08:30:00Z"
+      }
+    ]
+  },
+  {
+    "nodeId": "PRRT_synthHuman0003",
+    "path": "script/multiaccount-review/02-repository.sh",
+    "side": "RIGHT",
+    "line": 17,
+    "startLine": 15,
+    "originalLine": 17,
+    "isOutdated": false,
+    "isResolved": false,
+    "comments": [
+      {
+        "nodeId": "PRRC_synthHuman0003a",
+        "databaseId": 9000000301,
+        "author": "synthetic-reviewer",
+        "body": "_(synthetic fixture)_ This script only works on macOS; please document that in the header.",
+        "createdAt": "2026-11-20T09:00:00Z"
+      }
+    ]
+  }
+]

@@ -6,14 +6,28 @@ use crate::model::Side;
 
 use super::{GhRunner, PrRef, runner::run_json};
 
-/// Current head SHA, read fresh right before publishing.
-pub fn fetch_head_sha(gh: &dyn GhRunner, pr_ref: &PrRef) -> Result<String> {
+/// Current base and head SHAs, read fresh before publication.
+pub fn fetch_revision(gh: &dyn GhRunner, pr_ref: &PrRef) -> Result<(String, String)> {
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
-    struct Head {
+    struct Refs {
+        base_ref_oid: String,
         head_ref_oid: String,
     }
-    Ok(run_json::<Head>(gh, &["pr", "view", &pr_ref.url(), "--json", "headRefOid"])?.head_ref_oid)
+    let refs: Refs = run_json(
+        gh,
+        &[
+            "pr",
+            "view",
+            &pr_ref.url(),
+            "--json",
+            "baseRefOid,headRefOid",
+        ],
+    )?;
+    if refs.base_ref_oid.is_empty() || refs.head_ref_oid.is_empty() {
+        anyhow::bail!("PR revision is unavailable");
+    }
+    Ok((refs.base_ref_oid, refs.head_ref_oid))
 }
 
 /// One inline comment inside a new GitHub review.

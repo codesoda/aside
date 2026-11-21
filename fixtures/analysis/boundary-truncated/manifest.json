@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "name": "boundary-truncated",
+  "synthetic": true,
+  "description": "Synthetic boundary fixture (#36). Snapshot not verified complete, with one patch truncated mid-hunk next to a complete patch.",
+  "repositoryId": "synthetic/boundary",
+  "prNumber": 9003,
+  "baseSha": "0eb4bb74e45e16306729494557a1da8767a414f6",
+  "headSha": "21225d56a114d4dbcc5281bc041d070127293d1f",
+  "snapshotComplete": false,
+  "observedAt": "2026-01-01T00:00:00Z",
+  "scenarios": [
+    "19.2.truncated",
+    "19.5.17"
+  ],
+  "unsupportedPaths": [
+    "src/server.rs"
+  ],
+  "expectedCompleteness": "partial"
+}

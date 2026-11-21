@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "name": "test-gap-moved-tests",
+  "synthetic": true,
+  "description": "Synthetic boundary fixture (#36). Inline unit tests moved out of src/math.rs into tests/math.rs.",
+  "repositoryId": "synthetic/boundary",
+  "prNumber": 9006,
+  "baseSha": "d7c0a5f4d16c61c3c567099a93e56dd86d464e13",
+  "headSha": "de6f66f745f3e0fba21564fd43381a339abfd599",
+  "snapshotComplete": true,
+  "observedAt": "2026-01-01T00:00:00Z",
+  "scenarios": [
+    "19.2.test-files-not-modified",
+    "19.2.false-test-gap"
+  ],
+  "unsupportedPaths": [],
+  "expectedCompleteness": "complete"
+}

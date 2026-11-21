@@ -1,4 +1,5 @@
 //! Loopback-only HTTP API and embedded SPA. The caller owns listener binding and browser launch.
+mod analysis;
 mod assets;
 mod auth;
 mod exclusions;
@@ -34,7 +35,7 @@ use self::{
 use crate::{
     model::Actor,
     session::Session,
-    store::{NotFound, ReservedDraft},
+    store::{NotFound, ReservedDraft, RevisionConflict},
 };
 
 /// Tokens are session-specific secrets. The UI token is never included in API responses.
@@ -120,6 +121,20 @@ fn db_error(error: anyhow::Error) -> ApiError {
             "draft_reserved",
             "draft is reserved for publication",
         )
+    } else if let Some(conflict) = error.downcast_ref::<RevisionConflict>() {
+        // Recoverable: carries the authoritative state to retry against
+        // (analyze.md §12.4). TODO(#26): the triage PATCH that raises it.
+        let mut api = ApiError::new(
+            StatusCode::CONFLICT,
+            "revision_conflict",
+            conflict.to_string(),
+        );
+        api.details = Some(json!({
+            "retryable": true,
+            "current": conflict.current,
+            "currentRevision": conflict.current.as_ref().map_or(0, |s| s.revision),
+        }));
+        api
     } else {
         ApiError::internal()
     }
@@ -148,6 +163,12 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/session", get(session_view))
         .route("/events", get(events))
+        .route("/analysis/summary", get(analysis::summary))
+        .route("/analysis/runs", get(analysis::runs))
+        .route("/analysis/queue", get(analysis::queue))
+        .route("/analysis/findings", get(analysis::findings))
+        .route("/analysis/findings/{id}/evidence", get(analysis::evidence))
+        .route("/github-feedback/threads", get(analysis::feedback))
         .route(
             "/repositories/current/exclusions",
             get(exclusions).post(create_exclusion),
@@ -199,26 +220,57 @@ async fn session_view(
     Ok(Json(state.session.view(actor).map_err(db_error)?))
 }
 
+/// The session's single event channel. Every event carries its sequence as
+/// the SSE `id`, so a reconnecting browser sends `Last-Event-ID`. Events are
+/// notifications, not a durable log: if the client missed any (reconnect
+/// behind the current sequence, or the broadcast buffer lagged) the first
+/// thing it receives is `resync`, and it must reload the authoritative
+/// `GET /session` rather than apply deltas on top of stale state.
 async fn events(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
 ) -> Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>> {
+    // Subscribe before reading the sequence so nothing falls in between.
     let rx = state.session.events.subscribe();
-    let stream = futures_util::stream::unfold(rx, |mut rx| async move {
+    let current = state
+        .session
+        .sequence
+        .load(std::sync::atomic::Ordering::SeqCst);
+    let missed = headers
+        .get("last-event-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.trim().parse::<u64>().map_or(true, |seen| seen < current))
+        .unwrap_or(false);
+    let first = missed.then(|| Ok(resync_event(current)));
+    let live = futures_util::stream::unfold(rx, move |mut rx| async move {
         match rx.recv().await {
             Ok(envelope) => {
+                let sequence = envelope.sequence;
                 let event = Event::default()
                     .event(&envelope.event_type)
+                    .id(sequence.to_string())
                     .json_data(envelope)
-                    .unwrap_or_else(|_| Event::default().event("resync").data("{}"));
+                    .unwrap_or_else(|_| resync_event(sequence));
                 Some((Ok(event), rx))
             }
             Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                Some((Ok(Event::default().event("resync").data("{}")), rx))
+                Some((Ok(resync_event(0)), rx))
             }
             Err(tokio::sync::broadcast::error::RecvError::Closed) => None,
         }
     });
+    let stream = futures_util::StreamExt::chain(futures_util::stream::iter(first), live);
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
+}
+
+fn resync_event(sequence: u64) -> Event {
+    Event::default().event("resync").data(
+        json!({
+            "eventVersion": crate::model::LIFECYCLE_EVENT_VERSION,
+            "sequence": sequence,
+        })
+        .to_string(),
+    )
 }
 
 async fn api_not_found() -> Response {
@@ -395,6 +447,92 @@ mod tests {
             app().oneshot(request).await.unwrap().status(),
             StatusCode::BAD_REQUEST
         );
+    }
+
+    /// First SSE frame for a connection, or `None` if nothing arrives soon.
+    async fn first_frame(session: Arc<Session>, last_event_id: Option<&str>) -> Option<String> {
+        use futures_util::StreamExt;
+        use tower::ServiceExt;
+        let app = router(AppState::new(session, "ui".into(), "agent".into()));
+        let mut builder = axum::http::Request::builder()
+            .uri("/api/v1/events")
+            .header(header::HOST, "127.0.0.1:1234")
+            .header(header::AUTHORIZATION, "Bearer agent");
+        if let Some(id) = last_event_id {
+            builder = builder.header("last-event-id", id);
+        }
+        let response = app
+            .oneshot(builder.body(axum::body::Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut body = response.into_body().into_data_stream();
+        let chunk = tokio::time::timeout(Duration::from_millis(200), body.next())
+            .await
+            .ok()??
+            .ok()?;
+        Some(String::from_utf8_lossy(&chunk).into_owned())
+    }
+
+    #[tokio::test]
+    async fn reconnect_behind_the_current_sequence_starts_with_resync() {
+        let session = Session::new(
+            crate::demo::snapshot(0),
+            crate::store::Store::open_in_memory().unwrap(),
+            None,
+            None,
+        )
+        .unwrap();
+        session.notify("file.reviewed", json!({}));
+        session.notify("file.reviewed", json!({}));
+        let frame = first_frame(Arc::clone(&session), Some("1")).await.unwrap();
+        assert!(frame.contains("event: resync"), "{frame}");
+        assert!(frame.contains("\"sequence\":2"), "{frame}");
+        // Up to date, or a first connection: no spurious resync.
+        assert_eq!(first_frame(Arc::clone(&session), Some("2")).await, None);
+        assert_eq!(first_frame(Arc::clone(&session), None).await, None);
+        // Unparseable cursor: resync rather than guess.
+        let frame = first_frame(session, Some("garbage")).await.unwrap();
+        assert!(frame.contains("event: resync"));
+    }
+
+    #[tokio::test]
+    async fn live_events_carry_their_sequence_as_the_sse_id() {
+        use futures_util::StreamExt;
+        use tower::ServiceExt;
+        let session = Session::new(
+            crate::demo::snapshot(0),
+            crate::store::Store::open_in_memory().unwrap(),
+            None,
+            None,
+        )
+        .unwrap();
+        let app = router(AppState::new(
+            Arc::clone(&session),
+            "ui".into(),
+            "agent".into(),
+        ));
+        let request = axum::http::Request::builder()
+            .uri("/api/v1/events")
+            .header(header::HOST, "127.0.0.1:1234")
+            .header(header::AUTHORIZATION, "Bearer agent")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let mut body = app
+            .oneshot(request)
+            .await
+            .unwrap()
+            .into_body()
+            .into_data_stream();
+        session.notify("analysis.run.queued", json!({"eventVersion": 1}));
+        let chunk = tokio::time::timeout(Duration::from_secs(2), body.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let frame = String::from_utf8_lossy(&chunk);
+        assert!(frame.contains("event: analysis.run.queued"), "{frame}");
+        assert!(frame.contains("id: 1"), "{frame}");
     }
 
     #[test]

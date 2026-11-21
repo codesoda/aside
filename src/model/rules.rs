@@ -29,7 +29,9 @@ pub struct ExclusionRule {
     pub kind: RuleKind,
     pub expression: String,
     pub enabled: bool,
-    /// Evaluation order. Later rules win.
+    /// Evaluation order. Later rules win. Serialised as a JSON number, so the
+    /// TypeScript type is `number` (ts-rs would otherwise emit `bigint`).
+    #[ts(type = "number")]
     pub order: i64,
     pub created_at: String,
     pub updated_at: String,

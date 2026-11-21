@@ -295,7 +295,7 @@ mod tests {
         )
         .unwrap();
         let status = status_for(tag).unwrap();
-        assert_eq!((status.latest.as_str(), status.available), ("0.2.0", true));
+        assert_eq!((status.latest.as_str(), status.available), ("0.2.0", false));
         assert!(!status_for("v0.1.0").unwrap().available);
         assert!(!status_for("v0.0.9").unwrap().available);
         assert!(status_for("v0.2.0-beta.1").is_err());

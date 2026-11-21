@@ -3,14 +3,20 @@
 //! `gh` is always run with an argv array, never through a shell. All calls go
 //! through [`GhRunner`] so tests can substitute a fake.
 
+mod feedback;
+#[cfg(test)]
+mod feedback_tests;
 mod git_fallback;
 mod review;
 mod runner;
 mod snapshot;
 mod threads;
+#[cfg(test)]
+pub use threads::DeniedVia;
+pub use threads::{LegacyKind, ThreadImportProblem};
 
 pub use review::{
-    NewReviewComment, create_review, fetch_head_sha, reply_to_comment, review_comments,
+    NewReviewComment, create_review, fetch_revision, reply_to_comment, review_comments,
 };
 
 #[allow(unused_imports)]
@@ -81,7 +87,9 @@ pub mod fake {
 mod tests {
     use super::fake::FakeGh;
     use super::runner::classify_error;
-    use super::snapshot::{GhApiFile, PR_FIELDS, needs_recovery, validated_aggregate};
+    use super::snapshot::{
+        GhApiFile, PR_FIELDS, apply_recovery, needs_recovery, validated_aggregate,
+    };
     use super::*;
     use crate::diff::Limits;
     use anyhow::Result;
@@ -143,9 +151,117 @@ mod tests {
             "pageInfo": {"hasNextPage": false, "endCursor": null},
             "nodes": [{"id": "T1", "isResolved": false, "isOutdated": false, "path": "a.rs", "line": 1,
                 "originalLine": 1, "startLine": null, "diffSide": "RIGHT",
-                "comments": {"nodes": [{"id": "C1", "databaseId": 11, "body": "why?", "createdAt": "2026-01-01T00:00:00Z", "author": {"login": "bob"}}]}}]
+                "comments": {"pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": [{"id": "C1", "databaseId": 11, "body": "why?", "createdAt": "2026-01-01T00:00:00Z", "author": {"login": "bob"}}]}}]
         }}}}})
         .to_string()
+    }
+
+    fn snapshot_gh(threads: Result<&str, &str>) -> FakeGh {
+        let gh = FakeGh::default();
+        gh.on(&["pr", "view"], Ok(&pr_json()));
+        gh.on(&["repo", "view"], Ok(r#"{"id":"R_1"}"#));
+        gh.on(
+            &["pr", "diff"],
+            Ok("diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-x\n+y\n"),
+        );
+        gh.on(&["api", "--paginate"], Ok(r#"[[{"filename":"a.rs","status":"modified","patch":null,"additions":1,"deletions":1}]]"#));
+        gh.on(&["api", "graphql"], threads);
+        gh
+    }
+
+    fn test_pr_ref() -> PrRef {
+        PrRef {
+            owner: "o".into(),
+            repo: "r".into(),
+            number: 7,
+        }
+    }
+
+    #[tokio::test]
+    async fn graphql_error_during_refresh_preserves_imported_threads() {
+        use crate::{session::Session, store::Store};
+        use std::sync::Arc;
+
+        let pr = test_pr_ref();
+        let initial =
+            fetch_snapshot(&snapshot_gh(Ok(&threads_json())), &pr, &Limits::default()).unwrap();
+        assert_eq!(initial.github_threads.len(), 1);
+        let failing = Arc::new(snapshot_gh(Ok(
+            r#"{"errors":[{"message":"Resource not accessible by integration"}],"data":{"repository":null}}"#,
+        )));
+        let session = Session::new(
+            initial,
+            Store::open_in_memory().unwrap(),
+            Some(failing),
+            Some(pr),
+        )
+        .unwrap();
+        let before = session
+            .store
+            .lock()
+            .unwrap()
+            .list_threads(&session.pr_id)
+            .unwrap();
+        assert_eq!(before.len(), 1);
+        let refreshed = session.refresh().await.unwrap();
+        let snapshot = session.snapshot.read().unwrap();
+        assert_eq!(
+            snapshot.github_threads_completeness,
+            crate::model::Completeness::Failed
+        );
+        assert!(snapshot.github_threads.is_empty());
+        assert!(
+            snapshot
+                .github_threads_problems
+                .iter()
+                .any(|p| p.contains("Resource not accessible"))
+        );
+        assert!(
+            refreshed
+                .warnings
+                .iter()
+                .any(|w| w.contains("review threads incomplete"))
+        );
+        assert_eq!(refreshed.threads.len(), 1);
+        assert_eq!(refreshed.threads[0].id, before[0].id);
+        drop(snapshot);
+        let after = session
+            .store
+            .lock()
+            .unwrap()
+            .list_threads(&session.pr_id)
+            .unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].id, before[0].id);
+    }
+
+    #[test]
+    fn graphql_command_failure_marks_threads_failed() {
+        let snapshot = fetch_snapshot(
+            &snapshot_gh(Err("GraphQL: forbidden")),
+            &test_pr_ref(),
+            &Limits::default(),
+        )
+        .unwrap();
+        assert!(snapshot.complete);
+        assert_eq!(snapshot.files.len(), 1);
+        assert!(snapshot.github_threads.is_empty());
+        assert_eq!(
+            snapshot.github_threads_completeness,
+            crate::model::Completeness::Failed
+        );
+        assert!(
+            snapshot
+                .github_threads_problems
+                .iter()
+                .any(|p| p.contains("forbidden"))
+        );
+        assert!(
+            snapshot
+                .warnings
+                .iter()
+                .any(|w| w.contains("review threads incomplete"))
+        );
     }
 
     #[test]
@@ -174,8 +290,15 @@ mod tests {
         assert_eq!(snap.files.len(), 1);
         assert!(snap.complete);
         assert_eq!(snap.github_threads[0].comments[0].database_id, Some(11));
-        assert_eq!(snap.reviews[0].author, "bob");
-        assert!(snap.warnings.is_empty());
+        assert!(snap.reviews.is_empty());
+        assert_eq!(
+            snap.reviews_completeness,
+            crate::model::Completeness::Failed
+        );
+        assert_eq!(
+            snap.github_threads_completeness,
+            crate::model::Completeness::Complete
+        );
     }
 
     // A force push can happen after the metadata request, while the diff and
@@ -455,6 +578,202 @@ mod tests {
     }
 
     #[test]
+    fn recovery_accepted_when_truncation_zeroes_manifest_counts() {
+        // Aggregate truncation: GitHub drops the patch AND zeroes the counts.
+        let manifest: Vec<GhApiFile> = serde_json::from_str(
+            r#"[{"filename":"a.rs","status":"modified","additions":0,"deletions":0}]"#,
+        )
+        .unwrap();
+        let diff = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-x\n+y\n";
+        let files = crate::diff::parse_unified(diff, "head1", &Limits::default()).files;
+        assert_eq!((files[0].additions, files[0].deletions), (1, 1));
+        assert!(validated_aggregate(&files, &manifest, Some(1), true));
+        assert!(validated_aggregate(&files, &manifest, None, true));
+    }
+
+    #[test]
+    fn recovery_accepted_with_real_counts_and_omitted_patch() {
+        // Single oversized file: GitHub drops only the patch; counts stay real.
+        let manifest: Vec<GhApiFile> = serde_json::from_str(
+            r#"[{"filename":"a.rs","status":"modified","additions":5,"deletions":2}]"#,
+        )
+        .unwrap();
+        let diff = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,2 +1,5 @@\n-x\n-y\n+z1\n+z2\n+z3\n+z4\n+z5\n";
+        let files = crate::diff::parse_unified(diff, "head1", &Limits::default()).files;
+        assert_eq!((files[0].additions, files[0].deletions), (5, 2));
+        assert!(validated_aggregate(&files, &manifest, Some(1), true));
+    }
+
+    #[test]
+    fn recovery_rejected_on_count_mismatch_for_patch_backed_entry() {
+        // A patch-backed entry keeps strict counts; recovery must not bypass it.
+        let manifest: Vec<GhApiFile> = serde_json::from_str(
+            r#"[{"filename":"a.rs","status":"modified","patch":"@@ -1 +1 @@\n-x\n+y","additions":3,"deletions":1}]"#,
+        )
+        .unwrap();
+        let diff = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-x\n+y\n";
+        let files = crate::diff::parse_unified(diff, "head1", &Limits::default()).files;
+        assert_eq!((files[0].additions, files[0].deletions), (1, 1));
+        assert!(!validated_aggregate(&files, &manifest, Some(1), true));
+    }
+
+    #[test]
+    fn recovery_rejected_on_previous_filename_mismatch() {
+        let manifest: Vec<GhApiFile> = serde_json::from_str(
+            r#"[{"filename":"new.rs","previous_filename":"old.rs","status":"renamed","additions":0,"deletions":0}]"#,
+        )
+        .unwrap();
+        let diff = "diff --git a/other.rs b/new.rs\nsimilarity index 100%\nrename from other.rs\nrename to new.rs\n";
+        let files = crate::diff::parse_unified(diff, "head1", &Limits::default()).files;
+        assert!(!validated_aggregate(&files, &manifest, Some(1), true));
+    }
+
+    #[test]
+    fn direct_aggregate_still_fails_closed_on_zeroed_patchless_counts() {
+        // The direct-aggregate path keeps strict counts: both endpoints are
+        // GitHub, and the disagreement must fall back (and, in production,
+        // route through recovery) rather than trust either side blindly.
+        let manifest: Vec<GhApiFile> = serde_json::from_str(
+            r#"[{"filename":"a.rs","status":"modified","additions":0,"deletions":0}]"#,
+        )
+        .unwrap();
+        let files = crate::diff::parse_unified(
+            "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-x\n+y\n",
+            "head1",
+            &Limits::default(),
+        )
+        .files;
+        assert!(!validated_aggregate(&files, &manifest, Some(1), false));
+    }
+
+    fn truncated_api_file() -> crate::model::ChangedFile {
+        crate::diff::file_from_api(
+            &crate::diff::ApiFile {
+                path: "a.rs",
+                previous_path: None,
+                status: "modified",
+                patch: None,
+                blob_sha: None,
+                additions: 0,
+                deletions: 0,
+            },
+            "head1",
+            &Limits::default(),
+            &mut Vec::new(),
+        )
+    }
+
+    #[test]
+    fn apply_recovery_accepts_valid_recovered_diff_for_truncated_manifest() {
+        let manifest: Vec<GhApiFile> = serde_json::from_str(
+            r#"[{"filename":"a.rs","status":"modified","additions":0,"deletions":0}]"#,
+        )
+        .unwrap();
+        let api_files = vec![truncated_api_file()];
+        assert!(!api_files[0].patch_complete);
+        let recovered = crate::diff::parse_unified(
+            "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-x\n+y\n",
+            "head1",
+            &Limits::default(),
+        );
+        let mut warnings = Vec::new();
+        let files = apply_recovery(
+            &api_files,
+            &manifest,
+            Some(1),
+            Some(recovered),
+            &mut warnings,
+        )
+        .expect("valid recovery must supersede the API fallback");
+        assert!(files.iter().all(|f| f.patch_complete));
+        assert_eq!((files[0].additions, files[0].deletions), (1, 1));
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("recovered complete diff"))
+        );
+    }
+
+    #[test]
+    fn apply_recovery_rejects_invalid_recovered_diff() {
+        let manifest: Vec<GhApiFile> = serde_json::from_str(
+            r#"[{"filename":"a.rs","status":"modified","patch":"@@ -1 +1 @@\n-x\n+y","additions":3,"deletions":1}]"#,
+        )
+        .unwrap();
+        let api_files = vec![truncated_api_file()];
+        let recovered = crate::diff::parse_unified(
+            "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-x\n+y\n",
+            "head1",
+            &Limits::default(),
+        );
+        let mut warnings = Vec::new();
+        let result = apply_recovery(
+            &api_files,
+            &manifest,
+            Some(1),
+            Some(recovered),
+            &mut warnings,
+        );
+        assert!(result.is_none());
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("did not match PR files metadata; patch remains incomplete"))
+        );
+    }
+
+    #[test]
+    fn apply_recovery_without_a_recovery_keeps_incomplete_api_files() {
+        let manifest: Vec<GhApiFile> = serde_json::from_str(
+            r#"[{"filename":"a.rs","status":"modified","additions":0,"deletions":0}]"#,
+        )
+        .unwrap();
+        let api_files = vec![truncated_api_file()];
+        let mut warnings = Vec::new();
+        let result = apply_recovery(&api_files, &manifest, Some(1), None, &mut warnings);
+        assert!(result.is_none());
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn apply_recovery_skipped_when_api_patch_is_complete() {
+        let manifest: Vec<GhApiFile> = serde_json::from_str(
+            r#"[{"filename":"a.rs","status":"modified","patch":"@@ -1 +1 @@\n-x\n+y","additions":1,"deletions":1}]"#,
+        )
+        .unwrap();
+        let api_files = vec![crate::diff::file_from_api(
+            &crate::diff::ApiFile {
+                path: "a.rs",
+                previous_path: None,
+                status: "modified",
+                patch: Some("@@ -1 +1 @@\n-x\n+y"),
+                blob_sha: None,
+                additions: 1,
+                deletions: 1,
+            },
+            "head1",
+            &Limits::default(),
+            &mut Vec::new(),
+        )];
+        assert!(api_files[0].patch_complete);
+        let recovered = crate::diff::parse_unified(
+            "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-x\n+z\n",
+            "head1",
+            &Limits::default(),
+        );
+        let mut warnings = Vec::new();
+        let result = apply_recovery(
+            &api_files,
+            &manifest,
+            Some(1),
+            Some(recovered),
+            &mut warnings,
+        );
+        assert!(result.is_none());
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
     fn manifest_failure_fails_closed() {
         let err = snapshot_for_diff(
             "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-x\n+y\n",
@@ -483,7 +802,11 @@ mod tests {
             &["api", "--paginate"],
             Ok(r#"[[{"filename":"a.rs","status":"modified","patch":"@@ -1 +1 @@\n-x\n+y","sha":"s1","additions":1,"deletions":1}]]"#),
         );
-        gh.on(&["api", "graphql"], Err("boom"));
+        gh.on(&["api", "graphql"], Ok(&threads_json()));
+        gh.on(
+            &["api", "repos/o/r/pulls/7/comments?per_page=100&page=1"],
+            Ok("[]"),
+        );
         let pr = PrRef {
             owner: "o".into(),
             repo: "r".into(),
@@ -495,6 +818,13 @@ mod tests {
             !snap.complete,
             "1 of 2 files must mark the snapshot incomplete"
         );
-        assert!(snap.warnings.iter().any(|w| w.contains("review threads")));
+        assert!(snap.warnings.iter().any(|w| w.contains("changed files")));
+        assert_eq!(snap.github_threads.len(), 1);
+        assert_eq!(snap.github_threads[0].node_id, "T1");
+        assert_eq!(
+            snap.github_threads_completeness,
+            crate::model::Completeness::Complete
+        );
+        assert!(!snap.warnings.iter().any(|w| w.contains("review threads")));
     }
 }

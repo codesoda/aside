@@ -75,6 +75,11 @@ pub fn file_from_api(
             warnings.push(format!("{}: GitHub did not return a patch", api.path));
             file.patch_complete = false;
         }
+        // GitHub omits the patch for oversized files and for files dropped by
+        // aggregate truncation; in the truncation case it also zeroes these
+        // counts. They are display-only best effort here: the file is already
+        // flagged incomplete above, and the temporary-Git recovery in
+        // `github::snapshot` supplies the true patch when it validates.
         file.additions = api.additions;
         file.deletions = api.deletions;
     } else if !file.is_binary

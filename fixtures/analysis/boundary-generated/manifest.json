@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "name": "boundary-generated",
+  "synthetic": true,
+  "description": "Synthetic boundary fixture (#65). A PR whose only changed file is generated: line-level rules never ran, and the run must carry the skip reason instead of reading as complete.",
+  "repositoryId": "synthetic/boundary",
+  "prNumber": 9006,
+  "baseSha": "1c8a5d3f6b2e4a90c7d5e1f8a3b6c9d2e5f8a1b4",
+  "headSha": "6e2f9a1c8d4b7e0f3a6c9d2e5f8a1b4c7d0e3f6a",
+  "snapshotComplete": true,
+  "observedAt": "2026-01-01T00:00:00Z",
+  "scenarios": [
+    "19.5.generated-only-pr"
+  ],
+  "unsupportedPaths": [
+    "app/src/generated/Api.ts"
+  ],
+  "expectedCompleteness": "partial"
+}

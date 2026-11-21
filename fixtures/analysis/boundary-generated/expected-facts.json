@@ -1,0 +1,486 @@
+{
+  "providerId": "aside.diff",
+  "engineVersion": "aside.diff-facts/3",
+  "configurationDigest": "716078a1e4f12ab42f86c2c517b54933d956e9b364c866c0de27ae6279c800cd",
+  "inputDigest": "0b31fc636fd3e9364b75475a1ff45b3fe2f0732df10587b50efd4bd2cd1ed4a4",
+  "coverage": {
+    "completeness": "partial",
+    "eligibleFiles": {
+      "state": "known",
+      "value": 1
+    },
+    "analyzedFiles": {
+      "state": "known",
+      "value": 0
+    },
+    "eligibleEntities": {
+      "state": "unknown"
+    },
+    "analyzedEntities": {
+      "state": "unknown"
+    },
+    "entries": [
+      {
+        "scope": {
+          "kind": "file",
+          "fileId": "f_c0a513ed8dbbcea5",
+          "path": "app/src/generated/Api.ts"
+        },
+        "ruleId": "aside.diff.test_assertions_added",
+        "outcome": {
+          "outcome": "not_run",
+          "reason": "generated_file"
+        }
+      },
+      {
+        "scope": {
+          "kind": "file",
+          "fileId": "f_c0a513ed8dbbcea5",
+          "path": "app/src/generated/Api.ts"
+        },
+        "ruleId": "aside.diff.tests_removed",
+        "outcome": {
+          "outcome": "not_run",
+          "reason": "generated_file"
+        }
+      },
+      {
+        "scope": {
+          "kind": "file",
+          "fileId": "f_c0a513ed8dbbcea5",
+          "path": "app/src/generated/Api.ts"
+        },
+        "ruleId": "aside.diff.schema_contract",
+        "outcome": {
+          "outcome": "not_run",
+          "reason": "generated_file"
+        }
+      },
+      {
+        "scope": {
+          "kind": "pr"
+        },
+        "ruleId": "aside.diff.tests_touched",
+        "outcome": {
+          "outcome": "analyzed",
+          "findings": 0
+        }
+      }
+    ],
+    "reasonCodes": [
+      "generated_file"
+    ]
+  },
+  "findings": [
+    {
+      "schemaVersion": 1,
+      "id": "find_14ea1ecf6487ce62a3beeb39ebdc2bfa7bb5bc0b6fbe359c86ca32044dee1b39",
+      "repositoryId": "synthetic/boundary",
+      "prNumber": 9006,
+      "observedSnapshotId": "snap_ede70e746ae8785d88278bd79620a7d6afba4aedaf408f3496630acbd5eb4f82",
+      "source": {
+        "kind": "aside_static",
+        "providerId": "aside.diff",
+        "runId": "run_boundary",
+        "ruleId": "aside.diff.pr_summary",
+        "ruleVersion": "1",
+        "modelId": null,
+        "modelRevision": null,
+        "promptVersion": null,
+        "native": null,
+        "githubActor": null
+      },
+      "assertionKind": "measured_fact",
+      "kinds": [
+        "other"
+      ],
+      "title": "Diff summary",
+      "body": "1 files, +4 −0",
+      "rationale": "Measured from the snapshot diff.",
+      "suggestedAction": null,
+      "anchor": {
+        "kind": "pr",
+        "fileId": null,
+        "currentPath": null,
+        "previousPath": null,
+        "entityId": null,
+        "side": null,
+        "line": null,
+        "startLine": null,
+        "originalLine": null,
+        "originalStartLine": null,
+        "commitSha": null,
+        "originalCommitSha": null,
+        "diffDigest": null,
+        "githubThreadId": null,
+        "externalUrl": null
+      },
+      "relatedAnchors": [],
+      "evidenceIds": [
+        "ev_f6a4f3304901b764b6fbfa7b8e7537bdc4a33c4b5384283c56cad76f05ba7ae8"
+      ],
+      "attention": {
+        "level": "none",
+        "score": null,
+        "scoreVersion": null,
+        "reasons": [
+          "aside.diff.pr_summary"
+        ]
+      },
+      "severity": {
+        "normalized": "info",
+        "original": null
+      },
+      "confidence": null,
+      "validation": {
+        "status": "not_required",
+        "method": "aside.diff.pr_summary@1",
+        "validatedAt": null,
+        "note": null
+      },
+      "applicability": "current_exact",
+      "sourceStatus": "open",
+      "firstSeenAt": "2026-01-01T00:00:00Z",
+      "lastSeenAt": "2026-01-01T00:00:00Z",
+      "externalUrl": null,
+      "parentFindingId": null,
+      "correlationGroupId": null,
+      "extensions": {
+        "engineVersion": "aside.diff-facts/3",
+        "limitations": [],
+        "measurement": {
+          "additions": 4,
+          "binaryFiles": 0,
+          "changedFiles": 1,
+          "deletions": 0,
+          "filesListed": 1,
+          "hunks": 1,
+          "incompleteFiles": 0,
+          "operations": {
+            "added": 1
+          },
+          "snapshotComplete": true
+        },
+        "ruleVersion": "1"
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "find_1229b55f24eaaf37bae73ba1f5254c41a9ff50457ff60d8da79ff61b36d9bd48",
+      "repositoryId": "synthetic/boundary",
+      "prNumber": 9006,
+      "observedSnapshotId": "snap_ede70e746ae8785d88278bd79620a7d6afba4aedaf408f3496630acbd5eb4f82",
+      "source": {
+        "kind": "aside_static",
+        "providerId": "aside.diff",
+        "runId": "run_boundary",
+        "ruleId": "aside.diff.file_change",
+        "ruleVersion": "1",
+        "modelId": null,
+        "modelRevision": null,
+        "promptVersion": null,
+        "native": null,
+        "githubActor": null
+      },
+      "assertionKind": "measured_fact",
+      "kinds": [
+        "other"
+      ],
+      "title": "app/src/generated/Api.ts (added)",
+      "body": "+4 −0 in 1 hunk(s)",
+      "rationale": "Measured from the snapshot diff.",
+      "suggestedAction": null,
+      "anchor": {
+        "kind": "file",
+        "fileId": "f_c0a513ed8dbbcea5",
+        "currentPath": "app/src/generated/Api.ts",
+        "previousPath": null,
+        "entityId": null,
+        "side": null,
+        "line": null,
+        "startLine": null,
+        "originalLine": null,
+        "originalStartLine": null,
+        "commitSha": null,
+        "originalCommitSha": null,
+        "diffDigest": "69f54e34e28ac5b23bd7518744a29a44d6d122289d0d953c7a027de3f2ba600a",
+        "githubThreadId": null,
+        "externalUrl": null
+      },
+      "relatedAnchors": [],
+      "evidenceIds": [
+        "ev_6d81f368c73d2f383d579ff517dd9a554c129e0e7f91b809ca36758c0f78b815"
+      ],
+      "attention": {
+        "level": "none",
+        "score": null,
+        "scoreVersion": null,
+        "reasons": [
+          "aside.diff.file_change"
+        ]
+      },
+      "severity": {
+        "normalized": "info",
+        "original": null
+      },
+      "confidence": null,
+      "validation": {
+        "status": "not_required",
+        "method": "aside.diff.file_change@1",
+        "validatedAt": null,
+        "note": null
+      },
+      "applicability": "current_exact",
+      "sourceStatus": "open",
+      "firstSeenAt": "2026-01-01T00:00:00Z",
+      "lastSeenAt": "2026-01-01T00:00:00Z",
+      "externalUrl": null,
+      "parentFindingId": null,
+      "correlationGroupId": null,
+      "extensions": {
+        "engineVersion": "aside.diff-facts/3",
+        "limitations": [],
+        "measurement": {
+          "additions": 4,
+          "changeKind": "added",
+          "deletions": 0,
+          "generatedHints": [
+            "generated_directory",
+            "generated_header"
+          ],
+          "hunks": 1,
+          "isBinary": false,
+          "isTest": false,
+          "language": "javascript_typescript",
+          "newMode": "100644",
+          "oldMode": null,
+          "operation": "added",
+          "patchComplete": true,
+          "previousPath": null
+        },
+        "ruleVersion": "1"
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "find_1f91d5fd001cfe018b72782f2bafd1b39c85b16411e7e3e3ea46777484c73a44",
+      "repositoryId": "synthetic/boundary",
+      "prNumber": 9006,
+      "observedSnapshotId": "snap_ede70e746ae8785d88278bd79620a7d6afba4aedaf408f3496630acbd5eb4f82",
+      "source": {
+        "kind": "aside_static",
+        "providerId": "aside.diff",
+        "runId": "run_boundary",
+        "ruleId": "aside.diff.generated_file",
+        "ruleVersion": "1",
+        "modelId": null,
+        "modelRevision": null,
+        "promptVersion": null,
+        "native": null,
+        "githubActor": null
+      },
+      "assertionKind": "measured_fact",
+      "kinds": [
+        "other"
+      ],
+      "title": "Looks generated",
+      "body": "app/src/generated/Api.ts matched generated-file hints: generated_directory, generated_header.",
+      "rationale": "Hints are heuristics from the path or a generated-code header.",
+      "suggestedAction": "Check the generator input rather than the output.",
+      "anchor": {
+        "kind": "file",
+        "fileId": "f_c0a513ed8dbbcea5",
+        "currentPath": "app/src/generated/Api.ts",
+        "previousPath": null,
+        "entityId": null,
+        "side": null,
+        "line": null,
+        "startLine": null,
+        "originalLine": null,
+        "originalStartLine": null,
+        "commitSha": null,
+        "originalCommitSha": null,
+        "diffDigest": "69f54e34e28ac5b23bd7518744a29a44d6d122289d0d953c7a027de3f2ba600a",
+        "githubThreadId": null,
+        "externalUrl": null
+      },
+      "relatedAnchors": [],
+      "evidenceIds": [
+        "ev_5aeb9716572da2a3a67482bf89b34eaa8da46b1cffd9c1ed5f3bae39d079c9f7"
+      ],
+      "attention": {
+        "level": "info",
+        "score": null,
+        "scoreVersion": null,
+        "reasons": [
+          "aside.diff.generated_file"
+        ]
+      },
+      "severity": {
+        "normalized": "info",
+        "original": null
+      },
+      "confidence": null,
+      "validation": {
+        "status": "not_required",
+        "method": "aside.diff.generated_file@1",
+        "validatedAt": null,
+        "note": null
+      },
+      "applicability": "current_exact",
+      "sourceStatus": "open",
+      "firstSeenAt": "2026-01-01T00:00:00Z",
+      "lastSeenAt": "2026-01-01T00:00:00Z",
+      "externalUrl": null,
+      "parentFindingId": null,
+      "correlationGroupId": null,
+      "extensions": {
+        "engineVersion": "aside.diff-facts/3",
+        "limitations": [],
+        "measurement": {
+          "hints": [
+            "generated_directory",
+            "generated_header"
+          ]
+        },
+        "ruleVersion": "1"
+      }
+    }
+  ],
+  "evidence": [
+    {
+      "schemaVersion": 1,
+      "id": "ev_5aeb9716572da2a3a67482bf89b34eaa8da46b1cffd9c1ed5f3bae39d079c9f7",
+      "kind": "measurement",
+      "sourceRunId": "run_boundary",
+      "sourceEntityId": null,
+      "anchor": {
+        "kind": "file",
+        "fileId": "f_c0a513ed8dbbcea5",
+        "currentPath": "app/src/generated/Api.ts",
+        "previousPath": null,
+        "entityId": null,
+        "side": null,
+        "line": null,
+        "startLine": null,
+        "originalLine": null,
+        "originalStartLine": null,
+        "commitSha": null,
+        "originalCommitSha": null,
+        "diffDigest": "69f54e34e28ac5b23bd7518744a29a44d6d122289d0d953c7a027de3f2ba600a",
+        "githubThreadId": null,
+        "externalUrl": null
+      },
+      "label": "generated-file hints",
+      "value": {
+        "hints": [
+          "generated_directory",
+          "generated_header"
+        ]
+      },
+      "unit": null,
+      "numerator": null,
+      "denominator": null,
+      "method": "aside.diff.generated_file@1",
+      "inputDigest": "69f54e34e28ac5b23bd7518744a29a44d6d122289d0d953c7a027de3f2ba600a",
+      "observedAt": "2026-01-01T00:00:00Z",
+      "limitations": []
+    },
+    {
+      "schemaVersion": 1,
+      "id": "ev_6d81f368c73d2f383d579ff517dd9a554c129e0e7f91b809ca36758c0f78b815",
+      "kind": "measurement",
+      "sourceRunId": "run_boundary",
+      "sourceEntityId": null,
+      "anchor": {
+        "kind": "file",
+        "fileId": "f_c0a513ed8dbbcea5",
+        "currentPath": "app/src/generated/Api.ts",
+        "previousPath": null,
+        "entityId": null,
+        "side": null,
+        "line": null,
+        "startLine": null,
+        "originalLine": null,
+        "originalStartLine": null,
+        "commitSha": null,
+        "originalCommitSha": null,
+        "diffDigest": "69f54e34e28ac5b23bd7518744a29a44d6d122289d0d953c7a027de3f2ba600a",
+        "githubThreadId": null,
+        "externalUrl": null
+      },
+      "label": "file change metadata",
+      "value": {
+        "additions": 4,
+        "changeKind": "added",
+        "deletions": 0,
+        "generatedHints": [
+          "generated_directory",
+          "generated_header"
+        ],
+        "hunks": 1,
+        "isBinary": false,
+        "isTest": false,
+        "language": "javascript_typescript",
+        "newMode": "100644",
+        "oldMode": null,
+        "operation": "added",
+        "patchComplete": true,
+        "previousPath": null
+      },
+      "unit": null,
+      "numerator": null,
+      "denominator": null,
+      "method": "aside.diff.file_change@1",
+      "inputDigest": "69f54e34e28ac5b23bd7518744a29a44d6d122289d0d953c7a027de3f2ba600a",
+      "observedAt": "2026-01-01T00:00:00Z",
+      "limitations": []
+    },
+    {
+      "schemaVersion": 1,
+      "id": "ev_f6a4f3304901b764b6fbfa7b8e7537bdc4a33c4b5384283c56cad76f05ba7ae8",
+      "kind": "measurement",
+      "sourceRunId": "run_boundary",
+      "sourceEntityId": null,
+      "anchor": {
+        "kind": "pr",
+        "fileId": null,
+        "currentPath": null,
+        "previousPath": null,
+        "entityId": null,
+        "side": null,
+        "line": null,
+        "startLine": null,
+        "originalLine": null,
+        "originalStartLine": null,
+        "commitSha": null,
+        "originalCommitSha": null,
+        "diffDigest": null,
+        "githubThreadId": null,
+        "externalUrl": null
+      },
+      "label": "PR diff totals",
+      "value": {
+        "additions": 4,
+        "binaryFiles": 0,
+        "changedFiles": 1,
+        "deletions": 0,
+        "filesListed": 1,
+        "hunks": 1,
+        "incompleteFiles": 0,
+        "operations": {
+          "added": 1
+        },
+        "snapshotComplete": true
+      },
+      "unit": null,
+      "numerator": null,
+      "denominator": null,
+      "method": "aside.diff.pr_summary@1",
+      "inputDigest": null,
+      "observedAt": "2026-01-01T00:00:00Z",
+      "limitations": []
+    }
+  ],
+  "warnings": []
+}

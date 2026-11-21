@@ -1,9 +1,13 @@
+mod analysis;
 mod config;
 mod demo;
 mod descriptor;
 mod diff;
 mod github;
 mod model;
+// TODO(#33): consumed by the session view / findings API.
+#[allow(dead_code)]
+mod priority;
 mod publish;
 mod rules;
 mod server;
@@ -199,6 +203,9 @@ async fn start_session(
         Store::open_in_memory()?
     };
     let session = Session::new(snapshot, store, gh, pr_ref)?;
+    if let Err(error) = session.start_analysis() {
+        eprintln!("could not start analysis: {error:#}");
+    }
     let ui_token = util::random_hex(32);
     let agent_token = util::random_hex(32);
     let state = server::AppState::new(Arc::clone(&session), ui_token.clone(), agent_token.clone());

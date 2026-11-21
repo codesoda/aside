@@ -142,6 +142,33 @@ pub struct ImportedReview {
     pub state: String,
     pub body: String,
     pub submitted_at: Option<String>,
+    /// Raw GitHub review state, including `DISMISSED`, remains in `state`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub node_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    #[ts(type = "number | null")]
+    pub database_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub author_id: Option<String>,
+    /// Raw GitHub author `__typename`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub author_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub created_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub updated_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub last_edited_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -151,11 +178,34 @@ pub struct IssueComment {
     pub author: String,
     pub body: String,
     pub created_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub node_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    #[ts(type = "number | null")]
+    pub database_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub author_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub author_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub updated_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub last_edited_at: Option<String>,
 }
 
 /// A review thread as fetched from GitHub, before it is merged into local state.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct GithubThread {
     pub node_id: String,
     pub path: String,
@@ -166,26 +216,101 @@ pub struct GithubThread {
     pub is_outdated: bool,
     pub is_resolved: bool,
     pub comments: Vec<GithubComment>,
-    /// REST-only threads have no verified GraphQL anchor or resolution.
-    #[serde(default)]
+    /// REST-only records have no verified GraphQL anchor or resolution.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub rest_only: bool,
-    /// Both sources and every page were enumerated successfully.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub enumeration_complete: bool,
+    // Fields below are optional so older snapshots and fixtures still decode.
+    // GitHub enum values are kept as raw strings, never decoded into lossy
+    // contract enums.
+    /// Permalink to the thread (GitHub has no thread URL; this is the root
+    /// comment's URL).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub original_start_line: Option<u32>,
+    /// Raw `startDiffSide`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub start_side: Option<String>,
+    /// Raw `subjectType` (`LINE` or `FILE`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub subject_type: Option<String>,
+    /// Login of whoever resolved the thread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub resolved_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub viewer_can_reply: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub viewer_can_resolve: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub viewer_can_unresolve: Option<bool>,
+    /// GraphQL fields unavailable because of field-level errors, not legitimate nulls.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(skip)]
+    pub unavailable_fields: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct GithubComment {
     pub node_id: String,
+    #[ts(type = "number | null")]
     pub database_id: Option<i64>,
     pub author: String,
     pub body: String,
     pub created_at: String,
-    #[serde(default)]
-    pub updated_at: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub in_reply_to_id: Option<i64>,
+    // Optional so older snapshots and fixtures still decode.
+    /// GitHub node ID of the author (absent for deleted "ghost" users).
+    #[serde(
+        default,
+        alias = "authorNodeId",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[ts(optional)]
+    pub author_id: Option<String>,
+    /// Raw GraphQL `__typename` of the author (`User`, `Bot`, `Mannequin`, ...).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub author_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub updated_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub url: Option<String>,
+    /// Current anchor of this comment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub line: Option<u32>,
+    /// Anchor at the time the comment was written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub original_line: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub commit_oid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub original_commit_oid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub outdated: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(skip)]
+    pub unavailable_fields: Vec<String>,
 }
 
 /// Everything fetched for one PR revision.
@@ -198,13 +323,109 @@ pub struct PrSnapshot {
     pub provider_repository_id: Option<String>,
     pub files: Vec<ChangedFile>,
     pub github_threads: Vec<GithubThread>,
-    /// True only when both review-comment APIs were fully enumerated.
     #[serde(default)]
     pub github_threads_complete: bool,
+    /// Whether `github_threads` holds every thread and every reply. Anything
+    /// but `complete` means some data could not be fetched (see `warnings`).
+    /// Snapshots stored before this field existed decode as `unknown`.
+    #[serde(default = "unknown_completeness")]
+    pub github_threads_completeness: super::Completeness,
+    /// Why the thread import is not complete. Empty when it is.
+    #[serde(default)]
+    pub github_threads_problems: Vec<crate::github::ThreadImportProblem>,
     pub reviews: Vec<ImportedReview>,
+    /// Completeness is independent of thread and issue-comment imports.
+    #[serde(default = "unknown_completeness")]
+    pub reviews_completeness: super::Completeness,
+    /// Human-readable provider diagnostics for the review collection.
+    #[serde(default)]
+    pub reviews_problems: Vec<String>,
     pub issue_comments: Vec<IssueComment>,
+    #[serde(default = "unknown_completeness")]
+    pub issue_comments_completeness: super::Completeness,
+    #[serde(default)]
+    pub issue_comments_problems: Vec<String>,
     pub warnings: Vec<String>,
     /// False when ingestion could not fetch every patch. Publishing is blocked.
     pub complete: bool,
     pub fetched_at: String,
+}
+
+fn unknown_completeness() -> super::Completeness {
+    super::Completeness::Unknown
+}
+
+#[cfg(test)]
+mod feedback_contract_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_feedback_and_snapshot_default_optional_fields() {
+        let review: ImportedReview = serde_json::from_str(
+            r#"{"author":"a","state":"DISMISSED","body":"b","submittedAt":null}"#,
+        )
+        .unwrap();
+        assert_eq!(review.state, "DISMISSED");
+        assert_eq!(review.node_id, None);
+        let comment: IssueComment =
+            serde_json::from_str(r#"{"author":"a","body":"b","createdAt":null}"#).unwrap();
+        assert_eq!(comment.author_id, None);
+        let mut legacy = serde_json::to_value(crate::demo::snapshot(0)).unwrap();
+        let object = legacy.as_object_mut().unwrap();
+        for field in [
+            "reviewsCompleteness",
+            "reviewsProblems",
+            "issueCommentsCompleteness",
+            "issueCommentsProblems",
+        ] {
+            object.remove(field);
+        }
+        let decoded: PrSnapshot = serde_json::from_value(legacy).unwrap();
+        assert_eq!(
+            decoded.reviews_completeness,
+            super::super::Completeness::Unknown
+        );
+        assert_eq!(
+            decoded.issue_comments_completeness,
+            super::super::Completeness::Unknown
+        );
+        assert!(decoded.reviews_problems.is_empty());
+        assert!(decoded.issue_comments_problems.is_empty());
+    }
+
+    #[test]
+    fn feedback_metadata_round_trips_without_losing_raw_values() {
+        let mut snapshot = crate::demo::snapshot(0);
+        snapshot.reviews = vec![ImportedReview {
+            author: "bot".into(),
+            state: "DISMISSED".into(),
+            body: "review".into(),
+            submitted_at: Some("2026-01-04T00:00:00Z".into()),
+            node_id: Some("PRR_1".into()),
+            database_id: Some(42),
+            url: Some("https://example.test/review".into()),
+            author_id: Some("U_1".into()),
+            author_type: Some("Bot".into()),
+            created_at: Some("2026-01-01T00:00:00Z".into()),
+            updated_at: Some("2026-01-02T00:00:00Z".into()),
+            last_edited_at: Some("2026-01-03T00:00:00Z".into()),
+        }];
+        snapshot.issue_comments = vec![IssueComment {
+            author: "bot".into(),
+            body: "comment".into(),
+            created_at: Some("2026-01-01T00:00:00Z".into()),
+            node_id: Some("IC_1".into()),
+            database_id: Some(43),
+            url: Some("https://example.test/comment".into()),
+            author_id: Some("U_1".into()),
+            author_type: Some("Bot".into()),
+            updated_at: Some("2026-01-02T00:00:00Z".into()),
+            last_edited_at: Some("2026-01-03T00:00:00Z".into()),
+        }];
+        snapshot.reviews_problems = vec!["partial review page".into()];
+        snapshot.issue_comments_problems = vec!["partial comment page".into()];
+        let json = serde_json::to_string(&snapshot).unwrap();
+        assert!(json.contains("\"state\":\"DISMISSED\""));
+        assert_eq!(serde_json::from_str::<PrSnapshot>(&json).unwrap(), snapshot);
+    }
 }

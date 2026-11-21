@@ -1,0 +1,66 @@
+[
+  {
+    "ruleId": "aside.diff.pr_summary",
+    "path": null,
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "PR totals; null (unknown) whenever a binary, truncated or unlisted file makes them unmeasurable."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "assets/logo.png",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "assets/new.png",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "assets/old.png",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "scripts/gen.rs",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "scripts/release.sh",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "src/legacy.rs",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.schema_contract",
+    "path": "src/legacy.rs",
+    "assertionKind": "attention_hint",
+    "attention": "info",
+    "verdict": "appropriate",
+    "note": "Deleting a file that declared a public function removes it from the API; anchored on the old side only."
+  }
+]

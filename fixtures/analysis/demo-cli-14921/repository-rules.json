@@ -1,0 +1,12 @@
+[
+  {
+    "id": "rule_demo_scripts",
+    "action": "exclude",
+    "kind": "glob",
+    "expression": "script/**",
+    "enabled": true,
+    "order": 1,
+    "createdAt": "2026-11-01T00:00:00Z",
+    "updatedAt": "2026-11-01T00:00:00Z"
+  }
+]
