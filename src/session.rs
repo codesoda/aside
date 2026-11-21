@@ -9,6 +9,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use tokio::sync::{Mutex as AsyncMutex, broadcast};
 
+use crate::github::{LegacyKind, ThreadImportProblem};
 use crate::{
     analysis::{
         self, AnalysisInput, AnalysisProvider, RunEvent, RunHandle, Scheduler, SchedulerConfig,
@@ -674,14 +675,15 @@ fn import_sources(snapshot: &PrSnapshot) -> Vec<ImportSource> {
             vec![source_reason::COMPLETENESS_UNKNOWN.to_string()],
         ),
     };
-    let lower: Vec<String> = problems.iter().map(|p| p.to_ascii_lowercase()).collect();
-    if lower.iter().any(|p| {
-        p.contains("forbidden") || p.contains("permission") || p.contains("not accessible")
-    }) {
-        codes.push(source_reason::GITHUB_PERMISSION_DENIED.into());
-    }
-    if lower.iter().any(|p| p.contains("pages; stopped early")) {
-        codes.push(source_reason::PAGE_LIMIT_REACHED.into());
+    // Each extra code is added at most once, permission before page limit.
+    let extra: Vec<&str> = problems.iter().filter_map(thread_problem_reason).collect();
+    for code in [
+        source_reason::GITHUB_PERMISSION_DENIED,
+        source_reason::PAGE_LIMIT_REACHED,
+    ] {
+        if extra.contains(&code) {
+            codes.push(code.into());
+        }
     }
     out.push(ImportSource {
         source_id: source::REVIEW_THREADS,
@@ -693,7 +695,7 @@ fn import_sources(snapshot: &PrSnapshot) -> Vec<ImportSource> {
         items,
         item_kind: "threads",
         reason_codes: codes,
-        limitations: problems.clone(),
+        limitations: problems.iter().map(ToString::to_string).collect(),
     });
 
     // `gh pr view --json reviews,comments` does not report whether it saw
@@ -711,6 +713,39 @@ fn import_sources(snapshot: &PrSnapshot) -> Vec<ImportSource> {
         limitations: vec!["review verdicts and PR comments are not verified as complete".into()],
     });
     out
+}
+
+/// The source-specific reason code a thread import problem adds on top of the
+/// completeness code, if any. Exhaustive on purpose: a new problem kind must
+/// make a decision here.
+fn thread_problem_reason(problem: &ThreadImportProblem) -> Option<&'static str> {
+    use ThreadImportProblem as P;
+    match problem {
+        P::PermissionDenied { .. }
+        | P::Legacy {
+            legacy_kind: LegacyKind::PermissionDenied,
+            ..
+        } => Some(source_reason::GITHUB_PERMISSION_DENIED),
+        P::PageLimitReached { .. }
+        | P::Legacy {
+            legacy_kind: LegacyKind::PageLimitReached,
+            ..
+        } => Some(source_reason::PAGE_LIMIT_REACHED),
+        P::GraphqlError { .. }
+        | P::PageFetchFailed { .. }
+        | P::NoData { .. }
+        | P::MissingThreadsConnection
+        | P::MissingCommentsConnection { .. }
+        | P::UnreadableThread
+        | P::UnreadableReply { .. }
+        | P::MissingPageInfo { .. }
+        | P::MissingCursor { .. }
+        | P::StalledCursor { .. }
+        | P::Legacy {
+            legacy_kind: LegacyKind::Other,
+            ..
+        } => None,
+    }
 }
 
 /// Persists each import source as a terminal `github_import` run on the

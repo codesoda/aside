@@ -11,6 +11,7 @@
 
 use std::collections::HashSet;
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::model::{Completeness, GithubComment, GithubThread, Side};
@@ -19,6 +20,280 @@ use super::{GhRunner, PrRef, runner::run_json};
 
 /// Safety cap per connection (100 items per page).
 const MAX_PAGES: usize = 50;
+
+/// One reason a thread import is not complete. This typed value is the source
+/// of truth: `session` maps it to reason codes with an exhaustive `match`, and
+/// the human-readable message is derived from it via [`Display`](std::fmt::Display).
+///
+/// `scope` is the rendered prefix naming what was being fetched, e.g.
+/// `"review threads"`, `"thread T1: replies"` or `"replies of thread T1"`.
+///
+/// Persisted on `PrSnapshot`. Serialised as a `kind`-tagged object; snapshots
+/// stored before this type existed held plain strings, which decode as
+/// [`ThreadImportProblem::Legacy`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum ThreadImportProblem {
+    /// GitHub refused access: a GraphQL error of type `FORBIDDEN`, or an
+    /// error whose text reports a permission denial.
+    PermissionDenied {
+        scope: String,
+        detail: String,
+        via: DeniedVia,
+    },
+    /// A GraphQL error that is not a permission denial.
+    GraphqlError { scope: String, message: String },
+    /// The `gh` call for a page failed outright.
+    PageFetchFailed { scope: String, error: String },
+    /// The response had neither `data` nor `errors`.
+    NoData { scope: String },
+    /// A review-threads page had no `reviewThreads` connection.
+    MissingThreadsConnection,
+    /// A replies page had no `comments` connection.
+    MissingCommentsConnection { scope: String },
+    /// A review thread node was null.
+    UnreadableThread,
+    /// A reply had no node ID.
+    UnreadableReply { scope: String },
+    /// `pageInfo` was missing, so completeness cannot be confirmed.
+    MissingPageInfo { scope: String },
+    /// `hasNextPage` was true but no `endCursor` was given.
+    MissingCursor { scope: String },
+    /// The next cursor equalled the previous one.
+    StalledCursor { scope: String },
+    /// Stopped after `max_pages` pages with more remaining.
+    PageLimitReached { scope: String, max_pages: usize },
+    /// A plain-string problem from a snapshot stored before this type
+    /// existed. `legacy_kind` was classified once, at decode time.
+    Legacy {
+        message: String,
+        legacy_kind: LegacyKind,
+    },
+}
+
+/// How a permission denial was reported.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeniedVia {
+    GraphqlError,
+    FailedRequest,
+}
+
+/// What a legacy plain-string problem was understood to mean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LegacyKind {
+    PermissionDenied,
+    PageLimitReached,
+    Other,
+}
+
+impl ThreadImportProblem {
+    /// Wraps a pre-typed stored message. The wording checks here are frozen:
+    /// they describe text that older builds already wrote, not live messages,
+    /// so rewording a [`Display`](std::fmt::Display) arm cannot affect them.
+    pub fn legacy(message: String) -> Self {
+        let kind = if mentions_permission_denial(&message) {
+            LegacyKind::PermissionDenied
+        } else if message
+            .to_ascii_lowercase()
+            .contains("pages; stopped early")
+        {
+            LegacyKind::PageLimitReached
+        } else {
+            LegacyKind::Other
+        };
+        Self::Legacy {
+            message,
+            legacy_kind: kind,
+        }
+    }
+}
+
+impl std::fmt::Display for ThreadImportProblem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PermissionDenied {
+                scope,
+                detail,
+                via: DeniedVia::GraphqlError,
+            }
+            | Self::GraphqlError {
+                scope,
+                message: detail,
+            } => write!(f, "{scope}: GraphQL error: {detail}"),
+            Self::PermissionDenied {
+                scope,
+                detail,
+                via: DeniedVia::FailedRequest,
+            }
+            | Self::PageFetchFailed {
+                scope,
+                error: detail,
+            } => write!(f, "{scope}: {detail}"),
+            Self::NoData { scope } => write!(f, "{scope}: response had no data"),
+            Self::MissingThreadsConnection => {
+                f.write_str("review threads page had no reviewThreads connection")
+            }
+            Self::MissingCommentsConnection { scope } => {
+                write!(f, "{scope}: page had no comments connection")
+            }
+            Self::UnreadableThread => f.write_str("a review thread could not be read (null node)"),
+            Self::UnreadableReply { scope } => {
+                write!(f, "{scope}: a reply could not be read (missing ID)")
+            }
+            Self::MissingPageInfo { scope } => {
+                write!(
+                    f,
+                    "{scope}: pageInfo missing; cannot confirm every item was fetched"
+                )
+            }
+            Self::MissingCursor { scope } => {
+                write!(f, "{scope}: next page reported without a cursor")
+            }
+            Self::StalledCursor { scope } => write!(f, "{scope}: cursor did not advance"),
+            Self::PageLimitReached { scope, max_pages } => {
+                write!(f, "{scope} exceed {max_pages} pages; stopped early")
+            }
+            Self::Legacy { message, .. } => f.write_str(message),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ThreadImportProblem {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(
+            tag = "kind",
+            rename_all = "snake_case",
+            rename_all_fields = "camelCase"
+        )]
+        enum Typed {
+            PermissionDenied {
+                scope: String,
+                detail: String,
+                via: DeniedVia,
+            },
+            GraphqlError {
+                scope: String,
+                message: String,
+            },
+            PageFetchFailed {
+                scope: String,
+                error: String,
+            },
+            NoData {
+                scope: String,
+            },
+            MissingThreadsConnection,
+            MissingCommentsConnection {
+                scope: String,
+            },
+            UnreadableThread,
+            UnreadableReply {
+                scope: String,
+            },
+            MissingPageInfo {
+                scope: String,
+            },
+            MissingCursor {
+                scope: String,
+            },
+            StalledCursor {
+                scope: String,
+            },
+            PageLimitReached {
+                scope: String,
+                max_pages: usize,
+            },
+            Legacy {
+                message: String,
+                legacy_kind: LegacyKind,
+            },
+        }
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Stored {
+            Plain(String),
+            Typed(Typed),
+        }
+        Ok(match Stored::deserialize(d)? {
+            Stored::Plain(message) => Self::legacy(message),
+            Stored::Typed(t) => match t {
+                Typed::PermissionDenied { scope, detail, via } => {
+                    Self::PermissionDenied { scope, detail, via }
+                }
+                Typed::GraphqlError { scope, message } => Self::GraphqlError { scope, message },
+                Typed::PageFetchFailed { scope, error } => Self::PageFetchFailed { scope, error },
+                Typed::NoData { scope } => Self::NoData { scope },
+                Typed::MissingThreadsConnection => Self::MissingThreadsConnection,
+                Typed::MissingCommentsConnection { scope } => {
+                    Self::MissingCommentsConnection { scope }
+                }
+                Typed::UnreadableThread => Self::UnreadableThread,
+                Typed::UnreadableReply { scope } => Self::UnreadableReply { scope },
+                Typed::MissingPageInfo { scope } => Self::MissingPageInfo { scope },
+                Typed::MissingCursor { scope } => Self::MissingCursor { scope },
+                Typed::StalledCursor { scope } => Self::StalledCursor { scope },
+                Typed::PageLimitReached { scope, max_pages } => {
+                    Self::PageLimitReached { scope, max_pages }
+                }
+                Typed::Legacy {
+                    message,
+                    legacy_kind,
+                } => Self::Legacy {
+                    message,
+                    legacy_kind,
+                },
+            },
+        })
+    }
+}
+
+/// Whether GitHub's own error text reports a permission denial. Applied at
+/// detection to text GitHub produced, never to our rendered messages.
+fn mentions_permission_denial(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("forbidden") || lower.contains("permission") || lower.contains("not accessible")
+}
+
+/// A pagination problem before it is attached to a scope.
+#[derive(Debug)]
+enum CursorProblem {
+    Stalled,
+    MissingCursor,
+    MissingPageInfo,
+}
+
+impl CursorProblem {
+    fn at(self, scope: String) -> ThreadImportProblem {
+        match self {
+            Self::Stalled => ThreadImportProblem::StalledCursor { scope },
+            Self::MissingCursor => ThreadImportProblem::MissingCursor { scope },
+            Self::MissingPageInfo => ThreadImportProblem::MissingPageInfo { scope },
+        }
+    }
+}
+
+/// A problem reading one comments page, before it is attached to a scope.
+#[derive(Debug)]
+enum PageProblem {
+    UnreadableReply,
+    Replies(CursorProblem),
+}
+
+impl PageProblem {
+    fn at(self, scope: String) -> ThreadImportProblem {
+        match self {
+            Self::UnreadableReply => ThreadImportProblem::UnreadableReply { scope },
+            Self::Replies(c) => c.at(format!("{scope}: replies")),
+        }
+    }
+}
 
 const COMMENT_FIELDS: &str = "pageInfo { hasNextPage endCursor }
         nodes {
@@ -67,7 +342,7 @@ pub(super) struct ThreadImport {
     pub threads: Vec<GithubThread>,
     pub completeness: Completeness,
     /// Why the import is not complete. Empty when `completeness` is complete.
-    pub problems: Vec<String>,
+    pub problems: Vec<ThreadImportProblem>,
 }
 
 pub(super) fn fetch_threads(gh: &dyn GhRunner, pr_ref: &PrRef) -> ThreadImport {
@@ -95,13 +370,13 @@ pub(super) fn fetch_threads(gh: &dyn GhRunner, pr_ref: &PrRef) -> ThreadImport {
         };
         let page = &v["data"]["repository"]["pullRequest"]["reviewThreads"];
         if !page.is_object() {
-            problems.push("review threads page had no reviewThreads connection".into());
+            problems.push(ThreadImportProblem::MissingThreadsConnection);
             break;
         }
         fetched_any_page = true;
         for node in page["nodes"].as_array().into_iter().flatten() {
             if node.is_null() {
-                problems.push("a review thread could not be read (null node)".into());
+                problems.push(ThreadImportProblem::UnreadableThread);
                 continue;
             }
             let mut thread = parse_thread(node);
@@ -111,7 +386,7 @@ pub(super) fn fetch_threads(gh: &dyn GhRunner, pr_ref: &PrRef) -> ThreadImport {
             let mut seen = HashSet::new();
             let first = collect_comments(&node["comments"], &mut thread.comments, &mut seen);
             match first {
-                Err(reason) => problems.push(format!("thread {}: {reason}", thread.node_id)),
+                Err(reason) => problems.push(reason.at(format!("thread {}", thread.node_id))),
                 Ok(Some(next)) => {
                     fetch_remaining_replies(gh, &mut thread, &mut seen, next, &mut problems)
                 }
@@ -127,15 +402,16 @@ pub(super) fn fetch_threads(gh: &dyn GhRunner, pr_ref: &PrRef) -> ThreadImport {
             }
             Ok(Some(next)) => cursor = Some(next),
             Err(reason) => {
-                problems.push(format!("review threads: {reason}"));
+                problems.push(reason.at("review threads".into()));
                 break;
             }
         }
     }
     if !finished && problems.is_empty() {
-        problems.push(format!(
-            "review threads exceed {MAX_PAGES} pages; stopped early"
-        ));
+        problems.push(ThreadImportProblem::PageLimitReached {
+            scope: "review threads".into(),
+            max_pages: MAX_PAGES,
+        });
     }
     let completeness = if problems.is_empty() {
         Completeness::Complete
@@ -157,7 +433,7 @@ fn fetch_remaining_replies(
     thread: &mut GithubThread,
     seen: &mut HashSet<String>,
     mut cursor: String,
-    problems: &mut Vec<String>,
+    problems: &mut Vec<ThreadImportProblem>,
 ) {
     let query = format!("query={}", replies_query());
     let id = format!("id={}", thread.node_id);
@@ -170,26 +446,26 @@ fn fetch_remaining_replies(
         };
         let conn = &v["data"]["node"]["comments"];
         if !conn.is_object() {
-            problems.push(format!("{what}: page had no comments connection"));
+            problems.push(ThreadImportProblem::MissingCommentsConnection { scope: what });
             return;
         }
         match collect_comments(conn, &mut thread.comments, seen) {
             Ok(None) => return,
             Ok(Some(next)) if next == cursor => {
-                problems.push(format!("{what}: cursor did not advance"));
+                problems.push(ThreadImportProblem::StalledCursor { scope: what });
                 return;
             }
             Ok(Some(next)) => cursor = next,
             Err(reason) => {
-                problems.push(format!("{what}: {reason}"));
+                problems.push(reason.at(what));
                 return;
             }
         }
     }
-    problems.push(format!(
-        "replies of thread {} exceed {MAX_PAGES} pages; stopped early",
-        thread.node_id
-    ));
+    problems.push(ThreadImportProblem::PageLimitReached {
+        scope: format!("replies of thread {}", thread.node_id),
+        max_pages: MAX_PAGES,
+    });
 }
 
 /// Run one GraphQL page. Records a problem and returns `None` when the page
@@ -198,23 +474,47 @@ fn fetch_remaining_replies(
 fn fetch_page(
     gh: &dyn GhRunner,
     args: &[&str],
-    problems: &mut Vec<String>,
+    problems: &mut Vec<ThreadImportProblem>,
     what: &str,
 ) -> Option<Value> {
     let v: Value = match run_json(gh, args) {
         Ok(v) => v,
         Err(e) => {
-            problems.push(format!("{what}: {e}"));
+            let error = e.to_string();
+            problems.push(if mentions_permission_denial(&error) {
+                ThreadImportProblem::PermissionDenied {
+                    scope: what.into(),
+                    detail: error,
+                    via: DeniedVia::FailedRequest,
+                }
+            } else {
+                ThreadImportProblem::PageFetchFailed {
+                    scope: what.into(),
+                    error,
+                }
+            });
             return None;
         }
     };
     for err in v["errors"].as_array().into_iter().flatten() {
         let msg = err["message"].as_str().unwrap_or("unknown GraphQL error");
-        problems.push(format!("{what}: GraphQL error: {msg}"));
+        let forbidden = err["type"].as_str() == Some("FORBIDDEN");
+        problems.push(if forbidden || mentions_permission_denial(msg) {
+            ThreadImportProblem::PermissionDenied {
+                scope: what.into(),
+                detail: msg.into(),
+                via: DeniedVia::GraphqlError,
+            }
+        } else {
+            ThreadImportProblem::GraphqlError {
+                scope: what.into(),
+                message: msg.into(),
+            }
+        });
     }
     if v["data"].is_null() {
         if v["errors"].as_array().is_none_or(|e| e.is_empty()) {
-            problems.push(format!("{what}: response had no data"));
+            problems.push(ThreadImportProblem::NoData { scope: what.into() });
         }
         return None;
     }
@@ -227,30 +527,30 @@ fn collect_comments(
     conn: &Value,
     out: &mut Vec<GithubComment>,
     seen: &mut HashSet<String>,
-) -> Result<Option<String>, String> {
+) -> Result<Option<String>, PageProblem> {
     for c in conn["nodes"].as_array().into_iter().flatten() {
         let comment = parse_comment(c);
         if comment.node_id.is_empty() {
-            return Err("a reply could not be read (missing ID)".into());
+            return Err(PageProblem::UnreadableReply);
         }
         if seen.insert(comment.node_id.clone()) {
             out.push(comment);
         }
     }
-    next_cursor(&conn["pageInfo"], None).map_err(|r| format!("replies: {r}"))
+    next_cursor(&conn["pageInfo"], None).map_err(PageProblem::Replies)
 }
 
 /// `Ok(None)` when there are no more pages. Missing `pageInfo` is an error:
 /// without it we cannot claim to have every item.
-fn next_cursor(page_info: &Value, previous: Option<&str>) -> Result<Option<String>, String> {
+fn next_cursor(page_info: &Value, previous: Option<&str>) -> Result<Option<String>, CursorProblem> {
     match page_info["hasNextPage"].as_bool() {
         Some(false) => Ok(None),
         Some(true) => match page_info["endCursor"].as_str() {
-            Some(c) if Some(c) == previous => Err("cursor did not advance".into()),
+            Some(c) if Some(c) == previous => Err(CursorProblem::Stalled),
             Some(c) => Ok(Some(c.to_string())),
-            None => Err("next page reported without a cursor".into()),
+            None => Err(CursorProblem::MissingCursor),
         },
-        None => Err("pageInfo missing; cannot confirm every item was fetched".into()),
+        None => Err(CursorProblem::MissingPageInfo),
     }
 }
 
