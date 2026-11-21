@@ -783,13 +783,20 @@ fn merge_rest(threads: &mut Vec<GithubThread>, rows: Vec<Value>) {
     }
     let roots: HashMap<i64, i64> = rows
         .iter()
-        .map(|r| {
-            let id = r["id"].as_i64().unwrap();
-            (id, r["in_reply_to_id"].as_i64().unwrap_or(id))
+        .filter_map(|r| {
+            let id = r["id"].as_i64()?;
+            Some((id, r["in_reply_to_id"].as_i64().unwrap_or(id)))
         })
         .collect();
     for row in rows {
-        let id = row["id"].as_i64().unwrap();
+        let (Some(id), Some(path), Some(body), Some(created_at)) = (
+            row["id"].as_i64(),
+            row["path"].as_str(),
+            row["body"].as_str(),
+            row["created_at"].as_str(),
+        ) else {
+            continue;
+        };
         let node = row["node_id"].as_str().unwrap_or_default();
         let parent = row["in_reply_to_id"].as_i64();
         let root = parent
@@ -810,7 +817,7 @@ fn merge_rest(threads: &mut Vec<GithubThread>, rows: Vec<Value>) {
             .unwrap_or_else(|| {
                 threads.push(GithubThread {
                     node_id: format!("rest:{root}"),
-                    path: row["path"].as_str().unwrap().into(),
+                    path: path.into(),
                     side: row["side"].as_str().and_then(Side::parse),
                     line: None,
                     start_line: None,
@@ -836,8 +843,8 @@ fn merge_rest(threads: &mut Vec<GithubThread>, rows: Vec<Value>) {
             node_id: node.into(),
             database_id: Some(id),
             author: row["user"]["login"].as_str().unwrap_or("ghost").into(),
-            body: row["body"].as_str().unwrap().into(),
-            created_at: row["created_at"].as_str().unwrap().into(),
+            body: body.into(),
+            created_at: created_at.into(),
             in_reply_to_id: parent,
             author_id: None,
             author_type: None,
