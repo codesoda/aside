@@ -9,14 +9,14 @@
 </script>
 
 <!-- Passive and polite: progress never steals focus from the diff. -->
-<section class="mt-2 text-sm" aria-label="Analysis status">
+<section class="workspace-panel mt-4 p-3 text-sm" aria-label="Analysis status">
   <p role="status" aria-live="polite" data-testid="analysis-status" data-coverage={tone}>
     <span aria-hidden="true">{tone === 'complete' ? '●' : tone === 'pending' ? '◌' : '◐'}</span>
-    Intelligence {toneText[tone]}: {coverageHeadline(summary)}
+    Analysis {toneText[tone]}: {coverageHeadline(summary)}
   </p>
   {#if loadError}<p class="text-amber-800" role="alert">Insights unavailable: {loadError}</p>{/if}
   <details class="mt-1">
-    <summary class="cursor-pointer text-[#0969da] focus-visible:outline-2 focus-visible:outline-[#0969da]">Source coverage</summary>
+    <summary class="cursor-pointer text-accent focus-visible:outline-2 focus-visible:outline-accent">Source coverage</summary>
     <ul class="mt-1 space-y-1">
       {#each summary.sources as source (source.sourceId)}
         <li>
