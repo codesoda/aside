@@ -264,30 +264,58 @@ fn fetch_files(
             )
         })
         .collect();
-    // Test fakes never invoke external Git; the recovery module is tested with local repos.
-    if needs_recovery(&api_files, manifest.len(), expected_changed_files) && !cfg!(test) {
-        match super::git_fallback::recover(pr_ref, base_sha, head_sha, limits) {
-            Ok(recovered)
-                if validated_aggregate(
-                    &recovered.files,
-                    &manifest,
-                    expected_changed_files,
-                    true,
-                ) =>
-            {
-                warnings.push("recovered complete diff from captured Git commits".into());
-                return Ok(recovered.files);
+    // Test fakes never invoke external Git; the recovery module is tested with
+    // local repos. Production only attempts the fetch when the API patch is
+    // already known to be incomplete.
+    let recovery =
+        if !cfg!(test) && needs_recovery(&api_files, manifest.len(), expected_changed_files) {
+            match super::git_fallback::recover(pr_ref, base_sha, head_sha, limits) {
+                Ok(recovered) => Some(recovered),
+                Err(e) => {
+                    warnings.push(format!(
+                        "temporary Git recovery unavailable: {e}; patch remains incomplete"
+                    ));
+                    None
+                }
             }
-            Ok(_) => warnings.push(
-                "temporary Git diff did not match PR files metadata; patch remains incomplete"
-                    .into(),
-            ),
-            Err(e) => warnings.push(format!(
-                "temporary Git recovery unavailable: {e}; patch remains incomplete"
-            )),
-        }
+        } else {
+            None
+        };
+    if let Some(files) = apply_recovery(
+        &api_files,
+        &manifest,
+        expected_changed_files,
+        recovery,
+        warnings,
+    ) {
+        return Ok(files);
     }
     Ok(api_files)
+}
+
+/// Apply temporary-Git recovery to the per-file API fallback. Returns the
+/// recovered files when they validate against the manifest; otherwise the API
+/// files stand (possibly incomplete). `recovery` is `None` when recovery was
+/// not needed, was unavailable, or is disabled (tests never shell out).
+pub(super) fn apply_recovery(
+    api_files: &[crate::model::ChangedFile],
+    manifest: &[GhApiFile],
+    expected: Option<u64>,
+    recovery: Option<crate::diff::ParsedDiff>,
+    warnings: &mut Vec<String>,
+) -> Option<Vec<crate::model::ChangedFile>> {
+    if !needs_recovery(api_files, manifest.len(), expected) {
+        return None;
+    }
+    let recovered = recovery?;
+    if validated_aggregate(&recovered.files, manifest, expected, true) {
+        warnings.push("recovered complete diff from captured Git commits".into());
+        return Some(recovered.files);
+    }
+    warnings.push(
+        "temporary Git diff did not match PR files metadata; patch remains incomplete".into(),
+    );
+    None
 }
 
 pub(super) fn needs_recovery(
@@ -342,8 +370,20 @@ pub(super) fn validated_aggregate(
                 .previous_filename
                 .as_deref()
                 .is_none_or(|old| file.previous_path.as_deref() == Some(old))
-            && file.additions == api.additions
-            && file.deletions == api.deletions
+            // Counts are authoritative only when GitHub reported them alongside
+            // a patch. When aggregate truncation omits a patch it also ZEROES
+            // `additions`/`deletions`, so for a RECOVERED diff — which carries
+            // the true counts — comparing against those zeros would reject a
+            // correct recovery for exactly the files that made recovery
+            // necessary (#67). Paths, status, previous names, completeness, and
+            // hunk integrity above and below still bind for patch-less entries.
+            // The direct-aggregate path (`recovered == false`) keeps the strict
+            // comparison on purpose: both sides come from GitHub there, and a
+            // disagreement fails closed into the per-file API fallback, which
+            // then routes through recovery for a trustworthy verdict.
+            && (file.additions == api.additions
+                && file.deletions == api.deletions
+                || recovered && api.patch.is_none())
             && file.hunks.iter().all(|hunk| {
                 let old = hunk
                     .lines
