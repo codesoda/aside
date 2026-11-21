@@ -6,9 +6,39 @@ INSTALL_DIR="${HOME}/.aside/bin"
 LINK_DIR="${HOME}/.local/bin"
 BINARY="${INSTALL_DIR}/aside"
 LINK="${LINK_DIR}/aside"
+INSPECT_BINARY="${INSTALL_DIR}/inspect"
+INSPECT_LINK="${LINK_DIR}/inspect"
+# Inspect v0.1.1: FSL-1.1-ALv2 https://github.com/Ataraxy-Labs/inspect/blob/v0.1.1/LICENSE.md
+INSPECT_RELEASE=https://github.com/Ataraxy-Labs/inspect/releases/download/v0.1.1
 TMP_DIR=
 
-cleanup() { [ -z "$TMP_DIR" ] || rm -rf "$TMP_DIR"; }
+transaction=0
+aside_written=0
+inspect_written=0
+aside_link_touched=0
+inspect_link_touched=0
+cleanup() {
+  status=$?
+  if [ "$transaction" = 1 ] && [ "$status" -ne 0 ]; then
+    if [ "$aside_link_touched" = 1 ]; then
+      rm -f "$LINK" || :
+      [ ! -L "$TMP_DIR/aside.link.backup" ] || mv "$TMP_DIR/aside.link.backup" "$LINK" || :
+    fi
+    if [ "$inspect_link_touched" = 1 ]; then
+      rm -f "$INSPECT_LINK" || :
+      [ ! -L "$TMP_DIR/inspect.link.backup" ] || mv "$TMP_DIR/inspect.link.backup" "$INSPECT_LINK" || :
+    fi
+    if [ "$aside_written" = 1 ]; then
+      rm -f "$BINARY" || :
+      [ ! -f "$TMP_DIR/aside.backup" ] || mv "$TMP_DIR/aside.backup" "$BINARY" || :
+    fi
+    if [ "$inspect_written" = 1 ]; then
+      rm -f "$INSPECT_BINARY" || :
+      [ ! -f "$TMP_DIR/inspect.backup" ] || mv "$TMP_DIR/inspect.backup" "$INSPECT_BINARY" || :
+    fi
+  fi
+  [ -z "$TMP_DIR" ] || rm -rf "$TMP_DIR"
+}
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -46,25 +76,92 @@ checksum() {
   ' "$1" || fail "expected exactly one valid checksum for $2"
 }
 
-install_binary() {
-  [ ! -L "$BINARY" ] || fail "refusing to replace symlink $BINARY"
-  [ ! -e "$BINARY" ] || [ -f "$BINARY" ] || fail "refusing to replace $BINARY"
-  if [ -e "$LINK" ] || [ -L "$LINK" ]; then
-    [ -L "$LINK" ] && [ "$(readlink "$LINK")" = "$BINARY" ] || fail "refusing to replace unrelated $LINK"
+preflight_binary() {
+  [ ! -L "$1" ] || fail "refusing to replace symlink $1"
+  [ ! -e "$1" ] || [ -f "$1" ] || fail "refusing to replace $1"
+  if [ -e "$2" ] || [ -L "$2" ]; then
+    [ -L "$2" ] && [ "$(readlink "$2")" = "$1" ] || fail "refusing to replace unrelated $2"
   fi
+}
+
+preflight_install() {
   for dir in "$HOME/.aside" "$INSTALL_DIR" "$HOME/.local" "$LINK_DIR"; do
     [ ! -L "$dir" ] || fail "refusing to install through symlink $dir"
+    [ ! -e "$dir" ] || [ -d "$dir" ] || fail "refusing to install through non-directory $dir"
   done
+  preflight_binary "$BINARY" "$LINK"
+  preflight_binary "$INSPECT_BINARY" "$INSPECT_LINK"
+}
+
+install_verified() {
+  preflight_install
+  # Stage both verified binaries before changing either installed binary.
+  install -m 0755 "$1" "$TMP_DIR/aside.staged"
+  install -m 0755 "$TMP_DIR/$inspect_asset" "$TMP_DIR/inspect.staged"
+  [ ! -f "$BINARY" ] || cp -p "$BINARY" "$TMP_DIR/aside.backup"
+  [ ! -f "$INSPECT_BINARY" ] || cp -p "$INSPECT_BINARY" "$TMP_DIR/inspect.backup"
   mkdir -p "$INSTALL_DIR" "$LINK_DIR"
-  install -m 0755 "$1" "$BINARY"
+  transaction=1
+  aside_written=1
+  mv "$TMP_DIR/aside.staged" "$BINARY"
+  inspect_written=1
+  mv "$TMP_DIR/inspect.staged" "$INSPECT_BINARY"
   if [ "$(uname -s)" = Darwin ]; then
     if command -v xattr >/dev/null 2>&1; then
       xattr -d com.apple.quarantine "$BINARY" 2>/dev/null || :
+      xattr -d com.apple.quarantine "$INSPECT_BINARY" 2>/dev/null || :
     else
-      printf 'warning: xattr unavailable; macOS may quarantine %s\n' "$BINARY" >&2
+      printf 'warning: xattr unavailable; macOS may quarantine installed binaries\n' >&2
     fi
   fi
-  ln -sfn "$BINARY" "$LINK"
+  [ ! -L "$LINK" ] || mv "$LINK" "$TMP_DIR/aside.link.backup"
+  aside_link_touched=1
+  ln -s "$BINARY" "$LINK"
+  [ ! -L "$INSPECT_LINK" ] || mv "$INSPECT_LINK" "$TMP_DIR/inspect.link.backup"
+  inspect_link_touched=1
+  ln -s "$INSPECT_BINARY" "$INSPECT_LINK"
+}
+
+inspect_target() {
+  case "$(uname -s):$(uname -m)" in
+    Darwin:arm64|Darwin:aarch64)
+      inspect_asset=inspect-macos-aarch64
+      inspect_hash=e7fed5722af6e14dc668279dd7854109f9778484d48b1a42ead5d2c71b8bb90d ;;
+    Linux:x86_64|Linux:amd64)
+      inspect_asset=inspect-linux-x86_64
+      inspect_hash=99cf4ea2a2a1048d8e9369a6a5a11e5f84ee3f3c706e0bde072f9b2bd44e96ba ;;
+    *) fail 'unsupported Inspect target; supported: Apple Silicon macOS and x86_64 Linux' ;;
+  esac
+}
+
+prepare_inspect() {
+  download "$INSPECT_RELEASE/$inspect_asset" "$TMP_DIR/$inspect_asset"
+  actual=$(hash_file "$TMP_DIR/$inspect_asset") || fail 'cannot hash Inspect binary'
+  [ "$actual" = "$inspect_hash" ] || fail "SHA256 mismatch for $inspect_asset; refusing to install"
+}
+
+sample_review() {
+  ( : < /dev/tty ) 2>/dev/null || return 0
+  printf 'Start an optional live sample review? [y/N] ' > /dev/tty
+  IFS= read -r answer < /dev/tty || answer=
+  case "$answer" in y|Y|yes|YES|Yes) : ;; *) return 0 ;; esac
+  available=
+  for agent in claude codex pi; do
+    if command -v "$agent" >/dev/null 2>&1; then available="$available $agent"; fi
+  done
+  if [ -z "$available" ]; then
+    printf 'No supported agent CLI found; run a review later with an installed agent.\n' > /dev/tty
+    return 0
+  fi
+  printf 'Choose an installed agent CLI (%s) [Enter to skip]: ' "$available" > /dev/tty
+  IFS= read -r agent < /dev/tty || agent=
+  case "$agent" in
+    claude|codex|pi)
+      command -v "$agent" >/dev/null 2>&1 || { printf 'Agent CLI unavailable; skipping.\n' > /dev/tty; return 0; } ;;
+    *) printf 'Skipping sample review.\n' > /dev/tty; return 0 ;;
+  esac
+  prompt='use aside to review https://github.com/cli/cli/pull/14921'
+  PATH="$INSTALL_DIR:$PATH" "$agent" "$prompt" < /dev/tty
 }
 
 case "$#" in
@@ -76,7 +173,17 @@ esac
 require uname
 require install
 require mktemp
+require curl
+require awk
+if command -v sha256sum >/dev/null 2>&1; then
+  hash_file() { sha256sum "$1" | awk '{print $1}'; }
+else
+  require shasum
+  hash_file() { shasum -a 256 "$1" | awk '{print $1}'; }
+fi
+inspect_target
 TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/aside-install.XXXXXXXX") || fail 'cannot create temporary directory'
+prepare_inspect
 
 # Download the latest verified release by default, even from inside a checkout.
 # Building from source requires an explicit choice and the complete Aside tree.
@@ -91,17 +198,9 @@ if [ "${1:-}" = --from-source ]; then
   pnpm -C "$root/app" build || fail 'frontend build failed'
   (cd "$root" && cargo build --locked --release) || fail 'source build failed'
   [ -f "$root/target/release/aside" ] || fail 'source build did not produce aside'
-  install_binary "$root/target/release/aside"
+  aside_source="$root/target/release/aside"
 else
-  require curl
   require tar
-  require awk
-  if command -v sha256sum >/dev/null 2>&1; then
-    hash_file() { sha256sum "$1" | awk '{print $1}'; }
-  else
-    require shasum
-    hash_file() { shasum -a 256 "$1" | awk '{print $1}'; }
-  fi
   platform=$(target)
   tag=$(latest_tag)
   asset="aside-$tag-$platform.tar.gz"
@@ -118,17 +217,14 @@ else
   [ "$kind" = - ] || fail 'archive entry is not a regular file'
   tar -xOzf "$TMP_DIR/$asset" aside > "$TMP_DIR/aside" || fail 'cannot read archive binary'
   [ -s "$TMP_DIR/aside" ] || fail 'archive binary is empty'
-  install_binary "$TMP_DIR/aside"
+  aside_source="$TMP_DIR/aside"
 fi
 
+install_verified "$aside_source"
 "$BINARY" --version || fail 'installed binary did not run'
 "$BINARY" skill || fail 'embedded skill installation failed'
+transaction=0
 printf 'Installed aside at %s (linked at %s).\n' "$BINARY" "$LINK"
+printf 'Installed Inspect v0.1.1 at %s (linked at %s). License: FSL-1.1-ALv2 https://github.com/Ataraxy-Labs/inspect/blob/v0.1.1/LICENSE.md\n' "$INSPECT_BINARY" "$INSPECT_LINK"
 case ":${PATH:-}:" in *":$LINK_DIR:"*) : ;; *) printf 'Add %s to PATH to use aside from a new terminal.\n' "$LINK_DIR" ;; esac
-if [ -t 0 ]; then
-  printf 'Run the interactive aside demo now? [y/N] '
-  IFS= read -r answer || answer=
-  case "$answer" in y|Y|yes|YES|Yes) "$BINARY" demo ;; *) printf 'Run aside demo when ready.\n' ;; esac
-else
-  printf 'Host agent: ask the user whether to run aside demo; run it only with explicit approval.\n'
-fi
+sample_review

@@ -1,41 +1,47 @@
 # Set up Aside with a coding agent
 
-Aside is a local-first workspace for reviewing pull requests. This guide is for the agent helping a person install it. The homepage prompt points to `https://asidecode.dev/agents.md`. Deploy this guide at `/agents.md` on that domain before using the prompt publicly.
+Aside is a local-first workspace for reviewing pull requests. This guide is for agents helping a person install it; it is not permission to execute a remote script.
 
 ## Check the machine and ask first
 
-1. Explain what Aside does and ask which machine/OS and architecture the person uses. Supported release targets are **macOS ARM**, **Windows x86-64 and ARM64**, and **Linux x86-64**. Do not suggest a release installer for another target; refer to [building from source](https://github.com/codesoda/aside#install-from-source) instead.
-2. Ask for the person's consent before downloading or running an installer. Download the official script to a local file, **inspect it with the person**, and run it only after they approve what it does. Do not pipe network code into a shell or run an uninspected script. If no stable release or matching asset is available, stop and explain the blocker; offer the source-build instructions instead of substituting an unofficial installer.
-3. For a live pull request, check that [GitHub CLI (`gh`)](https://cli.github.com/) is installed and authenticated (`gh auth status`). If needed, guide the person through `gh auth login` themselves. Do not ask them to share credentials. The bundled demo runs offline without `gh` or GitHub authentication.
+1. Confirm the OS and architecture. Supported quick-install targets are **macOS ARM**, **Linux x86-64**, and **Windows x86-64**. Windows ARM64 is unsupported because Inspect is not available for that target. For any other target, do not run a release installer; offer [building from source](https://github.com/codesoda/aside#install-from-source) and explain that Inspect may still be unavailable.
+2. Explain that the human quick-install commands below execute code from the network. Ask for explicit consent before downloading or running any script. Prefer downloading the official script to a local file, inspecting it with the person, and running it only after approval. **Never automatically run a remote script or pipe it into a shell as an agent.** Check redirects, downloads, destinations, permission changes, and integrity checks. Do not bypass local security policies.
+3. For a live PR, check [GitHub CLI (`gh`)](https://cli.github.com/) and `gh auth status`. Guide the person through `gh auth login` if needed; never request credentials. The separate bundled offline demo does not require `gh`.
 
-## Install after inspection and consent
+## Install after consent
 
-The official scripts are hosted in the [Aside repository](https://github.com/codesoda/aside). With no version argument, each script resolves the [latest stable release](https://github.com/codesoda/aside/releases/latest) and downloads its matching asset and published SHA-256 checksums, even when run inside a checkout. Do not pin a release tag. Building and installing from a checkout is an explicit alternative (`sh install.sh --from-source` or `./install.ps1 -FromSource`), not the default:
+The official [Unix script](https://raw.githubusercontent.com/codesoda/aside/main/install.sh) and [PowerShell script](https://raw.githubusercontent.com/codesoda/aside/main/install.ps1) resolve the latest stable Aside release and verify its SHA-256 checksum. They install Aside and its agent skill, and download [Inspect](https://github.com/Ataraxy-Labs/inspect) directly from upstream. Inspect is licensed under [FSL-1.1-ALv2](https://github.com/Ataraxy-Labs/inspect/blob/main/LICENSE.md). If no release or matching asset is available, stop and offer source-build instructions rather than another installer.
 
-- macOS ARM or Linux x86-64 (shell): `https://raw.githubusercontent.com/codesoda/aside/main/install.sh`
+For a human who trusts the source, the quick commands are:
 
-  ```sh
-  curl -fL https://raw.githubusercontent.com/codesoda/aside/main/install.sh -o aside-install.sh
-  less aside-install.sh
-  # Only after the person approves the inspected script:
-  sh aside-install.sh
-  ```
+```sh
+curl -fsSL https://raw.githubusercontent.com/codesoda/aside/main/install.sh | sh
+```
 
-- Windows x86-64 or ARM64 (PowerShell): `https://raw.githubusercontent.com/codesoda/aside/main/install.ps1`
+```powershell
+irm https://raw.githubusercontent.com/codesoda/aside/main/install.ps1 | iex
+```
 
-  ```powershell
-  Invoke-WebRequest https://raw.githubusercontent.com/codesoda/aside/main/install.ps1 -OutFile aside-install.ps1
-  Get-Content .\aside-install.ps1
-  # Only after the person approves the inspected script:
-  .\aside-install.ps1
-  ```
+These are **human choices**, not agent instructions. Prefer these inspect-first alternatives when assisting:
 
-Review any redirects, downloads, destination paths, permission changes, and release integrity checks in the script before approving. If the install requires further approval or environment changes, explain them first. Do not bypass local security policies.
+```sh
+curl -fsSL https://raw.githubusercontent.com/codesoda/aside/main/install.sh -o aside-install.sh
+less aside-install.sh
+# Only with the person's approval after inspection:
+sh aside-install.sh
+```
 
-The installer installs the `aside` binary and the built-in **`aside skill`** for agent workflows automatically. Do not fetch an unrelated skill or copy secret session data into the repository. Confirm `aside --help` works after installation; if the skill is not available, report that instead of claiming setup is complete.
+```powershell
+Invoke-WebRequest https://raw.githubusercontent.com/codesoda/aside/main/install.ps1 -OutFile aside-install.ps1
+Get-Content .\aside-install.ps1
+# Only with the person's approval after inspection:
+.\aside-install.ps1
+```
+
+A checkout source install is an explicit alternative (`sh install.sh --from-source` or `./install.ps1 -FromSource`), never the default. Verify `aside --help` and that the installed skill is available; report a failure rather than claiming setup is complete.
 
 ## Start a review
 
-For a live PR, after `gh` is ready, use `aside https://github.com/OWNER/REPO/pull/NUMBER`. Ask the person **before** running `aside demo` (or `aside demo --no-open`); it opens a bundled offline example and does not publish. Do not start the demo just to verify installation without permission. The website's interactive mock is a separate preview.
+The installer offers an optional live example after a `[y/N]` prompt using `claude`, `codex`, or `pi`. Do not answer yes or start an example without the person's approval. For a live PR, use `aside https://github.com/OWNER/REPO/pull/NUMBER` after `gh` is ready. The separate `aside demo` is bundled and offline; ask before running it too. The website's interactive mock is only a preview.
 
-Keep the local session private. A browser login URL and the agent session descriptor/token are credentials: never print, paste, commit, or transmit them to another service. Follow the installed `aside skill` for session and API steps, and let the person make all publication decisions. Aside requires human confirmation to publish a review.
+Keep local login URLs and session descriptors/tokens private. Never print, paste, commit, or send them to another service. Follow the installed Aside skill for session steps and leave publication decisions to the person. Publishing a review requires human confirmation.
