@@ -293,6 +293,56 @@ fn mixed_feedback_imports_fail_closed_and_do_not_change_diff_coverage() {
 }
 
 #[test]
+fn annotation_coverage_keeps_all_failures_and_retained_items() {
+    let mut snapshot = complete_snapshot_without_feedback();
+    snapshot.checks.runs_coverage = crate::github::checks::Coverage {
+        completeness: Completeness::Complete,
+        reasons: vec![],
+    };
+    snapshot.checks.annotation_coverage = vec![
+        (
+            1,
+            crate::github::checks::Coverage {
+                completeness: Completeness::Failed,
+                reasons: vec!["forbidden".into()],
+            },
+        ),
+        (
+            2,
+            crate::github::checks::Coverage {
+                completeness: Completeness::Partial,
+                reasons: vec!["page_limit".into()],
+            },
+        ),
+    ];
+    snapshot.checks.annotations.push(
+        serde_json::from_value(serde_json::json!({
+            "checkRunId": 2, "key": {"kind": "upstream", "value": "a1"},
+            "path": "src/a.rs", "startLine": 1, "endLine": 1,
+            "annotationLevel": "warning", "message": "m", "headSha": "h", "observedAt": "now"
+        }))
+        .unwrap(),
+    );
+    let view = session_with(snapshot, vec![]).view(Actor::Human).unwrap();
+    let annotations = source_of(&view, source::CHECK_ANNOTATIONS);
+    assert_eq!(annotations.completeness, Completeness::Partial);
+    assert_eq!(annotations.status, Some(RunStatus::Partial));
+    assert_eq!(annotations.items, KnownCount::Known { value: 1 });
+    assert!(
+        annotations
+            .reason_codes
+            .iter()
+            .any(|r| r == "run 1: forbidden")
+    );
+    assert!(
+        annotations
+            .reason_codes
+            .iter()
+            .any(|r| r == "run 2: page_limit")
+    );
+}
+
+#[test]
 fn empty_complete_feedback_is_clean() {
     let mut snapshot = complete_snapshot_without_feedback();
     snapshot.reviews.clear();
@@ -662,7 +712,8 @@ async fn reconnect_mid_run_converges_to_the_authoritative_view() {
     assert_eq!(first.event_type, "analysis.run.queued");
     let mid = session.view(Actor::Human).unwrap();
     assert!(matches!(source_of(&mid, DIFF).state, SourceState::Pending));
-    assert_eq!(mid.analysis.overall, OverallCoverage::Pending); // provider is still running
+    // The provider is pending, but imported check sources are unavailable in this fixture.
+    assert_eq!(mid.analysis.overall, OverallCoverage::Incomplete);
     drop(flaky);
 
     gate.add_permits(1);

@@ -3,6 +3,10 @@
 //! `gh` is always run with an argv array, never through a shell. All calls go
 //! through [`GhRunner`] so tests can substitute a fake.
 
+pub mod checks;
+#[cfg(test)]
+mod checks_tests;
+pub mod context;
 mod feedback;
 #[cfg(test)]
 mod feedback_tests;
@@ -340,6 +344,56 @@ mod tests {
             number: 7,
         };
         assert!(fetch_snapshot(&gh, &pr, &Limits::default()).is_err());
+    }
+
+    // The PR may move after the files and feedback imports, while checks are fetched.
+    #[test]
+    fn rejects_force_push_during_check_fetch() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct MovingDuringChecks {
+            fake: FakeGh,
+            moved: AtomicBool,
+        }
+        impl GhRunner for MovingDuringChecks {
+            fn run(&self, args: &[&str], stdin: Option<&[u8]>) -> Result<Vec<u8>> {
+                if args.first() == Some(&"api")
+                    && args
+                        .get(1)
+                        .is_some_and(|url| url.starts_with("repos/o/r/commits/head1/check-runs"))
+                {
+                    self.moved.store(true, Ordering::SeqCst);
+                }
+                if args.starts_with(&["pr", "view"]) && self.moved.load(Ordering::SeqCst) {
+                    return Ok(json!({"baseRefOid":"base1","headRefOid":"head2"})
+                        .to_string()
+                        .into_bytes());
+                }
+                self.fake.run(args, stdin)
+            }
+        }
+        let gh = MovingDuringChecks {
+            fake: snapshot_gh(Ok(&threads_json())),
+            moved: AtomicBool::new(false),
+        };
+        gh.fake.on(
+            &[
+                "api",
+                "repos/o/r/commits/head1/check-runs?per_page=100&page=1",
+            ],
+            Ok(r#"{"total_count":0,"check_runs":[]}"#),
+        );
+        gh.fake.on(
+            &["api", "repos/o/r/commits/head1/status?per_page=100&page=1"],
+            Ok(r#"{"sha":"head1","statuses":[]}"#),
+        );
+        assert!(
+            fetch_snapshot(&gh, &test_pr_ref(), &Limits::default())
+                .unwrap_err()
+                .to_string()
+                .contains("base or head changed")
+        );
+        assert!(gh.moved.load(Ordering::SeqCst));
     }
 
     #[test]

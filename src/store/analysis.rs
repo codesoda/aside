@@ -669,7 +669,7 @@ impl Store {
                  ON CONFLICT(host, repository_id, source_kind, key_kind, key_value) DO UPDATE SET
                    native_json = excluded.native_json, raw_json = excluded.raw_json,
                    available = 1, last_seen_at = excluded.last_seen_at
-                 RETURNING id, pr_id",
+                 RETURNING id",
                 params![
                     pr_id,
                     key.0,
@@ -682,14 +682,15 @@ impl Store {
                     rec.raw_json,
                     batch.observed_at
                 ],
-                |r| {
-                    let owner: String = r.get(1)?;
-                    Ok(if owner == pr_id { r.get(0)? } else { -1 })
-                },
+                |r| r.get(0),
             )?;
-            if id < 0 {
-                bail!("imported record belongs to another PR");
-            }
+            tx.execute(
+                "INSERT INTO imported_source_prs (source_record_id, pr_id, available, first_seen_at, last_seen_at)
+                 VALUES (?1, ?2, 1, ?3, ?3)
+                 ON CONFLICT(source_record_id, pr_id) DO UPDATE SET
+                   available = 1, last_seen_at = excluded.last_seen_at",
+                params![id, pr_id, batch.observed_at],
+            )?;
             for (kind, value) in &rec.aliases {
                 tx.execute(
                     "INSERT INTO imported_source_aliases (alias_kind, alias_value, source_record_id)
@@ -710,7 +711,9 @@ impl Store {
         if batch.complete {
             let seen: HashSet<i64> = ids.iter().copied().collect();
             let mut stmt = tx.prepare(
-                "SELECT id FROM imported_source_records WHERE pr_id = ?1 AND resource_kind = ?2 AND available = 1",
+                "SELECT r.id FROM imported_source_records r
+                 JOIN imported_source_prs p ON p.source_record_id = r.id
+                 WHERE p.pr_id = ?1 AND r.resource_kind = ?2 AND p.available = 1",
             )?;
             let present: Vec<i64> = stmt
                 .query_map(params![pr_id, batch.resource_kind], |r| r.get(0))?
@@ -718,8 +721,8 @@ impl Store {
             drop(stmt);
             for id in present.into_iter().filter(|id| !seen.contains(id)) {
                 tx.execute(
-                    "UPDATE imported_source_records SET available = 0 WHERE id = ?1",
-                    [id],
+                    "UPDATE imported_source_prs SET available = 0 WHERE source_record_id = ?1 AND pr_id = ?2",
+                    params![id, pr_id],
                 )?;
             }
         }
@@ -734,9 +737,12 @@ impl Store {
         resource_kind: Option<&str>,
     ) -> Result<Vec<StoredImportedSource>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, resource_kind, native_json, raw_json, available, first_seen_at, last_seen_at
-             FROM imported_source_records WHERE pr_id = ?1 AND (?2 IS NULL OR resource_kind = ?2)
-             ORDER BY id",
+            "SELECT r.id, r.resource_kind, r.native_json, r.raw_json,
+                    p.available, p.first_seen_at, p.last_seen_at
+             FROM imported_source_records r
+             JOIN imported_source_prs p ON p.source_record_id = r.id
+             WHERE p.pr_id = ?1 AND (?2 IS NULL OR r.resource_kind = ?2)
+             ORDER BY r.id",
         )?;
         let rows = stmt.query_map(params![pr_id, resource_kind], |r| {
             Ok((

@@ -522,6 +522,74 @@ pub(super) async fn evidence(
     Ok(Json(page.map_err(db_error)??))
 }
 
+/// Read-only native check and status records, never review threads.
+pub(super) async fn checks(
+    State(state): State<AppState>,
+    Query(query): Query<ListQuery>,
+) -> ApiResult<Json<Page<Value>>> {
+    let page = state.session.read_analysis(|read| {
+        Ok((|| {
+            let mut items = Vec::new();
+            for record in read
+                .store
+                .list_imported_sources(read.pr_id, None)
+                .map_err(|_| ApiError::internal())?
+            {
+                if !record.available {
+                    continue;
+                }
+                let mut value: Value =
+                    serde_json::from_str(&record.raw_json).map_err(|_| ApiError::internal())?;
+                if let Value::Object(ref mut object) = value {
+                    if record.resource_kind.starts_with("check_runs:")
+                        && record.resource_kind.ends_with(&read.head_sha)
+                        && let Some(id) = object.get("githubCheckRunId").and_then(Value::as_u64)
+                        && let Some((_, coverage)) = read
+                            .annotation_coverage
+                            .iter()
+                            .find(|(run_id, _)| *run_id == id)
+                    {
+                        object.insert(
+                            "annotationCoverage".into(),
+                            serde_json::to_value(coverage).map_err(|_| ApiError::internal())?,
+                        );
+                    }
+                    object.insert("resourceKind".into(), json!(record.resource_kind));
+                    object.insert(
+                        "native".into(),
+                        serde_json::to_value(record.native.value())
+                            .map_err(|_| ApiError::internal())?,
+                    );
+                    object.insert(
+                        "currentHead".into(),
+                        json!(record.resource_kind.ends_with(&read.head_sha)),
+                    );
+                }
+                items.push((format!("imported:{:020}", record.id), value));
+            }
+            let coverage = PageCoverage::of(&read.summary, |s| {
+                matches!(
+                    s.source_id.as_str(),
+                    source::CHECK_RUNS | source::CHECK_ANNOTATIONS | source::COMMIT_STATUSES
+                )
+            });
+            paginate(
+                &read,
+                Listing {
+                    kind: "checks",
+                    query: &query,
+                    filters: vec![],
+                    include_ignored: true,
+                    excluded_by_scope: 0,
+                },
+                items,
+                coverage,
+            )
+        })())
+    });
+    Ok(Json(page.map_err(db_error)??))
+}
+
 /// `GET /api/v1/github-feedback/threads`: imported GitHub review threads with
 /// every comment, scope-filtered, with the thread import's completeness.
 pub(super) async fn feedback(

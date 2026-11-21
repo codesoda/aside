@@ -43,6 +43,12 @@ struct Cli {
     pr_url: Option<String>,
     #[command(flatten)]
     serve: ServeOpts,
+    /// Existing checkout to inspect for immutable analysis history.
+    #[arg(long, global = true)]
+    analysis_checkout: Option<std::path::PathBuf>,
+    /// Allow a bounded authenticated fetch into Aside-owned cache for analysis.
+    #[arg(long, global = true)]
+    fetch_analysis_context: bool,
     /// Diagnostic log filter, e.g. info or debug (stderr only).
     #[arg(long, global = true, default_value = "warn")]
     log_level: String,
@@ -196,6 +202,8 @@ async fn start_session(
     pr_ref: Option<PrRef>,
     gh: Option<Arc<dyn GhRunner>>,
     open_browser: bool,
+    checkout: Option<&std::path::Path>,
+    fetch_analysis: bool,
 ) -> Result<()> {
     let store = if pr_ref.is_some() {
         Store::open(&store::default_path()?)?
@@ -203,6 +211,25 @@ async fn start_session(
         Store::open_in_memory()?
     };
     let session = Session::new(snapshot, store, gh, pr_ref)?;
+    if let (Some(gh), Some(reference)) = (&session.gh, &session.pr_ref) {
+        let snapshot = session.snapshot.read().expect("snapshot lock");
+        let cache_root = store::default_path()?
+            .parent()
+            .expect("data directory")
+            .to_path_buf();
+        let context = github::context::resolve(
+            gh.as_ref(),
+            reference,
+            snapshot.provider_repository_id.as_deref(),
+            &snapshot.pr.base_sha,
+            &snapshot.pr.head_sha,
+            checkout,
+            fetch_analysis,
+            &cache_root,
+        );
+        drop(snapshot);
+        session.set_analysis_context(context);
+    }
     if let Err(error) = session.start_analysis() {
         eprintln!("could not start analysis: {error:#}");
     }
@@ -336,5 +363,13 @@ async fn main() -> Result<()> {
         }
     };
     let open_browser = config::load()?.browser.auto_open && !opts.no_open;
-    start_session(snapshot, pr_ref, gh, open_browser).await
+    start_session(
+        snapshot,
+        pr_ref,
+        gh,
+        open_browser,
+        cli.analysis_checkout.as_deref(),
+        cli.fetch_analysis_context,
+    )
+    .await
 }

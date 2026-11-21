@@ -21,7 +21,7 @@ use anyhow::{Context, Result, bail};
 use crate::diff::{Limits, ParsedDiff, parse_unified};
 
 const MAX_DIFF_BYTES: usize = 64 * 1024 * 1024;
-const MAX_COMMAND_BYTES: usize = 4096;
+pub(super) const MAX_COMMAND_BYTES: usize = 4096;
 const MAX_HISTORY_DEPTH: usize = 256;
 const GIT_DEADLINE: Duration = Duration::from_secs(60);
 
@@ -37,12 +37,17 @@ pub(super) fn recover(
     recover_from_remote(&remote, base_sha, head_sha, limits)
 }
 
-fn valid_sha(sha: &str) -> bool {
+pub(super) fn valid_sha(sha: &str) -> bool {
     sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-fn git(git_dir: &Path) -> Command {
+pub(super) fn git(git_dir: &Path) -> Command {
     let mut command = Command::new("git");
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("GIT_") {
+            command.env_remove(key);
+        }
+    }
     command
         .arg("--git-dir")
         .arg(git_dir)
@@ -50,6 +55,8 @@ fn git(git_dir: &Path) -> Command {
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_LFS_SKIP_SMUDGE", "1")
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .env("GIT_CONFIG_COUNT", "0")
         .stdin(Stdio::null())
         .stderr(Stdio::null());
     command
@@ -57,7 +64,20 @@ fn git(git_dir: &Path) -> Command {
 
 // Read in a worker so a stalled pipe cannot hold the caller past the deadline.
 // On every error, including timeout and oversized output, kill Git and its helpers.
-fn run_git(mut command: Command, cap: usize, deadline: Instant) -> Result<(ExitStatus, Vec<u8>)> {
+pub(super) fn run_git(
+    command: Command,
+    cap: usize,
+    deadline: Instant,
+) -> Result<(ExitStatus, Vec<u8>)> {
+    run_git_bounded(command, cap, deadline, None)
+}
+
+pub(super) fn run_git_bounded(
+    mut command: Command,
+    cap: usize,
+    deadline: Instant,
+    disk_limit: Option<(&Path, u64)>,
+) -> Result<(ExitStatus, Vec<u8>)> {
     #[cfg(unix)]
     command.process_group(0);
     let mut child = command
@@ -72,13 +92,35 @@ fn run_git(mut command: Command, cap: usize, deadline: Instant) -> Result<(ExitS
         let _ = tx.send((result, bytes));
     });
     let result = (|| {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        let (read_result, bytes) = rx.recv_timeout(remaining).context("Git output timed out")?;
+        let (read_result, bytes) = loop {
+            if let Some((path, limit)) = disk_limit
+                && super::context::size_live(path, deadline)? > limit
+            {
+                bail!("Git storage limit reached during transfer");
+            }
+            if Instant::now() >= deadline {
+                bail!("Git output timed out");
+            }
+            match rx.recv_timeout(
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(Duration::from_millis(20)),
+            ) {
+                Ok(output) => break output,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(error) => return Err(error.into()),
+            }
+        };
         read_result.context("could not read Git output")?;
         if bytes.len() > cap {
             bail!("Git output exceeds recovery limit");
         }
         loop {
+            if let Some((path, limit)) = disk_limit
+                && super::context::size_live(path, deadline)? > limit
+            {
+                bail!("Git storage limit reached during transfer");
+            }
             if let Some(status) = child.try_wait().context("could not wait for Git")? {
                 return Ok((status, bytes));
             }

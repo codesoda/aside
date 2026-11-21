@@ -273,7 +273,7 @@ fn migrates_released_v2_schema_and_keeps_review_data() {
     released_v2_database(&path);
     let mut s = Store::open(&path).unwrap();
     assert_eq!(user_version(&s.conn), MIGRATIONS.len() as i64);
-    assert_eq!(recorded_versions(&s.conn), vec![1, 2, 3, 4]);
+    assert_eq!(recorded_versions(&s.conn), vec![1, 2, 3, 4, 5]);
     let acks = s.list_acknowledgements("pr1").unwrap();
     assert_eq!(acks.len(), 1);
     assert_eq!(acks[0].path, "src/a.rs");
@@ -285,7 +285,7 @@ fn migrates_released_v2_schema_and_keeps_review_data() {
     drop(s);
     // Re-opening is a no-op: migrations are forward-only and applied once.
     let s = Store::open(&path).unwrap();
-    assert_eq!(recorded_versions(&s.conn), vec![1, 2, 3, 4]);
+    assert_eq!(recorded_versions(&s.conn), vec![1, 2, 3, 4, 5]);
     assert_eq!(s.current_analysis_snapshot("pr1").unwrap(), Some(id));
 }
 
@@ -337,8 +337,8 @@ fn colliding_v3_schemas_converge_without_losing_rows() {
         drop(conn);
         for _ in 0..2 {
             let s = Store::open(&path).unwrap();
-            assert_eq!(user_version(&s.conn), 4);
-            assert_eq!(recorded_versions(&s.conn), vec![1, 2, 3, 4]);
+            assert_eq!(user_version(&s.conn), 5);
+            assert_eq!(recorded_versions(&s.conn), vec![1, 2, 3, 4, 5]);
             let body: String = s
                 .conn
                 .query_row(
@@ -1208,6 +1208,47 @@ fn source_aliases_merge_representations_and_findings_share_records() {
         "no alias chains"
     );
     assert_eq!(f.count("review_findings"), 2, "both source findings kept");
+}
+
+#[test]
+fn shared_native_head_is_available_independently_to_two_prs() {
+    let mut f = fixture();
+    let repo = f
+        .store
+        .resolve_repository("github.com", "acme", "widget", Some(REPO))
+        .unwrap();
+    let other = f.store.upsert_pull_request(&repo.id, 43, "t", "u").unwrap();
+    let rec = |key: &str| ImportedSourceWrite {
+        native: native("github_check_run", key),
+        raw_json: "{}".into(),
+        aliases: vec![("rest_id".into(), key.into())],
+    };
+    let first = f
+        .store
+        .commit_import_batch(&f.pr, &import("check_runs", true, vec![rec("100")]))
+        .unwrap();
+    let second = f
+        .store
+        .commit_import_batch(&other, &import("check_runs", true, vec![rec("100")]))
+        .unwrap();
+    assert_eq!(first, second, "native identity is shared");
+    assert_eq!(
+        f.store.resolve_imported_alias("rest_id", "100").unwrap(),
+        Some(first[0])
+    );
+    f.store
+        .commit_import_batch(&other, &import("check_runs", true, vec![]))
+        .unwrap();
+    assert!(f.store.list_imported_sources(&f.pr, None).unwrap()[0].available);
+    assert!(!f.store.list_imported_sources(&other, None).unwrap()[0].available);
+    f.store
+        .commit_import_batch(&other, &import("check_runs", true, vec![rec("100")]))
+        .unwrap();
+    f.store
+        .commit_import_batch(&f.pr, &import("check_runs", true, vec![]))
+        .unwrap();
+    assert!(!f.store.list_imported_sources(&f.pr, None).unwrap()[0].available);
+    assert!(f.store.list_imported_sources(&other, None).unwrap()[0].available);
 }
 
 #[test]

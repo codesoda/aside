@@ -269,6 +269,7 @@ pub struct SessionView {
     pub fetched_at: String,
     /// Per-source completeness and analysis status of the canonical snapshot.
     pub analysis: super::AnalysisSummary,
+    pub analysis_context: Option<crate::github::context::AnalysisContext>,
 }
 
 /// Envelope for every SSE and stdout event.
