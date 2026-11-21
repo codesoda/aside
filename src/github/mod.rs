@@ -618,6 +618,24 @@ mod tests {
         assert!(!validated_aggregate(&files, &manifest, Some(1), true));
     }
 
+    #[test]
+    fn direct_aggregate_still_fails_closed_on_zeroed_patchless_counts() {
+        // The direct-aggregate path keeps strict counts: both endpoints are
+        // GitHub, and the disagreement must fall back (and, in production,
+        // route through recovery) rather than trust either side blindly.
+        let manifest: Vec<GhApiFile> = serde_json::from_str(
+            r#"[{"filename":"a.rs","status":"modified","additions":0,"deletions":0}]"#,
+        )
+        .unwrap();
+        let files = crate::diff::parse_unified(
+            "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-x\n+y\n",
+            "head1",
+            &Limits::default(),
+        )
+        .files;
+        assert!(!validated_aggregate(&files, &manifest, Some(1), false));
+    }
+
     fn truncated_api_file() -> crate::model::ChangedFile {
         crate::diff::file_from_api(
             &crate::diff::ApiFile {
