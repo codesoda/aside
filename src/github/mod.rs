@@ -6,6 +6,7 @@
 pub mod checks;
 #[cfg(test)]
 mod checks_tests;
+pub mod context;
 mod feedback;
 #[cfg(test)]
 mod feedback_tests;
