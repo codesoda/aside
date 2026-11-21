@@ -39,5 +39,5 @@ reviews each.
 ## Status
 
 - [x] #66 — done, PR #71 → `feat/a0-followups`
-- [ ] #65 — assigned, not started
+- [x] #65 — done, PR #72 → `feat/a0-followups`
 - [ ] #64 — assigned, not started
