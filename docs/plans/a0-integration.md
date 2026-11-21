@@ -67,7 +67,7 @@ also create seams. Future parallel waves should name an owner for the join.
   outstanding cursors. Safe, but during a live run the scheduler streams findings
   in, so clients paging mid-run will hit repeated recoverable 409s. #38 handles it
   by restarting from page one. The durable fix is keyset pagination on a stable
-  sort key, leaving 409 for genuine snapshot changes.
+  sort key, leaving 409 for genuine snapshot changes. Filed as [#64](https://github.com/codesoda/aside/issues/64).
 - Retention (5 snapshots) and the #19 thresholds (400 changed lines, 10,000 diff
   lines, 20 evidence records) are uncalibrated defaults — #34 for configurability,
   #44 for calibration.
@@ -76,12 +76,12 @@ also create seams. Future parallel waves should name an owner for the join.
   databases keep serving stale results. `config_digest_changes_with_engine_version`
   guards this.
 
-## Known latent issues, not yet filed
+## Known latent issues (filed)
 
-- `lifecycle::overall(&[])` returns `Complete`, so a session with no sources would
+- [#66](https://github.com/codesoda/aside/issues/66) — `lifecycle::overall(&[])` returns `Complete`, so a session with no sources would
   read as all-clear. Unreachable today because sessions always carry import
   sources, but the invariant rests on callers rather than on the type.
-- Generated and oversized files are recorded `not_run` but contribute no reason
+- [#65](https://github.com/codesoda/aside/issues/65) — generated and oversized files are recorded `not_run` but contribute no reason
   code, so a run containing them can still present as complete/succeeded — the
   same false-clean class #36 fixed for mode-only files, one layer up.
 - Calibration questions reported by #36 for #44: test moves across files are not
