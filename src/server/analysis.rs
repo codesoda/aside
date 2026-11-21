@@ -21,8 +21,8 @@
 //!
 //! TODO(#26): finding triage mutation (`PATCH .../state`) is not exposed here.
 //! TODO(#34): rerun/cancel endpoints (`POST /analysis/runs`, `.../cancel`).
-//! TODO(#30): ranked order and priority buckets; findings are currently in
-//! stable first-seen order.
+//! Findings pages stay in stable first-seen order; the ranked, explainable
+//! review order (#30) is served whole by `GET /api/v1/analysis/queue` (#38).
 
 use axum::{
     Json,
@@ -31,6 +31,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use ts_rs::TS;
 
 use super::{ApiError, ApiResult, AppState, db_error};
 use crate::{
@@ -38,6 +39,7 @@ use crate::{
         AnalysisMode, AnalysisSummary, FindingId, LIFECYCLE_EVENT_VERSION, SourceCoverage,
         SourceState, ThreadSource, stable_digest,
     },
+    priority::{self, ObservedFinding, QueueInput, ReviewQueue, ScopeCounts},
     rules,
     session::{AnalysisRead, source},
     store::{ObservationLabel, Raw},
@@ -150,8 +152,9 @@ fn stale(expected: &str, read: &AnalysisRead<'_>, reason: &str) -> ApiError {
 /// Coverage of the sources a list was derived from. `complete` is true only
 /// when every one of them ran over its whole scope, so an empty page with
 /// `complete: false` never means "nothing there".
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub(super) struct PageCoverage {
     complete: bool,
     sources: Vec<SourceCoverage>,
@@ -176,11 +179,16 @@ impl PageCoverage {
     }
 }
 
-#[derive(Debug, Serialize)]
+/// One page of a list. `T` is typed per endpoint on the client: stored
+/// records are served verbatim (`Raw`), so the TypeScript item type is the
+/// generated contract type of that record.
+#[derive(Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub(super) struct Page<T> {
     event_version: u32,
     snapshot_id: String,
+    #[ts(type = "number")]
     sequence: u64,
     items: Vec<T>,
     next_cursor: Option<String>,
@@ -383,11 +391,14 @@ pub(super) async fn runs(
     Ok(Json(page.map_err(db_error)??))
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub(super) struct FindingItem {
     /// The stored finding, verbatim.
+    #[ts(as = "crate::model::ReviewFinding")]
     finding: Value,
+    #[ts(type = "\"current\" | \"historical\"")]
     label: &'static str,
     latest_snapshot_id: String,
     latest_applicability: String,
@@ -550,6 +561,72 @@ pub(super) async fn feedback(
         })())
     });
     Ok(Json(page.map_err(db_error)??))
+}
+
+/// `GET /api/v1/analysis/queue` body: the explainable review queue and
+/// scope-aware counts (#30), derived on read. Purely presentational: reading
+/// it writes nothing, so it can never mark a file reviewed, and exclusion
+/// edits change it without rerunning any engine.
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub(super) struct QueueView {
+    session_id: String,
+    #[ts(type = "number")]
+    sequence: u64,
+    event_version: u32,
+    snapshot_id: String,
+    queue: ReviewQueue,
+    counts: ScopeCounts,
+}
+
+/// `GET /api/v1/analysis/queue`. Not paginated: one item per changed file,
+/// already bounded by the PR. Reads decoded findings (`Raw::value`); nothing
+/// is written back, so lossy `#[serde(other)]` decoding cannot persist.
+pub(super) async fn queue(State(state): State<AppState>) -> ApiResult<Json<QueueView>> {
+    let view = state.session.read_analysis(|read| {
+        Ok((|| {
+            let stored = read
+                .store
+                .list_findings(read.pr_id, true)
+                .map_err(db_error)?;
+            let findings: Vec<ObservedFinding> = stored.iter().map(ObservedFinding::from).collect();
+            let mut relations = Vec::new();
+            let mut user_states = Vec::new();
+            for f in &findings {
+                relations.extend(
+                    read.store
+                        .list_finding_relations(&f.finding.id)
+                        .map_err(db_error)?,
+                );
+                if let Some(state) = read
+                    .store
+                    .get_finding_user_state(read.session_id, &f.finding.id)
+                    .map_err(db_error)?
+                {
+                    user_states.push(state);
+                }
+            }
+            let input = QueueInput {
+                files: &read.file_states,
+                rules: &read.rules,
+                findings: &findings,
+                relations: &relations,
+                threads: &read.github_threads,
+                user_states: &user_states,
+                coverage: &read.summary.sources,
+            };
+            Ok(QueueView {
+                session_id: read.session_id.into(),
+                sequence: read.sequence,
+                event_version: LIFECYCLE_EVENT_VERSION,
+                snapshot_id: read.summary.snapshot_id.as_str().into(),
+                queue: priority::build_queue(&input),
+                counts: priority::scope_counts(&input),
+            })
+        })())
+    });
+    Ok(Json(view.map_err(db_error)??))
 }
 
 #[cfg(test)]

@@ -1,6 +1,14 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
-  import { ApiError, createThread, fetchSession, replyToThread, setReviewed, watchSession, type SessionView } from './api';
+  import {
+    ApiError, createFileRule, createThread, fetchFindings, fetchQueue, fetchSession, replyToThread, setReviewed, watchSession,
+    type FindingItem, type QueueView, type SessionView,
+  } from './api';
+  import { fileIndicators, type QueueFilter } from './insights';
+  import AnalysisStatus from './insights/AnalysisStatus.svelte';
+  import InsightsPanel from './insights/InsightsPanel.svelte';
+  import PrConversation from './insights/PrConversation.svelte';
+  import ReviewQueue from './insights/ReviewQueue.svelte';
   import type { DiffLine } from './generated/DiffLine';
   import type { Side } from './generated/Side';
   import type { ChangedFile } from './generated/ChangedFile';
@@ -20,9 +28,33 @@
   let collapsedFolders = $state<Record<string, boolean>>({});
   let fileQuery = $state('');
   let fileCollapsed = $state(false);
+  // Review insights (#38) load beside the review, never before it: the diff
+  // renders from the session view alone and insights fill in as they arrive.
+  let queue = $state<QueueView | null>(null);
+  let findingItems = $state<FindingItem[] | null>(null);
+  let insightsError = $state<string | null>(null);
+  let insightsLoading = $state(false);
+  let insightsRequest = 0;
+  let navMode = $state<'tree' | 'queue'>('tree');
+  let queueFilter = $state<QueueFilter>('remaining');
+  let showIgnored = $state(false);
+
+  /** Fire-and-forget; read-only. Latest request wins. */
+  function loadInsights() {
+    const request = ++insightsRequest;
+    insightsLoading = true;
+    void Promise.allSettled([fetchQueue(), fetchFindings()]).then(([q, f]) => {
+      if (request !== insightsRequest) return;
+      insightsLoading = false;
+      if (q.status === 'fulfilled') queue = q.value;
+      if (f.status === 'fulfilled') findingItems = f.value.items;
+      const failed = [q, f].find((r) => r.status === 'rejected') as PromiseRejectedResult | undefined;
+      insightsError = failed ? (failed.reason instanceof Error ? failed.reason.message : String(failed.reason)) : null;
+    });
+  }
 
   onMount(() => watchSession(
-    (view) => { session = view; error = null; },
+    (view) => { session = view; error = null; loadInsights(); },
     (failure) => { error = String(failure); },
   ));
 
@@ -45,6 +77,15 @@
     anchor = null;
     draft = '';
     actionError = null;
+  }
+
+  const queueItem = $derived(queue?.queue.items.find((item) => item.fileId === file?.id));
+
+  function setScope(ignored: boolean) {
+    if (!file) return;
+    // Rules only re-rank on the server; no analysis rerun is requested.
+    const { path } = file;
+    void act(() => createFileRule(ignored ? 'exclude' : 'include', path));
   }
 
   function toggleViewed(checked: boolean) {
@@ -91,6 +132,7 @@
     try {
       await operation();
       session = await fetchSession();
+      loadInsights();
       onSuccess?.();
     } catch (failure) {
       if (failure instanceof ApiError && failure.status === 409) {
@@ -154,22 +196,32 @@
         · <span class="text-[#1a7f37]">+{totals.add}</span>
         <span class="text-[#d1242f]">−{totals.del}</span>
       </p>
+      <AnalysisStatus summary={session.analysis} loadError={insightsError} />
       {#if error}<p class="mt-3 text-red-700" role="alert">Refresh failed: {error}</p>{/if}
       {#if actionError}<p class="mt-3 text-red-700" role="alert">{actionError}</p>{/if}
       {#each session.warnings as warning}
         <p class="mt-2 text-sm text-amber-800">{warning}</p>
       {/each}
+      <PrConversation reviews={session.reviews} comments={session.issueComments} />
 
       {#snippet renderFile(item: ChangedFile)}
         {@const state = session?.fileStates.find((entry) => entry.fileId === item.id)}
+        {@const indicators = fileIndicators(queue?.queue.items.find((entry) => entry.fileId === item.id))}
         <li>
           <button type="button" onclick={() => selectFile(item.id)} aria-current={file?.id === item.id ? 'true' : undefined}
-            aria-label={`Review ${item.path}`} title={item.path}
+            aria-label={`Review ${item.path}${indicators.length ? `. ${indicators.map((i) => i.label).join(', ')}` : ''}`} title={item.path}
             class="block w-full min-w-0 rounded px-2 py-1.5 text-left text-sm hover:bg-[#f6f8fa] focus-visible:outline-2 focus-visible:outline-[#0969da]"
             class:font-semibold={file?.id === item.id}
             style:background-color={file?.id === item.id ? '#ddf4ff' : undefined}>
             <span class="block truncate font-mono">{item.path.split('/').at(-1)}</span>
             <span class="text-xs text-[#59636e]">{state?.status ?? 'unreviewed'} · +{item.additions} −{item.deletions}</span>
+            {#if indicators.length}
+              <span class="flex flex-wrap gap-1 text-xs" aria-hidden="true" data-testid="file-indicators">
+                {#each indicators as indicator (indicator.key)}
+                  <span class="rounded border border-[#d1d9e0] px-1" title={indicator.label}>{indicator.glyph} {indicator.short}</span>
+                {/each}
+              </span>
+            {/if}
           </button>
         </li>
       {/snippet}
@@ -203,14 +255,26 @@
         {#if treeVisible}
           <nav id="file-tree" class="min-w-0 rounded-md border border-[#d1d9e0] lg:sticky lg:top-4 lg:self-start" aria-label="Changed files">
             <h2 class="border-b border-[#d1d9e0] bg-[#f6f8fa] px-4 py-2 text-sm font-semibold">{session.files.length} changed files</h2>
-            <label class="block p-2">
-              <span class="sr-only">Filter changed files</span>
-              <input type="search" bind:value={fileQuery} placeholder="Filter files…" class="w-full rounded-md border border-[#d1d9e0] px-2 py-1.5 text-sm focus-visible:outline-2 focus-visible:outline-[#0969da]" />
-            </label>
-            <ul class="max-h-[70vh] overflow-y-auto px-2 pb-2">
-              {#each fileTree.folders as folder (folder.path)}{@render renderFolder(folder)}{/each}
-              {#each fileTree.files as item (item.id)}{@render renderFile(item)}{/each}
-            </ul>
+            <div class="flex gap-1 px-2 pt-2" role="group" aria-label="File order">
+              <button type="button" aria-pressed={navMode === 'tree'} onclick={() => { navMode = 'tree'; }}
+                class="flex-1 rounded-md border border-[#d1d9e0] px-2 py-1 text-xs hover:bg-[#f6f8fa] focus-visible:outline-2 focus-visible:outline-[#0969da]"
+                class:font-semibold={navMode === 'tree'} class:bg-[#ddf4ff]={navMode === 'tree'}>Path tree</button>
+              <button type="button" aria-pressed={navMode === 'queue'} onclick={() => { navMode = 'queue'; }}
+                class="flex-1 rounded-md border border-[#d1d9e0] px-2 py-1 text-xs hover:bg-[#f6f8fa] focus-visible:outline-2 focus-visible:outline-[#0969da]"
+                class:font-semibold={navMode === 'queue'} class:bg-[#ddf4ff]={navMode === 'queue'}>Suggested order</button>
+            </div>
+            {#if navMode === 'tree'}
+              <label class="block p-2">
+                <span class="sr-only">Filter changed files</span>
+                <input type="search" bind:value={fileQuery} placeholder="Filter files…" class="w-full rounded-md border border-[#d1d9e0] px-2 py-1.5 text-sm focus-visible:outline-2 focus-visible:outline-[#0969da]" />
+              </label>
+              <ul class="max-h-[70vh] overflow-y-auto px-2 pb-2">
+                {#each fileTree.folders as folder (folder.path)}{@render renderFolder(folder)}{/each}
+                {#each fileTree.files as item (item.id)}{@render renderFile(item)}{/each}
+              </ul>
+            {:else}
+              <ReviewQueue {queue} selectedId={file?.id} bind:filter={queueFilter} bind:showIgnored onSelect={selectFile} />
+            {/if}
           </nav>
         {/if}
 
@@ -229,11 +293,18 @@
                   </p>
                 </div>
               </div>
+              <div class="flex items-center gap-2">
+              <button type="button" disabled={busy} onclick={() => setScope(!fileState?.scope.ignored)}
+                aria-label={`${fileState?.scope.ignored ? 'Include in review' : 'Exclude from review'} ${file.path}`}
+                class="rounded-md border border-[#d1d9e0] bg-white px-3 py-1.5 text-sm hover:bg-[#f6f8fa] focus-visible:outline-2 focus-visible:outline-[#0969da] disabled:opacity-50">
+                {fileState?.scope.ignored ? 'Include in review' : 'Exclude from review'}
+              </button>
               <label class="flex cursor-pointer items-center gap-2 rounded-md border border-[#d1d9e0] bg-white px-3 py-1.5 text-sm font-semibold" class:opacity-50={busy || fileState?.scope.ignored}>
                 <input type="checkbox" checked={fileState?.reviewStatus === 'reviewed-current'} disabled={busy || fileState?.scope.ignored}
                   onchange={(event) => { const next = event.currentTarget.checked; event.currentTarget.checked = fileState?.reviewStatus === 'reviewed-current'; toggleViewed(next); }}
                   class="accent-[#1f883d]" /> Viewed
               </label>
+              </div>
             </div>
             {#if !fileCollapsed}
             {#if fileState?.scope.ignored}
@@ -286,6 +357,8 @@
           <aside class={treeVisible
             ? 'min-w-0 self-start rounded-md border border-[#d1d9e0] lg:col-start-2 xl:sticky xl:top-4 xl:col-start-3 xl:row-start-1 xl:max-h-[calc(100vh-2rem)] xl:overflow-y-auto'
             : 'min-w-0 self-start rounded-md border border-[#d1d9e0] xl:sticky xl:top-4 xl:col-start-2 xl:row-start-1 xl:max-h-[calc(100vh-2rem)] xl:overflow-y-auto'} aria-label="Review threads">
+            <InsightsPanel {file} summary={session.analysis} {queueItem} findings={findingItems} {threads}
+              loading={insightsLoading} onShowThread={(id) => void showThread(id)} />
             <div class="border-b border-[#d1d9e0] bg-[#f6f8fa] px-4 py-3">
               <h3 class="text-sm font-semibold">Threads ({threads.length})</h3>
             </div>
@@ -294,7 +367,10 @@
               {#each sortedThreads as thread (thread.id)}
                 <article id={'thread-' + thread.id} tabindex="-1" class="mb-3 rounded-md border border-[#d1d9e0] p-3 text-sm last:mb-0 focus:outline-none"
                   class:border-[#8250df]={selectedThreadId === thread.id} class:bg-[#f8f6ff]={selectedThreadId === thread.id}>
-                  <p class="text-xs text-[#59636e]">{thread.side} line {thread.line ?? 'unknown'} · {thread.anchorState}{thread.resolved ? ' · resolved' : ''} · {thread.source}</p>
+                  <p class="text-xs text-[#59636e]">
+                    {#if thread.source === 'github'}<span class="mr-1 rounded-full border border-[#8250df] px-2 font-semibold text-[#1f2328]"><span aria-hidden="true">❝</span> External feedback · GitHub</span>{:else}<span class="mr-1 rounded-full border border-[#d1d9e0] px-2 font-semibold text-[#1f2328]">Aside · local</span>{/if}
+                    {thread.side} line {thread.line ?? 'unknown'} · {thread.anchorState}{thread.resolved ? ' · resolved' : ''}
+                  </p>
                   {#each thread.comments as comment (comment.id)}
                     <div class="mt-2 border-t border-[#d1d9e0] pt-2">
                       <p class="text-xs font-semibold">{comment.author} · {comment.publishState}</p>
