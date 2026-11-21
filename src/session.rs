@@ -51,6 +51,7 @@ pub struct Session {
     demo_version: AtomicUsize,
     /// What the current analysis results were computed for (#27).
     analysis_key: Mutex<Option<AnalysisKey>>,
+    analysis_context: RwLock<Option<github::context::AnalysisContext>>,
 }
 
 /// Emits envelopes on the session's single SSE channel. Cloned into the
@@ -199,15 +200,16 @@ impl Session {
             refresh_lock: AsyncMutex::new(()),
             demo_version: AtomicUsize::new(demo_version),
             analysis_key: Mutex::new(None),
+            analysis_context: RwLock::new(None),
         }))
     }
 
     pub fn view(&self, actor: Actor) -> Result<SessionView> {
-        let snapshot = self
-            .snapshot
-            .read()
-            .expect("snapshot lock poisoned")
-            .clone();
+        let (snapshot, analysis_context) = {
+            let snapshot = self.snapshot.read().expect("snapshot lock poisoned");
+            let context = self.analysis_context.read().expect("context lock poisoned");
+            (snapshot.clone(), context.clone())
+        };
         let store = self.store.lock().expect("store lock poisoned");
         let rules = store.list_rules(&self.repository.id)?;
         let mut threads = store.list_threads(&self.pr_id)?;
@@ -235,6 +237,7 @@ impl Session {
             complete: snapshot.complete,
             fetched_at: snapshot.fetched_at,
             analysis,
+            analysis_context,
         })
     }
 
@@ -458,6 +461,13 @@ impl Session {
         Ok((handles, invalidation))
     }
 
+    pub fn set_analysis_context(&self, context: github::context::AnalysisContext) {
+        *self
+            .analysis_context
+            .write()
+            .expect("context lock poisoned") = Some(context);
+    }
+
     /// Emit an event only after the corresponding mutation has committed.
     pub fn notify(&self, event_type: &str, payload: Value) -> EventEnvelope {
         EventBus {
@@ -486,6 +496,23 @@ impl Session {
             .context("GitHub refresh task failed")??;
             (snapshot, None)
         };
+        let prior_context = self
+            .analysis_context
+            .read()
+            .expect("context lock poisoned")
+            .clone();
+        let replacement = prior_context.map(|context| {
+            if context.base_sha == snapshot.pr.base_sha && context.head_sha == snapshot.pr.head_sha
+            {
+                context
+            } else {
+                github::context::AnalysisContext::unavailable(
+                    &snapshot.pr.base_sha,
+                    &snapshot.pr.head_sha,
+                    "PR revision changed; analysis context requires resolution again",
+                )
+            }
+        });
         let previous_head = self
             .snapshot
             .read()
@@ -513,7 +540,17 @@ impl Session {
                 store.reopen_review(&self.pr_id)?;
             }
         }
-        *self.snapshot.write().expect("snapshot lock poisoned") = snapshot;
+        // Publish both views together only after all persistent writes succeed.
+        // Readers acquire snapshot before context (see view), so hold that lock
+        // while replacing the paired context.
+        {
+            let mut current = self.snapshot.write().expect("snapshot lock poisoned");
+            *self
+                .analysis_context
+                .write()
+                .expect("context lock poisoned") = replacement;
+            *current = snapshot;
+        }
         if let Some(next) = next_demo_version {
             self.demo_version.store(next, Ordering::SeqCst);
         }
@@ -1190,6 +1227,27 @@ mod tests {
         util::now_rfc3339,
     };
 
+    #[test]
+    fn session_view_exposes_context_independent_of_diff_completeness() {
+        let session = session();
+        let snapshot = session.snapshot.read().unwrap().clone();
+        let context = github::context::AnalysisContext {
+            source: "api-only".into(),
+            base_sha: snapshot.pr.base_sha.clone(),
+            head_sha: snapshot.pr.head_sha.clone(),
+            comparison_base: None,
+            history_count: 0,
+            shallow: false,
+            complete: false,
+            reason: Some("fetch not consented".into()),
+        };
+        session.set_analysis_context(context);
+        let view = session.view(Actor::Human).unwrap();
+        assert_eq!(view.analysis_context.unwrap().source, "api-only");
+        assert!(!view.analysis.sources.is_empty());
+        assert_eq!(view.complete, snapshot.complete);
+    }
+
     fn session() -> Arc<Session> {
         Session::new(
             demo::snapshot(0),
@@ -1335,6 +1393,52 @@ mod tests {
         assert_eq!(view.sequence, 1);
         assert_eq!(receiver.try_recv().unwrap().sequence, 1);
         assert_eq!(session.refresh().await.unwrap().sequence, 2);
+    }
+
+    #[tokio::test]
+    async fn refresh_invalidates_context_on_captured_revision_change() {
+        let session = session();
+        let initial = session.view(Actor::Human).unwrap();
+        let context = github::context::AnalysisContext {
+            source: "fetched-cache".into(),
+            base_sha: initial.pr.base_sha.clone(),
+            head_sha: initial.pr.head_sha.clone(),
+            comparison_base: Some(initial.pr.base_sha.clone()),
+            history_count: 2,
+            shallow: false,
+            complete: true,
+            reason: None,
+        };
+        session.set_analysis_context(context);
+        let changed = session.refresh().await.unwrap();
+        let invalidated = changed.analysis_context.unwrap();
+        assert_eq!(invalidated.source, "api-only");
+        assert_eq!(invalidated.base_sha, changed.pr.base_sha);
+        assert_eq!(invalidated.head_sha, changed.pr.head_sha);
+        assert_eq!(
+            invalidated.reason.as_deref(),
+            Some("PR revision changed; analysis context requires resolution again")
+        );
+        assert_eq!(
+            session
+                .view(Actor::Human)
+                .unwrap()
+                .analysis_context
+                .unwrap()
+                .head_sha,
+            changed.pr.head_sha
+        );
+        let unchanged = session.refresh().await.unwrap();
+        assert_eq!(unchanged.analysis_context.unwrap().source, "api-only");
+        assert_eq!(
+            session
+                .view(Actor::Human)
+                .unwrap()
+                .analysis_context
+                .unwrap()
+                .head_sha,
+            unchanged.pr.head_sha
+        );
     }
 
     #[tokio::test]
