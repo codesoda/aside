@@ -1,0 +1,26 @@
+[
+  {
+    "ruleId": "aside.diff.pr_summary",
+    "path": null,
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "PR totals from one complete patch; no defect claim."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "app/src/generated/Api.ts",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.generated_file",
+    "path": "app/src/generated/Api.ts",
+    "assertionKind": "measured_fact",
+    "attention": "info",
+    "verdict": "appropriate",
+    "note": "Two independent hints (generated directory, generated-code header). Info-level, not a defect claim; suggests reviewing the generator input. The run itself is partial with reason generated_file (#65), so this PR never reads as all-clear."
+  }
+]

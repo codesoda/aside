@@ -1,11 +1,17 @@
 //! Read-only analysis and GitHub-feedback API (#33, analyze.md §13).
 //!
 //! Every list is paginated with a bounded, server-clamped page size and an
-//! opaque cursor pinned to the analysis snapshot and to a digest of the exact
-//! result set it was issued for. If either moved on, the request fails with a
-//! recoverable `409 cursor_stale` telling the client to resync (reload
-//! `GET /api/v1/session`, then restart pagination without a cursor), the same
-//! contract as the SSE `resync` event (#27). Pages are never silently shifted.
+//! opaque keyset cursor: the sort key of the last item served, pinned to the
+//! analysis snapshot and to a digest of the query's filters (#64). Pages
+//! resume strictly after that key, so a live run appending findings never
+//! invalidates an outstanding cursor — the pathological case for #22's
+//! non-blocking guarantee. `409 cursor_stale` is reserved for genuine
+//! changes: the snapshot moved (head/base push), or the already-paged region
+//! itself changed (the cursor's key vanished: a finding relabeled, a thread
+//! edited, an exclusion removing items). The response tells the client to
+//! resync (reload `GET /api/v1/session`, then restart pagination without a
+//! cursor), the same contract as the SSE `resync` event (#27). Pages are
+//! never silently shifted.
 //!
 //! Scope filtering happens here, on the server: items on files excluded by
 //! repository rules are dropped unless the client explicitly opts in with
@@ -47,7 +53,9 @@ use crate::{
 
 pub(super) const DEFAULT_PAGE_SIZE: usize = 50;
 pub(super) const MAX_PAGE_SIZE: usize = 200;
-const CURSOR_VERSION: u32 = 1;
+// Keyset cursor wire version (#64): `last` replaced the offset + result-set
+// digest of version 1.
+const CURSOR_VERSION: u32 = 2;
 
 /// Shared list parameters. Values are parsed by hand so an absurd `limit` is
 /// clamped rather than rejected and bad booleans are a clean 400.
@@ -96,10 +104,8 @@ struct Cursor {
     s: String,
     /// Digest of the query's filters; a cursor is bound to its query.
     q: String,
-    /// Digest of the full ordered result set.
-    r: String,
-    /// Index of the next item.
-    o: usize,
+    /// Sort key of the last item served; pages resume strictly after it.
+    last: String,
 }
 
 impl Cursor {
@@ -219,8 +225,6 @@ fn paginate<T>(
     filter_fields.extend(listing.filters);
     let filter_refs: Vec<Option<&str>> = filter_fields.iter().map(Option::as_deref).collect();
     let query_digest = stable_digest("aside-api-query/v1", &filter_refs);
-    let keys: Vec<Option<&str>> = items.iter().map(|(k, _)| Some(k.as_str())).collect();
-    let result_digest = stable_digest("aside-api-results/v1", &keys);
     let offset = match listing.query.cursor.as_deref() {
         None => 0,
         Some(raw) => {
@@ -235,23 +239,40 @@ fn paginate<T>(
             if cursor.s != snapshot {
                 return Err(stale(&cursor.s, read, "snapshot_changed"));
             }
-            if cursor.r != result_digest || cursor.o > items.len() {
+            // Keyset resume (#64): continue strictly after the last key
+            // served. Items appended past the cursor — the normal case while
+            // a provider is streaming findings, whose store order
+            // (`first_seen_at, id`) puts new arrivals at the tail — never
+            // invalidate it and are picked up by later pages. A key that
+            // vanished means the already-paged region itself changed (a
+            // finding relabeled, a thread edited, an exclusion removing
+            // items); the client must resync rather than silently skip or
+            // duplicate. A mid-walk insertion whose key sorts *before* the
+            // cursor is not served by this walk; the SSE event that follows
+            // the write triggers the client's next full load, so it is never
+            // silently lost from durable state.
+            let Some(offset) = items
+                .iter()
+                .position(|(key, _)| key == &cursor.last)
+                .map(|position| position + 1)
+            else {
                 return Err(stale(&cursor.s, read, "results_changed"));
-            }
-            cursor.o
+            };
+            offset
         }
     };
     let total = items.len();
     let end = offset.saturating_add(limit).min(total);
     let has_more = end < total;
+    // `has_more` implies `end >= 1` because the page size is clamped to at
+    // least one, so the last served key always exists.
     let next_cursor = has_more.then(|| {
         Cursor {
             v: CURSOR_VERSION,
             k: listing.kind.into(),
             s: snapshot.into(),
             q: query_digest.clone(),
-            r: result_digest.clone(),
-            o: end,
+            last: items[end - 1].0.clone(),
         }
         .encode()
     });

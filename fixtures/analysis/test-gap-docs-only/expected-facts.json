@@ -1,7 +1,7 @@
 {
   "providerId": "aside.diff",
-  "engineVersion": "aside.diff-facts/2",
-  "configurationDigest": "2e9f791ed0f0406075dfac59e8abc1a6b218fe708d5db8048d0fa7def654e37a",
+  "engineVersion": "aside.diff-facts/3",
+  "configurationDigest": "716078a1e4f12ab42f86c2c517b54933d956e9b364c866c0de27ae6279c800cd",
   "inputDigest": "576842639ed2b67af6e47ad74929ac4b78de0375b24e9daa47224aa6da67d84a",
   "coverage": {
     "completeness": "partial",
@@ -182,7 +182,7 @@
       "parentFindingId": null,
       "correlationGroupId": null,
       "extensions": {
-        "engineVersion": "aside.diff-facts/2",
+        "engineVersion": "aside.diff-facts/3",
         "limitations": [],
         "measurement": {
           "additions": 3,
@@ -275,7 +275,7 @@
       "parentFindingId": null,
       "correlationGroupId": null,
       "extensions": {
-        "engineVersion": "aside.diff-facts/2",
+        "engineVersion": "aside.diff-facts/3",
         "limitations": [
           "language not supported by line-level rules"
         ],
@@ -371,7 +371,7 @@
       "parentFindingId": null,
       "correlationGroupId": null,
       "extensions": {
-        "engineVersion": "aside.diff-facts/2",
+        "engineVersion": "aside.diff-facts/3",
         "limitations": [
           "language not supported by line-level rules"
         ],

@@ -1,7 +1,7 @@
 {
   "providerId": "aside.diff",
-  "engineVersion": "aside.diff-facts/2",
-  "configurationDigest": "2e9f791ed0f0406075dfac59e8abc1a6b218fe708d5db8048d0fa7def654e37a",
+  "engineVersion": "aside.diff-facts/3",
+  "configurationDigest": "716078a1e4f12ab42f86c2c517b54933d956e9b364c866c0de27ae6279c800cd",
   "inputDigest": "feca445a0742f94f28959f83f1bf8340cb94c3fd32618a9228164b02afd55e75",
   "coverage": {
     "completeness": "complete",
@@ -144,7 +144,7 @@
       "parentFindingId": null,
       "correlationGroupId": null,
       "extensions": {
-        "engineVersion": "aside.diff-facts/2",
+        "engineVersion": "aside.diff-facts/3",
         "limitations": [],
         "measurement": {
           "additions": 2,
@@ -236,7 +236,7 @@
       "parentFindingId": null,
       "correlationGroupId": null,
       "extensions": {
-        "engineVersion": "aside.diff-facts/2",
+        "engineVersion": "aside.diff-facts/3",
         "limitations": [],
         "measurement": {
           "additions": 2,

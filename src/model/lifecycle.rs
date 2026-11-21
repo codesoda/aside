@@ -181,7 +181,14 @@ pub fn classify(
     }
 }
 
-/// `Complete` only when every source finished over its whole scope.
+/// `Complete` only when every source finished over its whole scope — and
+/// only when there is at least one source. An empty source list means nothing
+/// was examined, which can never read as all-clear (#66). It resolves to
+/// `Incomplete` ("coverage not established"), not `Pending`: nothing is
+/// running, so nothing will arrive to complete it. No new `Unknown` variant is
+/// added — `Incomplete` already means coverage is not established, and a new
+/// wire variant would force every client to handle a case that is already
+/// fail-closed here.
 pub fn overall(sources: &[SourceCoverage]) -> OverallCoverage {
     let mut pending = false;
     for source in sources {
@@ -192,6 +199,9 @@ pub fn overall(sources: &[SourceCoverage]) -> OverallCoverage {
                 return OverallCoverage::Incomplete;
             }
         }
+    }
+    if sources.is_empty() {
+        return OverallCoverage::Incomplete;
     }
     if pending {
         OverallCoverage::Pending
@@ -315,6 +325,8 @@ mod tests {
             limitations: vec![],
         };
         use SourceState::*;
+        // No sources means nothing was examined: never `Complete` (#66).
+        assert_eq!(overall(&[]), OverallCoverage::Incomplete);
         assert_eq!(
             overall(&[source(Clean), source(HasResults)]),
             OverallCoverage::Complete
