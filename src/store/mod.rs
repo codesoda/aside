@@ -3,14 +3,21 @@
 //! The database lives in the OS data directory (never in a repository).
 //! Set `ASIDE_DATA_DIR` to override. Demo sessions use an in-memory database.
 
+mod analysis;
 mod publication;
 mod repositories;
 mod review;
 mod rules;
 mod schema;
-mod snapshots;
+pub(crate) mod snapshots;
 mod threads;
 
+// TODO(#33): the remaining re-exports are consumed by the analysis API.
+#[allow(unused_imports)]
+pub use analysis::{
+    ANALYSIS_SNAPSHOT_RETENTION, AnalysisBatch, BatchOutcome, ImportBatch, ImportedSourceWrite,
+    ObservationLabel, PruneReport, Raw, RevisionConflict, StoredFinding,
+};
 pub use publication::ReservedDraft;
 pub use rules::RuleUpdate;
 pub use threads::NewThread;
@@ -71,13 +78,88 @@ impl Store {
         }
         for (i, sql) in schema::MIGRATIONS.iter().enumerate().skip(version as usize) {
             let tx = self.conn.transaction()?;
-            tx.execute_batch(sql)
-                .with_context(|| format!("migration v{} failed", i + 1))?;
+            if i + 1 == 4 {
+                // Both branches released a different v3. Inspect under the write
+                // transaction before applying only the missing half.
+                migrate_colliding_v3(&tx)?;
+            } else {
+                tx.execute_batch(sql)
+                    .with_context(|| format!("migration v{} failed", i + 1))?;
+            }
+            if i + 1 > schema::MIGRATION_TABLE_VERSION {
+                tx.execute(
+                    "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
+                    rusqlite::params![(i + 1) as i64, crate::util::now_rfc3339()],
+                )?;
+            }
             tx.pragma_update(None, "user_version", (i + 1) as i64)?;
             tx.commit()?;
         }
         Ok(())
     }
+}
+
+fn migrate_colliding_v3(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    const ANALYSIS_TABLES: &[&str] = &[
+        "analysis_snapshots",
+        "analysis_current_snapshots",
+        "analysis_runs",
+        "review_findings",
+        "finding_occurrences",
+        "finding_evidence",
+        "finding_evidence_links",
+        "finding_relations",
+        "finding_aliases",
+        "imported_source_records",
+        "imported_source_aliases",
+        "finding_source_links",
+        "finding_user_state",
+    ];
+    let exists = |name: &str| -> Result<bool> {
+        Ok(tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+            [name],
+            |r| r.get::<_, bool>(0),
+        )?)
+    };
+    let mut analysis_count = 0;
+    for table in ANALYSIS_TABLES {
+        analysis_count += usize::from(exists(table)?);
+    }
+    let mut metadata_count = 0;
+    for &(table, column, _) in schema::GITHUB_METADATA {
+        let mut stmt = tx.prepare(&format!("PRAGMA table_info({table})"))?;
+        let columns = stmt
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        metadata_count += usize::from(columns.iter().any(|c| c == column));
+    }
+    let ledger = exists("schema_migrations")?;
+    if !(analysis_count == 0 || analysis_count == ANALYSIS_TABLES.len())
+        || !(metadata_count == 0 || metadata_count == schema::GITHUB_METADATA.len())
+        || (analysis_count == 0 && (metadata_count != schema::GITHUB_METADATA.len() || ledger))
+        || (analysis_count == ANALYSIS_TABLES.len() && !ledger)
+    {
+        bail!("ambiguous v3 schema: refusing to modify partially migrated database");
+    }
+    if ledger {
+        let versions: Vec<i64> = tx
+            .prepare("SELECT version FROM schema_migrations ORDER BY version")?
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        if versions != [1, 2, 3] {
+            bail!("ambiguous v3 migration ledger: expected versions 1, 2, 3");
+        }
+    }
+    if analysis_count == 0 {
+        tx.execute_batch(schema::MIGRATIONS[2])?;
+    }
+    if metadata_count == 0 {
+        for &(table, column, kind) in schema::GITHUB_METADATA {
+            tx.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {kind}"))?;
+        }
+    }
+    Ok(())
 }
 
 /// A missing record; the API maps it to 404.

@@ -81,11 +81,26 @@ impl Store {
             let thread_id = match existing {
                 Some(id) => {
                     tx.execute(
-                        "UPDATE review_threads SET resolved = ?1, line = ?2, start_line = ?3, anchor_state = ?4, anchor_reason = ?5, updated_at = ?6,
-                            original_line = ?8, original_start_line = ?9, start_side = ?10, viewer_can_resolve = ?11, viewer_can_unresolve = ?12
+                        "UPDATE review_threads SET
+                            resolved = CASE WHEN ?13 THEN resolved ELSE ?1 END,
+                            line = CASE WHEN ?14 THEN line ELSE ?2 END,
+                            start_line = CASE WHEN ?15 THEN start_line ELSE ?3 END,
+                            anchor_state = CASE WHEN ?16 THEN anchor_state ELSE ?4 END,
+                            anchor_reason = CASE WHEN ?16 THEN anchor_reason ELSE ?5 END,
+                            updated_at = ?6,
+                            original_line = CASE WHEN ?17 THEN original_line ELSE ?8 END,
+                            original_start_line = CASE WHEN ?18 THEN original_start_line ELSE ?9 END,
+                            start_side = CASE WHEN ?19 THEN start_side ELSE ?10 END,
+                            viewer_can_resolve = CASE WHEN ?20 THEN viewer_can_resolve ELSE ?11 END,
+                            viewer_can_unresolve = CASE WHEN ?21 THEN viewer_can_unresolve ELSE ?12 END
                          WHERE id = ?7",
                         params![t.is_resolved, t.line, t.start_line, state.as_str(), reason, now, id,
-                            t.original_line, t.original_start_line, t.start_side.map(Side::as_str), t.viewer_can_resolve, t.viewer_can_unresolve],
+                            t.original_line, t.original_start_line, t.start_side.as_deref(), t.viewer_can_resolve, t.viewer_can_unresolve,
+                            unavailable(&t.unavailable_fields, "isResolved"), unavailable(&t.unavailable_fields, "line"),
+                            unavailable(&t.unavailable_fields, "startLine"), unavailable(&t.unavailable_fields, "isOutdated"),
+                            unavailable(&t.unavailable_fields, "originalLine"), unavailable(&t.unavailable_fields, "originalStartLine"),
+                            unavailable(&t.unavailable_fields, "startDiffSide"), unavailable(&t.unavailable_fields, "viewerCanResolve"),
+                            unavailable(&t.unavailable_fields, "viewerCanUnresolve")],
                     )?;
                     id
                 }
@@ -100,7 +115,7 @@ impl Store {
                             id, pr_id, t.node_id, t.path, t.side.unwrap_or(Side::Right).as_str(),
                             t.line.or(t.original_line), t.start_line, head_sha, state.as_str(), reason, t.is_resolved,
                             t.comments.first().map(|c| c.created_at.clone()).unwrap_or_else(|| now.clone()),
-                            t.original_line, t.original_start_line, t.start_side.map(Side::as_str),
+                            t.original_line, t.original_start_line, t.start_side.as_deref(),
                             t.viewer_can_resolve, t.viewer_can_unresolve
                         ],
                     )?;
@@ -113,11 +128,17 @@ impl Store {
                         github_node_id, created_at, updated_at, seq, author_node_id, author_type, github_updated_at)
                      VALUES (?1, ?2, 'github', ?3, ?4, 'imported', ?5, ?6, ?7, COALESCE(?8, ?7),
                         (SELECT COALESCE(MAX(seq), 0) + 1 FROM review_comments), ?9, ?10, ?8)
-                     ON CONFLICT(github_node_id) DO UPDATE SET body = excluded.body,
-                        updated_at = excluded.updated_at, github_updated_at = excluded.github_updated_at,
-                        author = excluded.author, author_node_id = excluded.author_node_id, author_type = excluded.author_type",
+                     ON CONFLICT(github_node_id) DO UPDATE SET
+                        body = CASE WHEN ?11 THEN review_comments.body ELSE excluded.body END,
+                        updated_at = CASE WHEN ?12 THEN review_comments.updated_at ELSE excluded.updated_at END,
+                        github_updated_at = CASE WHEN ?12 THEN review_comments.github_updated_at ELSE excluded.github_updated_at END,
+                        author = CASE WHEN ?13 THEN review_comments.author ELSE excluded.author END,
+                        author_node_id = CASE WHEN ?13 THEN review_comments.author_node_id ELSE excluded.author_node_id END,
+                        author_type = CASE WHEN ?13 THEN review_comments.author_type ELSE excluded.author_type END",
                     params![new_id("cmt"), thread_id, c.author, c.body, c.database_id, c.node_id, c.created_at,
-                        c.updated_at, c.author_node_id, c.author_type],
+                        c.updated_at, c.author_id, c.author_type,
+                        unavailable(&c.unavailable_fields, "body"), unavailable(&c.unavailable_fields, "updatedAt"),
+                        unavailable(&c.unavailable_fields, "author")],
                 )?;
             }
         }
@@ -268,6 +289,10 @@ impl Store {
     }
 }
 
+fn unavailable(fields: &[String], name: &str) -> bool {
+    fields.iter().any(|field| field == "*" || field == name)
+}
+
 fn comment_from_row(r: &Row) -> rusqlite::Result<Comment> {
     Ok(Comment {
         id: r.get(0)?,
@@ -352,7 +377,7 @@ mod tests {
             )
         );
 
-        let mut updated = thread;
+        let mut updated = thread.clone();
         updated.original_start_line = Some(5);
         updated.viewer_can_resolve = Some(false);
         updated.comments[0].body = "edited".into();
@@ -368,6 +393,30 @@ mod tests {
             ["thread-node"], |r| Ok((r.get(0)?, r.get(1)?))
         ).unwrap();
         assert_eq!(refreshed, (Some(5), Some(false)));
+
+        let mut unavailable = thread.clone();
+        unavailable.original_start_line = None;
+        unavailable.viewer_can_resolve = None;
+        unavailable.unavailable_fields =
+            vec!["originalStartLine".into(), "viewerCanResolve".into()];
+        store
+            .sync_github_threads(&pr, "head", &[unavailable])
+            .unwrap();
+        let preserved: (Option<u32>, Option<bool>) = store.conn.query_row(
+            "SELECT original_start_line, viewer_can_resolve FROM review_threads WHERE github_thread_id = ?1",
+            ["thread-node"], |r| Ok((r.get(0)?, r.get(1)?))
+        ).unwrap();
+        assert_eq!(preserved, (Some(5), Some(false)));
+
+        let mut cleared = thread;
+        cleared.original_start_line = None;
+        cleared.viewer_can_resolve = None;
+        store.sync_github_threads(&pr, "head", &[cleared]).unwrap();
+        let cleared_meta: (Option<u32>, Option<bool>) = store.conn.query_row(
+            "SELECT original_start_line, viewer_can_resolve FROM review_threads WHERE github_thread_id = ?1",
+            ["thread-node"], |r| Ok((r.get(0)?, r.get(1)?))
+        ).unwrap();
+        assert_eq!(cleared_meta, (None, None));
     }
 
     #[test]
@@ -382,7 +431,7 @@ mod tests {
             .conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
         let columns: Vec<String> = store
             .conn
             .prepare("PRAGMA table_info(review_comments)")
@@ -406,7 +455,7 @@ mod tests {
         .unwrap();
         assert_eq!(thread.viewer_can_resolve, None);
         assert_eq!(thread.original_start_line, None);
-        assert_eq!(thread.comments[0].author_node_id, None);
+        assert_eq!(thread.comments[0].author_id, None);
         assert_eq!(thread.comments[0].updated_at, None);
     }
 }

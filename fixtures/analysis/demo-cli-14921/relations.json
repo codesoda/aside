@@ -1,0 +1,41 @@
+[
+  {
+    "sourceFindingId": "find_62c6d866878ad66b0a4dfff4231fdf6218f9091ef81f7e3bea6c8ce2c83754ae",
+    "kind": "duplicate_topic_of",
+    "target": {
+      "kind": "finding",
+      "id": "find_d9d23af04c5656a14f171c853ae123ad1875f146c18461c820b8f465f5626961"
+    },
+    "method": "anchor_overlap",
+    "methodVersion": "1",
+    "score": 0.8,
+    "validated": false,
+    "createdAt": "2026-11-20T11:40:19Z"
+  },
+  {
+    "sourceFindingId": "find_d11044ee0b73c3af98cfbfd9e949967f618fb78f3d79227f8ab66e816c56755e",
+    "kind": "supports",
+    "target": {
+      "kind": "finding",
+      "id": "find_62c6d866878ad66b0a4dfff4231fdf6218f9091ef81f7e3bea6c8ce2c83754ae"
+    },
+    "method": "anchor_overlap",
+    "methodVersion": "1",
+    "score": null,
+    "validated": false,
+    "createdAt": "2026-11-20T11:40:19Z"
+  },
+  {
+    "sourceFindingId": "find_62c6d866878ad66b0a4dfff4231fdf6218f9091ef81f7e3bea6c8ce2c83754ae",
+    "kind": "references_thread",
+    "target": {
+      "kind": "thread",
+      "id": "PRRT_synthBot0001"
+    },
+    "method": "anchor_overlap",
+    "methodVersion": "1",
+    "score": null,
+    "validated": false,
+    "createdAt": "2026-11-20T11:40:19Z"
+  }
+]

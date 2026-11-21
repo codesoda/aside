@@ -1,0 +1,374 @@
+[
+  {
+    "schemaVersion": 1,
+    "id": "run_db26b2b69660ff491b5418a6225c727d3621d5da9b6570abc150ad4962ae2209",
+    "snapshotId": "snap_e4a72c20c7c58ea23877d89c5f448deb84eb1ee15dc1eb0142e1d6fcfee90da4",
+    "providerId": "github.import",
+    "engineVersion": "aside-import/0.1.0",
+    "configurationDigest": "cfg-default",
+    "inputDigest": "in-github.import",
+    "attempt": 0,
+    "mode": "github_import",
+    "status": "partial",
+    "startedAt": "2026-11-20T11:40:20Z",
+    "finishedAt": "2026-11-20T11:40:24Z",
+    "coverage": {
+      "completeness": "partial",
+      "eligibleFiles": {
+        "state": "unknown"
+      },
+      "analyzedFiles": {
+        "state": "unknown"
+      },
+      "eligibleEntities": {
+        "state": "unknown"
+      },
+      "analyzedEntities": {
+        "state": "unknown"
+      },
+      "entries": [
+        {
+          "scope": {
+            "kind": "pr"
+          },
+          "ruleId": "github.review_threads",
+          "outcome": {
+            "outcome": "analyzed",
+            "findings": 3
+          }
+        },
+        {
+          "scope": {
+            "kind": "pr"
+          },
+          "ruleId": "github.reviews",
+          "outcome": {
+            "outcome": "analyzed",
+            "findings": 1
+          }
+        },
+        {
+          "scope": {
+            "kind": "pr"
+          },
+          "ruleId": "github.check_annotations",
+          "outcome": {
+            "outcome": "analyzed",
+            "findings": 1
+          }
+        },
+        {
+          "scope": {
+            "kind": "pr"
+          },
+          "ruleId": "github.issue_comments",
+          "outcome": {
+            "outcome": "unknown",
+            "reason": "rate_limited_after_page_1"
+          }
+        }
+      ],
+      "reasonCodes": [
+        "rate_limited"
+      ]
+    },
+    "warnings": [
+      {
+        "code": "rate_limited",
+        "message": "Issue comments stopped after page 1 (synthetic secondary rate limit). Missing pages are unknown, not empty."
+      }
+    ],
+    "metrics": {
+      "durationMs": 4000,
+      "inputTokens": null,
+      "outputTokens": null,
+      "estimatedCostUsd": null
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "id": "run_8888a8df5fc1a3760892ea8620d7c1670ca52b3273c7c34fe1b76a157e2cde64",
+    "snapshotId": "snap_e4a72c20c7c58ea23877d89c5f448deb84eb1ee15dc1eb0142e1d6fcfee90da4",
+    "providerId": "aside.static",
+    "engineVersion": "aside-static/0.1.0",
+    "configurationDigest": "cfg-default",
+    "inputDigest": "in-aside.static",
+    "attempt": 0,
+    "mode": "static",
+    "status": "succeeded",
+    "startedAt": "2026-11-20T11:40:20Z",
+    "finishedAt": "2026-11-20T11:40:24Z",
+    "coverage": {
+      "completeness": "complete",
+      "eligibleFiles": {
+        "state": "known",
+        "value": 32
+      },
+      "analyzedFiles": {
+        "state": "known",
+        "value": 32
+      },
+      "eligibleEntities": {
+        "state": "unknown"
+      },
+      "analyzedEntities": {
+        "state": "unknown"
+      },
+      "entries": [
+        {
+          "scope": {
+            "kind": "file",
+            "fileId": "f_562acc67de25c534",
+            "path": "internal/identity/ssh_command.go"
+          },
+          "ruleId": null,
+          "outcome": {
+            "outcome": "analyzed",
+            "findings": 1
+          }
+        },
+        {
+          "scope": {
+            "kind": "file",
+            "fileId": "f_ccedca01e076cd06",
+            "path": "git/client.go"
+          },
+          "ruleId": null,
+          "outcome": {
+            "outcome": "analyzed",
+            "findings": 1
+          }
+        },
+        {
+          "scope": {
+            "kind": "file",
+            "fileId": "f_f0371c00cdf24354",
+            "path": "internal/identity/store.go"
+          },
+          "ruleId": null,
+          "outcome": {
+            "outcome": "analyzed",
+            "findings": 0
+          }
+        },
+        {
+          "scope": {
+            "kind": "file",
+            "fileId": "f_3bf43fd7e476a987",
+            "path": "pkg/cmd/auth/use/use.go"
+          },
+          "ruleId": "aside.static.suppression",
+          "outcome": {
+            "outcome": "not_applicable",
+            "reason": "no_suppression_syntax_for_language"
+          }
+        },
+        {
+          "scope": {
+            "kind": "file",
+            "fileId": "f_e921f1d5d311f260",
+            "path": "script/multiaccount-review/02-repository.sh"
+          },
+          "ruleId": null,
+          "outcome": {
+            "outcome": "not_run",
+            "reason": "skipped_ignored_file"
+          }
+        },
+        {
+          "scope": {
+            "kind": "pr"
+          },
+          "ruleId": "aside.static.pr_size",
+          "outcome": {
+            "outcome": "analyzed",
+            "findings": 1
+          }
+        }
+      ],
+      "reasonCodes": []
+    },
+    "warnings": [],
+    "metrics": {
+      "durationMs": 4000,
+      "inputTokens": null,
+      "outputTokens": null,
+      "estimatedCostUsd": null
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "id": "run_740e3906033f24648817c4a32e69f509650df23f5f96cd5a1338ede89866256c",
+    "snapshotId": "snap_e4a72c20c7c58ea23877d89c5f448deb84eb1ee15dc1eb0142e1d6fcfee90da4",
+    "providerId": "aside.git-history",
+    "engineVersion": "aside-history/0.1.0",
+    "configurationDigest": "cfg-default",
+    "inputDigest": "in-aside.git-history",
+    "attempt": 0,
+    "mode": "static",
+    "status": "partial",
+    "startedAt": "2026-11-20T11:40:20Z",
+    "finishedAt": "2026-11-20T11:40:24Z",
+    "coverage": {
+      "completeness": "partial",
+      "eligibleFiles": {
+        "state": "known",
+        "value": 32
+      },
+      "analyzedFiles": {
+        "state": "known",
+        "value": 21
+      },
+      "eligibleEntities": {
+        "state": "unknown"
+      },
+      "analyzedEntities": {
+        "state": "unknown"
+      },
+      "entries": [
+        {
+          "scope": {
+            "kind": "file",
+            "fileId": "f_54c7c1af5fa8d5db",
+            "path": "internal/config/config.go"
+          },
+          "ruleId": "aside.history.churn",
+          "outcome": {
+            "outcome": "analyzed",
+            "findings": 1
+          }
+        },
+        {
+          "scope": {
+            "kind": "file",
+            "fileId": "f_f0371c00cdf24354",
+            "path": "internal/identity/store.go"
+          },
+          "ruleId": "aside.history.churn",
+          "outcome": {
+            "outcome": "not_applicable",
+            "reason": "file_added_in_pr"
+          }
+        }
+      ],
+      "reasonCodes": [
+        "shallow_repository"
+      ]
+    },
+    "warnings": [
+      {
+        "code": "history_truncated",
+        "message": "Shallow clone (depth 200): history before 2026-05-24 is unavailable; churn is a lower bound."
+      }
+    ],
+    "metrics": {
+      "durationMs": 4000,
+      "inputTokens": null,
+      "outputTokens": null,
+      "estimatedCostUsd": null
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "id": "run_85caedaf419cfdba84b401f81d915ea5565aa89ef76bdf49923c14a5369032a5",
+    "snapshotId": "snap_e4a72c20c7c58ea23877d89c5f448deb84eb1ee15dc1eb0142e1d6fcfee90da4",
+    "providerId": "inspect",
+    "engineVersion": "inspect/unknown",
+    "configurationDigest": "cfg-default",
+    "inputDigest": "in-inspect",
+    "attempt": 0,
+    "mode": "static",
+    "status": "failed",
+    "startedAt": "2026-11-20T11:40:20Z",
+    "finishedAt": "2026-11-20T11:40:21Z",
+    "coverage": {
+      "completeness": "failed",
+      "eligibleFiles": {
+        "state": "unknown"
+      },
+      "analyzedFiles": {
+        "state": "unknown"
+      },
+      "eligibleEntities": {
+        "state": "unknown"
+      },
+      "analyzedEntities": {
+        "state": "unknown"
+      },
+      "entries": [],
+      "reasonCodes": [
+        "provider_unavailable"
+      ]
+    },
+    "warnings": [
+      {
+        "code": "provider_unavailable",
+        "message": "inspect executable not found (synthetic). No entity analysis ran; this is not a clean result."
+      }
+    ],
+    "metrics": {
+      "durationMs": 12,
+      "inputTokens": null,
+      "outputTokens": null,
+      "estimatedCostUsd": null
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "id": "run_c34cbe5a207f977b3c3380be7ed2fd33730fcacf9ec646f4b9608b7e8447455f",
+    "snapshotId": "snap_0bde9fbf3c834b0cda64876c983ee94e2da98caa74e1a8dd3f23697d32ff15ff",
+    "providerId": "aside.static",
+    "engineVersion": "aside-static/0.1.0",
+    "configurationDigest": "cfg-default",
+    "inputDigest": "in-aside.static",
+    "attempt": 0,
+    "mode": "static",
+    "status": "stale",
+    "startedAt": "2026-11-19T09:00:00Z",
+    "finishedAt": "2026-11-19T09:00:03Z",
+    "coverage": {
+      "completeness": "complete",
+      "eligibleFiles": {
+        "state": "known",
+        "value": 33
+      },
+      "analyzedFiles": {
+        "state": "known",
+        "value": 33
+      },
+      "eligibleEntities": {
+        "state": "unknown"
+      },
+      "analyzedEntities": {
+        "state": "unknown"
+      },
+      "entries": [
+        {
+          "scope": {
+            "kind": "file",
+            "fileId": "f_ffad9eab34e01b22",
+            "path": "internal/identity/credentials.go"
+          },
+          "ruleId": null,
+          "outcome": {
+            "outcome": "analyzed",
+            "findings": 1
+          }
+        }
+      ],
+      "reasonCodes": []
+    },
+    "warnings": [
+      {
+        "code": "snapshot_superseded",
+        "message": "Produced for an earlier head; historical only."
+      }
+    ],
+    "metrics": {
+      "durationMs": 4000,
+      "inputTokens": null,
+      "outputTokens": null,
+      "estimatedCostUsd": null
+    }
+  }
+]

@@ -8,6 +8,9 @@ mod review;
 mod runner;
 mod snapshot;
 mod threads;
+#[cfg(test)]
+pub use threads::DeniedVia;
+pub use threads::{LegacyKind, ThreadImportProblem};
 
 pub use review::{
     NewReviewComment, create_review, fetch_revision, reply_to_comment, review_comments,
@@ -195,9 +198,28 @@ mod tests {
             .list_threads(&session.pr_id)
             .unwrap();
         assert_eq!(before.len(), 1);
-        let error = session.refresh().await.unwrap_err();
-        assert!(format!("{error:#}").contains("could not load review threads"));
-        assert_eq!(session.snapshot.read().unwrap().github_threads.len(), 1);
+        let refreshed = session.refresh().await.unwrap();
+        let snapshot = session.snapshot.read().unwrap();
+        assert_eq!(
+            snapshot.github_threads_completeness,
+            crate::model::Completeness::Failed
+        );
+        assert!(snapshot.github_threads.is_empty());
+        assert!(
+            snapshot
+                .github_threads_problems
+                .iter()
+                .any(|p| p.contains("Resource not accessible"))
+        );
+        assert!(
+            refreshed
+                .warnings
+                .iter()
+                .any(|w| w.contains("review threads incomplete"))
+        );
+        assert_eq!(refreshed.threads.len(), 1);
+        assert_eq!(refreshed.threads[0].id, before[0].id);
+        drop(snapshot);
         let after = session
             .store
             .lock()
@@ -209,15 +231,32 @@ mod tests {
     }
 
     #[test]
-    fn graphql_command_failure_fails_snapshot() {
-        let error = fetch_snapshot(
+    fn graphql_command_failure_marks_threads_failed() {
+        let snapshot = fetch_snapshot(
             &snapshot_gh(Err("GraphQL: forbidden")),
             &test_pr_ref(),
             &Limits::default(),
         )
-        .unwrap_err();
-        assert!(format!("{error:#}").contains("could not load review threads"));
-        assert!(format!("{error:#}").contains("forbidden"));
+        .unwrap();
+        assert!(snapshot.complete);
+        assert_eq!(snapshot.files.len(), 1);
+        assert!(snapshot.github_threads.is_empty());
+        assert_eq!(
+            snapshot.github_threads_completeness,
+            crate::model::Completeness::Failed
+        );
+        assert!(
+            snapshot
+                .github_threads_problems
+                .iter()
+                .any(|p| p.contains("forbidden"))
+        );
+        assert!(
+            snapshot
+                .warnings
+                .iter()
+                .any(|w| w.contains("review threads incomplete"))
+        );
     }
 
     #[test]
@@ -244,6 +283,10 @@ mod tests {
         assert_eq!(snap.github_threads[0].comments[0].database_id, Some(11));
         assert_eq!(snap.reviews[0].author, "bob");
         assert!(snap.warnings.is_empty());
+        assert_eq!(
+            snap.github_threads_completeness,
+            crate::model::Completeness::Complete
+        );
     }
 
     // A force push can happen after the metadata request, while the diff and
@@ -564,5 +607,12 @@ mod tests {
             "1 of 2 files must mark the snapshot incomplete"
         );
         assert!(snap.warnings.iter().any(|w| w.contains("changed files")));
+        assert_eq!(snap.github_threads.len(), 1);
+        assert_eq!(snap.github_threads[0].node_id, "T1");
+        assert_eq!(
+            snap.github_threads_completeness,
+            crate::model::Completeness::Complete
+        );
+        assert!(!snap.warnings.iter().any(|w| w.contains("review threads")));
     }
 }

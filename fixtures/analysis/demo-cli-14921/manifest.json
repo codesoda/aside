@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "name": "demo-cli-14921",
+  "synthetic": true,
+  "description": "Synthetic review intelligence layered on the public cli/cli#14921 demo capture. Every thread, review, comment, check, finding and ID here is invented; none came from GitHub.",
+  "repositoryId": "212613049",
+  "prNumber": 14921,
+  "baseSha": "2cbd5515878542a5125ec412045d2b3e365659b6",
+  "headSha": "a123f7736e7aaabe56b4662de888cc2bff1338a6",
+  "snapshotId": "snap_e4a72c20c7c58ea23877d89c5f448deb84eb1ee15dc1eb0142e1d6fcfee90da4",
+  "previousHeadSha": "0000000000000000000000000000000000c0ffee",
+  "observedAt": "2026-11-20T11:40:19Z",
+  "seed": 0,
+  "llmEnabledByDefault": false,
+  "scenarios": [
+    "19.5.1",
+    "19.5.3",
+    "19.5.4",
+    "19.5.5",
+    "19.5.6",
+    "19.5.7",
+    "19.5.8",
+    "19.5.10",
+    "19.5.11",
+    "19.5.12",
+    "19.5.13",
+    "19.5.16",
+    "19.5.17",
+    "19.5.18"
+  ]
+}

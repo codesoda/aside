@@ -4,6 +4,7 @@ import type { RuleKind } from "./RuleKind";
 
 export type ExclusionRule = { id: string, action: RuleAction, kind: RuleKind, expression: string, enabled: boolean, 
 /**
- * Evaluation order. Later rules win.
+ * Evaluation order. Later rules win. Serialised as a JSON number, so the
+ * TypeScript type is `number` (ts-rs would otherwise emit `bigint`).
  */
-order: bigint, createdAt: string, updatedAt: string, };
+order: number, createdAt: string, updatedAt: string, };

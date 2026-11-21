@@ -1,0 +1,355 @@
+{
+  "providerId": "aside.diff",
+  "engineVersion": "aside.diff-facts/2",
+  "configurationDigest": "2e9f791ed0f0406075dfac59e8abc1a6b218fe708d5db8048d0fa7def654e37a",
+  "inputDigest": "91f17352bbe0fe4562a4c9a0f4d55e0d53204fcde5f8874a68cd58410fadd0e7",
+  "coverage": {
+    "completeness": "complete",
+    "eligibleFiles": {
+      "state": "known",
+      "value": 1
+    },
+    "analyzedFiles": {
+      "state": "known",
+      "value": 1
+    },
+    "eligibleEntities": {
+      "state": "unknown"
+    },
+    "analyzedEntities": {
+      "state": "unknown"
+    },
+    "entries": [
+      {
+        "scope": {
+          "kind": "file",
+          "fileId": "f_e3c4de8cd9ff6e9b",
+          "path": "src/math.rs"
+        },
+        "ruleId": "aside.diff.test_assertions_added",
+        "outcome": {
+          "outcome": "analyzed",
+          "findings": 0
+        }
+      },
+      {
+        "scope": {
+          "kind": "file",
+          "fileId": "f_e3c4de8cd9ff6e9b",
+          "path": "src/math.rs"
+        },
+        "ruleId": "aside.diff.tests_removed",
+        "outcome": {
+          "outcome": "analyzed",
+          "findings": 0
+        }
+      },
+      {
+        "scope": {
+          "kind": "file",
+          "fileId": "f_e3c4de8cd9ff6e9b",
+          "path": "src/math.rs"
+        },
+        "ruleId": "aside.diff.schema_contract",
+        "outcome": {
+          "outcome": "analyzed",
+          "findings": 0
+        }
+      },
+      {
+        "scope": {
+          "kind": "pr"
+        },
+        "ruleId": "aside.diff.tests_touched",
+        "outcome": {
+          "outcome": "analyzed",
+          "findings": 0
+        }
+      }
+    ],
+    "reasonCodes": []
+  },
+  "findings": [
+    {
+      "schemaVersion": 1,
+      "id": "find_280fe3d29d19abe67c5b947ec5e52588dac1eaa4a074f237614a1431cce650cd",
+      "repositoryId": "synthetic/boundary",
+      "prNumber": 9005,
+      "observedSnapshotId": "snap_94a6c811a4e8485b84ed6c84eea8cbf4f70196da477abad34db18c184479a0fb",
+      "source": {
+        "kind": "aside_static",
+        "providerId": "aside.diff",
+        "runId": "run_boundary",
+        "ruleId": "aside.diff.pr_summary",
+        "ruleVersion": "1",
+        "modelId": null,
+        "modelRevision": null,
+        "promptVersion": null,
+        "native": null,
+        "githubActor": null
+      },
+      "assertionKind": "measured_fact",
+      "kinds": [
+        "other"
+      ],
+      "title": "Diff summary",
+      "body": "1 files, +1 −1",
+      "rationale": "Measured from the snapshot diff.",
+      "suggestedAction": null,
+      "anchor": {
+        "kind": "pr",
+        "fileId": null,
+        "currentPath": null,
+        "previousPath": null,
+        "entityId": null,
+        "side": null,
+        "line": null,
+        "startLine": null,
+        "originalLine": null,
+        "originalStartLine": null,
+        "commitSha": null,
+        "originalCommitSha": null,
+        "diffDigest": null,
+        "githubThreadId": null,
+        "externalUrl": null
+      },
+      "relatedAnchors": [],
+      "evidenceIds": [
+        "ev_c8d92b22b9fd51a4decd293d110040ad1e59e530fb42cbdf7f0957c5c87b6b9b"
+      ],
+      "attention": {
+        "level": "none",
+        "score": null,
+        "scoreVersion": null,
+        "reasons": [
+          "aside.diff.pr_summary"
+        ]
+      },
+      "severity": {
+        "normalized": "info",
+        "original": null
+      },
+      "confidence": null,
+      "validation": {
+        "status": "not_required",
+        "method": "aside.diff.pr_summary@1",
+        "validatedAt": null,
+        "note": null
+      },
+      "applicability": "current_exact",
+      "sourceStatus": "open",
+      "firstSeenAt": "2026-01-01T00:00:00Z",
+      "lastSeenAt": "2026-01-01T00:00:00Z",
+      "externalUrl": null,
+      "parentFindingId": null,
+      "correlationGroupId": null,
+      "extensions": {
+        "engineVersion": "aside.diff-facts/2",
+        "limitations": [],
+        "measurement": {
+          "additions": 1,
+          "binaryFiles": 0,
+          "changedFiles": 1,
+          "deletions": 1,
+          "filesListed": 1,
+          "hunks": 1,
+          "incompleteFiles": 0,
+          "operations": {
+            "modified": 1
+          },
+          "snapshotComplete": true
+        },
+        "ruleVersion": "1"
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "id": "find_00006e9bc8f0a333b392a860a2418d0cbb5ff3a7a759196c28be597aa96a4bb7",
+      "repositoryId": "synthetic/boundary",
+      "prNumber": 9005,
+      "observedSnapshotId": "snap_94a6c811a4e8485b84ed6c84eea8cbf4f70196da477abad34db18c184479a0fb",
+      "source": {
+        "kind": "aside_static",
+        "providerId": "aside.diff",
+        "runId": "run_boundary",
+        "ruleId": "aside.diff.file_change",
+        "ruleVersion": "1",
+        "modelId": null,
+        "modelRevision": null,
+        "promptVersion": null,
+        "native": null,
+        "githubActor": null
+      },
+      "assertionKind": "measured_fact",
+      "kinds": [
+        "other"
+      ],
+      "title": "src/math.rs (modified)",
+      "body": "+1 −1 in 1 hunk(s)",
+      "rationale": "Measured from the snapshot diff.",
+      "suggestedAction": null,
+      "anchor": {
+        "kind": "file",
+        "fileId": "f_e3c4de8cd9ff6e9b",
+        "currentPath": "src/math.rs",
+        "previousPath": null,
+        "entityId": null,
+        "side": null,
+        "line": null,
+        "startLine": null,
+        "originalLine": null,
+        "originalStartLine": null,
+        "commitSha": null,
+        "originalCommitSha": null,
+        "diffDigest": "36b4ba7870646ce1ef88c62d409fd0eeb4ebd9e5dc1249eb77987080fc97d5f8",
+        "githubThreadId": null,
+        "externalUrl": null
+      },
+      "relatedAnchors": [],
+      "evidenceIds": [
+        "ev_73c03194e0a5c7f51d4c0d2b1224059ef3360c37d30c84449c16ceff60eb2d74"
+      ],
+      "attention": {
+        "level": "none",
+        "score": null,
+        "scoreVersion": null,
+        "reasons": [
+          "aside.diff.file_change"
+        ]
+      },
+      "severity": {
+        "normalized": "info",
+        "original": null
+      },
+      "confidence": null,
+      "validation": {
+        "status": "not_required",
+        "method": "aside.diff.file_change@1",
+        "validatedAt": null,
+        "note": null
+      },
+      "applicability": "current_exact",
+      "sourceStatus": "open",
+      "firstSeenAt": "2026-01-01T00:00:00Z",
+      "lastSeenAt": "2026-01-01T00:00:00Z",
+      "externalUrl": null,
+      "parentFindingId": null,
+      "correlationGroupId": null,
+      "extensions": {
+        "engineVersion": "aside.diff-facts/2",
+        "limitations": [],
+        "measurement": {
+          "additions": 1,
+          "changeKind": "modified",
+          "deletions": 1,
+          "generatedHints": [],
+          "hunks": 1,
+          "isBinary": false,
+          "isTest": false,
+          "language": "rust",
+          "newMode": null,
+          "oldMode": null,
+          "operation": "modified",
+          "patchComplete": true,
+          "previousPath": null
+        },
+        "ruleVersion": "1"
+      }
+    }
+  ],
+  "evidence": [
+    {
+      "schemaVersion": 1,
+      "id": "ev_73c03194e0a5c7f51d4c0d2b1224059ef3360c37d30c84449c16ceff60eb2d74",
+      "kind": "measurement",
+      "sourceRunId": "run_boundary",
+      "sourceEntityId": null,
+      "anchor": {
+        "kind": "file",
+        "fileId": "f_e3c4de8cd9ff6e9b",
+        "currentPath": "src/math.rs",
+        "previousPath": null,
+        "entityId": null,
+        "side": null,
+        "line": null,
+        "startLine": null,
+        "originalLine": null,
+        "originalStartLine": null,
+        "commitSha": null,
+        "originalCommitSha": null,
+        "diffDigest": "36b4ba7870646ce1ef88c62d409fd0eeb4ebd9e5dc1249eb77987080fc97d5f8",
+        "githubThreadId": null,
+        "externalUrl": null
+      },
+      "label": "file change metadata",
+      "value": {
+        "additions": 1,
+        "changeKind": "modified",
+        "deletions": 1,
+        "generatedHints": [],
+        "hunks": 1,
+        "isBinary": false,
+        "isTest": false,
+        "language": "rust",
+        "newMode": null,
+        "oldMode": null,
+        "operation": "modified",
+        "patchComplete": true,
+        "previousPath": null
+      },
+      "unit": null,
+      "numerator": null,
+      "denominator": null,
+      "method": "aside.diff.file_change@1",
+      "inputDigest": "36b4ba7870646ce1ef88c62d409fd0eeb4ebd9e5dc1249eb77987080fc97d5f8",
+      "observedAt": "2026-01-01T00:00:00Z",
+      "limitations": []
+    },
+    {
+      "schemaVersion": 1,
+      "id": "ev_c8d92b22b9fd51a4decd293d110040ad1e59e530fb42cbdf7f0957c5c87b6b9b",
+      "kind": "measurement",
+      "sourceRunId": "run_boundary",
+      "sourceEntityId": null,
+      "anchor": {
+        "kind": "pr",
+        "fileId": null,
+        "currentPath": null,
+        "previousPath": null,
+        "entityId": null,
+        "side": null,
+        "line": null,
+        "startLine": null,
+        "originalLine": null,
+        "originalStartLine": null,
+        "commitSha": null,
+        "originalCommitSha": null,
+        "diffDigest": null,
+        "githubThreadId": null,
+        "externalUrl": null
+      },
+      "label": "PR diff totals",
+      "value": {
+        "additions": 1,
+        "binaryFiles": 0,
+        "changedFiles": 1,
+        "deletions": 1,
+        "filesListed": 1,
+        "hunks": 1,
+        "incompleteFiles": 0,
+        "operations": {
+          "modified": 1
+        },
+        "snapshotComplete": true
+      },
+      "unit": null,
+      "numerator": null,
+      "denominator": null,
+      "method": "aside.diff.pr_summary@1",
+      "inputDigest": null,
+      "observedAt": "2026-01-01T00:00:00Z",
+      "limitations": []
+    }
+  ],
+  "warnings": []
+}

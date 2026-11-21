@@ -7,6 +7,7 @@
 use crate::model::ChangedFile;
 
 mod api;
+pub mod facts;
 mod fingerprint;
 mod parser;
 

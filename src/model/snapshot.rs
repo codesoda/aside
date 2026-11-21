@@ -154,8 +154,9 @@ pub struct IssueComment {
 }
 
 /// A review thread as fetched from GitHub, before it is merged into local state.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct GithubThread {
     pub node_id: String,
     pub path: String,
@@ -163,33 +164,96 @@ pub struct GithubThread {
     pub line: Option<u32>,
     pub start_line: Option<u32>,
     pub original_line: Option<u32>,
-    #[serde(default)]
-    pub original_start_line: Option<u32>,
-    #[serde(default)]
-    pub start_side: Option<Side>,
-    #[serde(default)]
-    pub viewer_can_resolve: Option<bool>,
-    #[serde(default)]
-    pub viewer_can_unresolve: Option<bool>,
     pub is_outdated: bool,
     pub is_resolved: bool,
     pub comments: Vec<GithubComment>,
+    // Fields below are optional so older snapshots and fixtures still decode.
+    // GitHub enum values are kept as raw strings, never decoded into lossy
+    // contract enums.
+    /// Permalink to the thread (GitHub has no thread URL; this is the root
+    /// comment's URL).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub original_start_line: Option<u32>,
+    /// Raw `startDiffSide`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub start_side: Option<String>,
+    /// Raw `subjectType` (`LINE` or `FILE`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub subject_type: Option<String>,
+    /// Login of whoever resolved the thread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub resolved_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub viewer_can_reply: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub viewer_can_resolve: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub viewer_can_unresolve: Option<bool>,
+    /// GraphQL fields unavailable because of field-level errors, not legitimate nulls.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(skip)]
+    pub unavailable_fields: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct GithubComment {
     pub node_id: String,
+    #[ts(type = "number | null")]
     pub database_id: Option<i64>,
     pub author: String,
-    #[serde(default)]
-    pub author_node_id: Option<String>,
-    #[serde(default)]
-    pub author_type: Option<String>,
     pub body: String,
     pub created_at: String,
-    #[serde(default)]
+    // Optional so older snapshots and fixtures still decode.
+    /// GitHub node ID of the author (absent for deleted "ghost" users).
+    #[serde(
+        default,
+        alias = "authorNodeId",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[ts(optional)]
+    pub author_id: Option<String>,
+    /// Raw GraphQL `__typename` of the author (`User`, `Bot`, `Mannequin`, ...).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub author_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub updated_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub url: Option<String>,
+    /// Current anchor of this comment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub line: Option<u32>,
+    /// Anchor at the time the comment was written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub original_line: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub commit_oid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub original_commit_oid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub outdated: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(skip)]
+    pub unavailable_fields: Vec<String>,
 }
 
 /// Everything fetched for one PR revision.
@@ -202,10 +266,22 @@ pub struct PrSnapshot {
     pub provider_repository_id: Option<String>,
     pub files: Vec<ChangedFile>,
     pub github_threads: Vec<GithubThread>,
+    /// Whether `github_threads` holds every thread and every reply. Anything
+    /// but `complete` means some data could not be fetched (see `warnings`).
+    /// Snapshots stored before this field existed decode as `unknown`.
+    #[serde(default = "unknown_completeness")]
+    pub github_threads_completeness: super::Completeness,
+    /// Why the thread import is not complete. Empty when it is.
+    #[serde(default)]
+    pub github_threads_problems: Vec<crate::github::ThreadImportProblem>,
     pub reviews: Vec<ImportedReview>,
     pub issue_comments: Vec<IssueComment>,
     pub warnings: Vec<String>,
     /// False when ingestion could not fetch every patch. Publishing is blocked.
     pub complete: bool,
     pub fetched_at: String,
+}
+
+fn unknown_completeness() -> super::Completeness {
+    super::Completeness::Unknown
 }

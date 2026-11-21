@@ -1,0 +1,22 @@
+[
+  {
+    "githubStatusId": 9200000002,
+    "context": "ci/legacy",
+    "state": "success",
+    "description": "_(synthetic fixture)_ passed",
+    "targetUrl": "https://ci.example.invalid/build/2",
+    "sha": "a123f7736e7aaabe56b4662de888cc2bff1338a6",
+    "updatedAt": "2026-11-20T11:10:00Z",
+    "observedAt": "2026-11-20T11:40:19Z"
+  },
+  {
+    "githubStatusId": 9200000001,
+    "context": "ci/legacy",
+    "state": "pending",
+    "description": "_(synthetic fixture)_ queued",
+    "targetUrl": "https://ci.example.invalid/build/1",
+    "sha": "0000000000000000000000000000000000c0ffee",
+    "updatedAt": "2026-11-19T09:00:00Z",
+    "observedAt": "2026-11-20T11:40:19Z"
+  }
+]

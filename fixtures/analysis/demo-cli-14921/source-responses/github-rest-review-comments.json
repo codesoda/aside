@@ -1,0 +1,41 @@
+[
+  {
+    "id": 9000000101,
+    "node_id": "PRRC_synthBot0001a",
+    "in_reply_to_id": null,
+    "path": "internal/identity/ssh_command.go",
+    "line": 24,
+    "side": "RIGHT",
+    "user": {
+      "login": "coderabbitai[bot]",
+      "type": "Bot"
+    },
+    "html_url": "https://github.com/cli/cli/pull/14921#discussion_r9000000101"
+  },
+  {
+    "id": 9000000102,
+    "node_id": "PRRC_synthBot0001b",
+    "in_reply_to_id": 9000000101,
+    "path": "internal/identity/ssh_command.go",
+    "line": 24,
+    "side": "RIGHT",
+    "user": {
+      "login": "synthetic-maintainer",
+      "type": "User"
+    },
+    "html_url": "https://github.com/cli/cli/pull/14921#discussion_r9000000102"
+  },
+  {
+    "id": 9000000103,
+    "node_id": "PRRC_synthBot0001c",
+    "in_reply_to_id": 9000000101,
+    "path": "internal/identity/ssh_command.go",
+    "line": 24,
+    "side": "RIGHT",
+    "user": {
+      "login": "coderabbitai[bot]",
+      "type": "Bot"
+    },
+    "html_url": "https://github.com/cli/cli/pull/14921#discussion_r9000000103"
+  }
+]

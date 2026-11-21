@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "name": "test-gap-docs-only",
+  "synthetic": true,
+  "description": "Synthetic boundary fixture (#36). Documentation-only change: nothing testable changed.",
+  "repositoryId": "synthetic/boundary",
+  "prNumber": 9007,
+  "baseSha": "366c23cb9e36e500f14695ad3988fe41ef2c2170",
+  "headSha": "fe55b780693991e754df04854fb46c7bdf78cd02",
+  "snapshotComplete": true,
+  "observedAt": "2026-01-01T00:00:00Z",
+  "scenarios": [
+    "19.2.test-files-not-modified",
+    "19.2.false-test-gap"
+  ],
+  "unsupportedPaths": [
+    "README.md",
+    "docs/guide.md"
+  ],
+  "expectedCompleteness": "partial"
+}

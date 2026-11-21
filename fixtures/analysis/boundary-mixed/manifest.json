@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "name": "boundary-mixed",
+  "synthetic": true,
+  "description": "Synthetic boundary fixture (#36). Several boundaries in one PR: docs, binary, mode-only, Go code and test, deleted unsupported-language file, rename with edit and a truncated patch.",
+  "repositoryId": "synthetic/boundary",
+  "prNumber": 9004,
+  "baseSha": "3ed3b648ca5d670344be71ce505e7327df37dd09",
+  "headSha": "12f4383815bfb602bb29f74e1186a36471fb18ee",
+  "snapshotComplete": true,
+  "observedAt": "2026-01-01T00:00:00Z",
+  "scenarios": [
+    "19.2.mixed",
+    "19.5.17",
+    "19.5.18"
+  ],
+  "unsupportedPaths": [
+    "README.md",
+    "assets/icon.png",
+    "bin/tool",
+    "lib/tool.rb",
+    "src/table.rs"
+  ],
+  "expectedCompleteness": "partial"
+}

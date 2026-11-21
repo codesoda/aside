@@ -1,0 +1,215 @@
+{
+  "runs": [
+    {
+      "schemaVersion": 1,
+      "id": "run_2a13827a5bd0151d90f6d6018efc1ab329ef91ca313b391fe091aba4d471dce7",
+      "snapshotId": "snap_e4a72c20c7c58ea23877d89c5f448deb84eb1ee15dc1eb0142e1d6fcfee90da4",
+      "providerId": "aside.llm.local",
+      "engineVersion": "aside-llm/0.1.0",
+      "configurationDigest": "cfg-llm-opt-in",
+      "inputDigest": "in-aside.llm.local",
+      "attempt": 0,
+      "mode": "llm",
+      "status": "succeeded",
+      "startedAt": "2026-11-20T11:40:20Z",
+      "finishedAt": "2026-11-20T11:40:24Z",
+      "coverage": {
+        "completeness": "partial",
+        "eligibleFiles": {
+          "state": "known",
+          "value": 32
+        },
+        "analyzedFiles": {
+          "state": "known",
+          "value": 3
+        },
+        "eligibleEntities": {
+          "state": "unknown"
+        },
+        "analyzedEntities": {
+          "state": "unknown"
+        },
+        "entries": [
+          {
+            "scope": {
+              "kind": "file",
+              "fileId": "f_562acc67de25c534",
+              "path": "internal/identity/ssh_command.go"
+            },
+            "ruleId": null,
+            "outcome": {
+              "outcome": "analyzed",
+              "findings": 1
+            }
+          }
+        ],
+        "reasonCodes": [
+          "context_budget_limited"
+        ]
+      },
+      "warnings": [],
+      "metrics": {
+        "durationMs": 18000,
+        "inputTokens": 12000,
+        "outputTokens": 900,
+        "estimatedCostUsd": null
+      }
+    }
+  ],
+  "evidence": [
+    {
+      "schemaVersion": 1,
+      "id": "ev_4a4fc28bc6969f30da7812d79c6c84d07e1ad9ae03f7248a5b86e2ba9236b7cd",
+      "kind": "code_reference",
+      "sourceRunId": "run_2a13827a5bd0151d90f6d6018efc1ab329ef91ca313b391fe091aba4d471dce7",
+      "sourceEntityId": null,
+      "anchor": {
+        "kind": "diff_range",
+        "fileId": "f_562acc67de25c534",
+        "currentPath": "internal/identity/ssh_command.go",
+        "previousPath": null,
+        "entityId": null,
+        "side": "RIGHT",
+        "line": 25,
+        "startLine": 24,
+        "originalLine": null,
+        "originalStartLine": null,
+        "commitSha": "a123f7736e7aaabe56b4662de888cc2bff1338a6",
+        "originalCommitSha": null,
+        "diffDigest": "cf17c7af27e51770ce3057fcff61619c6288161ba7700b075574ee802b794794",
+        "githubThreadId": null,
+        "externalUrl": null
+      },
+      "label": "Cited lines for hypothesis",
+      "value": {
+        "citedLines": [
+          24,
+          25
+        ]
+      },
+      "unit": null,
+      "numerator": null,
+      "denominator": null,
+      "method": "citation_check@1",
+      "inputDigest": "cf17c7af27e51770ce3057fcff61619c6288161ba7700b075574ee802b794794",
+      "observedAt": "2026-11-20T11:40:19Z",
+      "limitations": []
+    }
+  ],
+  "findings": [
+    {
+      "schemaVersion": 1,
+      "id": "find_f0bf63c2eb753b31bce37539fdd6503776741049702fbc917c94722a4974a59c",
+      "repositoryId": "212613049",
+      "prNumber": 14921,
+      "observedSnapshotId": "snap_e4a72c20c7c58ea23877d89c5f448deb84eb1ee15dc1eb0142e1d6fcfee90da4",
+      "source": {
+        "kind": "llm",
+        "providerId": "aside.llm.local",
+        "runId": "run_2a13827a5bd0151d90f6d6018efc1ab329ef91ca313b391fe091aba4d471dce7",
+        "ruleId": "aside.llm.review",
+        "ruleVersion": "0.1.0",
+        "modelId": "synthetic-local-model",
+        "modelRevision": null,
+        "promptVersion": "review-v1",
+        "native": null,
+        "githubActor": null
+      },
+      "assertionKind": "defect_hypothesis",
+      "kinds": [
+        "correctness"
+      ],
+      "title": "Hypothesis: whitespace in SSH variant may refuse a valid configuration",
+      "body": "Model-generated hypothesis. A variant of `\"ssh \"` would be rejected as custom.",
+      "rationale": "Cites lines 24-25. Not executed; the model reported 95% confidence, which is self-reported and uncalibrated.",
+      "suggestedAction": null,
+      "anchor": {
+        "kind": "diff_range",
+        "fileId": "f_562acc67de25c534",
+        "currentPath": "internal/identity/ssh_command.go",
+        "previousPath": null,
+        "entityId": null,
+        "side": "RIGHT",
+        "line": 25,
+        "startLine": 24,
+        "originalLine": null,
+        "originalStartLine": null,
+        "commitSha": "a123f7736e7aaabe56b4662de888cc2bff1338a6",
+        "originalCommitSha": null,
+        "diffDigest": "cf17c7af27e51770ce3057fcff61619c6288161ba7700b075574ee802b794794",
+        "githubThreadId": null,
+        "externalUrl": null
+      },
+      "relatedAnchors": [],
+      "evidenceIds": [
+        "ev_4a4fc28bc6969f30da7812d79c6c84d07e1ad9ae03f7248a5b86e2ba9236b7cd"
+      ],
+      "attention": {
+        "level": "investigate",
+        "score": null,
+        "scoreVersion": null,
+        "reasons": [
+          "llm_hypothesis"
+        ]
+      },
+      "severity": {
+        "normalized": "unknown",
+        "original": null
+      },
+      "confidence": {
+        "kind": "model_self_reported",
+        "value": 0.95,
+        "denominator": null,
+        "calibrationVersion": null
+      },
+      "validation": {
+        "status": "unverified",
+        "method": "citation_check@1",
+        "validatedAt": "2026-11-20T11:40:19Z",
+        "note": "Citations resolve to current lines; claim itself not verified."
+      },
+      "applicability": "current_exact",
+      "sourceStatus": "unknown",
+      "firstSeenAt": "2026-11-20T11:40:19Z",
+      "lastSeenAt": "2026-11-20T11:40:19Z",
+      "externalUrl": null,
+      "parentFindingId": null,
+      "correlationGroupId": "corr_ssh_variant_normalisation",
+      "extensions": {
+        "idKey": {
+          "claimIdentity": "hypothesis:ssh-variant-whitespace",
+          "subjectIdentity": "file:internal/identity/ssh_command.go",
+          "codeFingerprint": "cf17c7af27e51770ce3057fcff61619c6288161ba7700b075574ee802b794794"
+        },
+        "hypothesis": true
+      }
+    }
+  ],
+  "relations": [
+    {
+      "sourceFindingId": "find_f0bf63c2eb753b31bce37539fdd6503776741049702fbc917c94722a4974a59c",
+      "kind": "duplicate_topic_of",
+      "target": {
+        "kind": "finding",
+        "id": "find_d9d23af04c5656a14f171c853ae123ad1875f146c18461c820b8f465f5626961"
+      },
+      "method": "anchor_overlap",
+      "methodVersion": "1",
+      "score": 0.7,
+      "validated": false,
+      "createdAt": "2026-11-20T11:40:19Z"
+    }
+  ],
+  "userStates": [
+    {
+      "findingId": "find_f0bf63c2eb753b31bce37539fdd6503776741049702fbc917c94722a4974a59c",
+      "sessionId": "demo",
+      "disposition": "promoted_to_draft",
+      "snoozedUntil": null,
+      "note": null,
+      "promotedDraftId": "draft_demo_llm_1",
+      "updatedAt": "2026-11-20T11:41:00Z",
+      "revision": 1
+    }
+  ]
+}

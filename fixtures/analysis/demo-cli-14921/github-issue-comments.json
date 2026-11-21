@@ -1,0 +1,12 @@
+[
+  {
+    "author": "synthetic-ci-bot[bot]",
+    "body": "_(synthetic fixture)_ Preview build ready.",
+    "createdAt": "2026-11-20T09:30:00Z"
+  },
+  {
+    "author": "synthetic-reviewer",
+    "body": "_(synthetic fixture)_ Also see internal/identity/store.go:42 when you get a chance. (PR-level comment; not anchored.)",
+    "createdAt": "2026-11-20T09:45:00Z"
+  }
+]

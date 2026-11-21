@@ -542,6 +542,8 @@ mod tests {
             provider_repository_id: None,
             files: vec![],
             github_threads: vec![],
+            github_threads_completeness: crate::model::Completeness::Complete,
+            github_threads_problems: Vec::new(),
             reviews: vec![],
             issue_comments: vec![],
             warnings: vec![],
