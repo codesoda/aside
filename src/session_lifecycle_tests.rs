@@ -155,6 +155,8 @@ fn types(events: &[EventEnvelope]) -> Vec<&str> {
 fn complete_snapshot_without_feedback() -> PrSnapshot {
     let mut snapshot = demo::snapshot(0);
     snapshot.github_threads.clear();
+    snapshot.reviews.clear();
+    snapshot.issue_comments.clear();
     snapshot
 }
 
@@ -232,6 +234,82 @@ fn snapshot_stored_before_completeness_existed_is_not_clean() {
 }
 
 #[test]
+fn legacy_feedback_completeness_is_unknown_not_clean() {
+    let mut snapshot = complete_snapshot_without_feedback();
+    snapshot.reviews_completeness = Completeness::Unknown;
+    snapshot.issue_comments_completeness = Completeness::Unknown;
+    let view = session_with(snapshot, vec![]).view(Actor::Human).unwrap();
+    let feedback = source_of(&view, source::REVIEWS_AND_COMMENTS);
+    assert_eq!(feedback.completeness, Completeness::Unknown);
+    assert_eq!(feedback.status, Some(RunStatus::Partial));
+    assert_eq!(feedback.state, SourceState::Incomplete);
+    assert!(
+        feedback
+            .reason_codes
+            .contains(&"completeness_unknown".into())
+    );
+    assert!(!feedback.limitations.is_empty());
+}
+
+#[test]
+fn mixed_feedback_imports_fail_closed_and_do_not_change_diff_coverage() {
+    for (reviews, comments, expected, status, count) in [
+        (
+            Completeness::Complete,
+            Completeness::Partial,
+            Completeness::Partial,
+            RunStatus::Partial,
+            KnownCount::Known { value: 0 },
+        ),
+        (
+            Completeness::Partial,
+            Completeness::Failed,
+            Completeness::Failed,
+            RunStatus::Failed,
+            KnownCount::Unknown,
+        ),
+        (
+            Completeness::Unknown,
+            Completeness::Complete,
+            Completeness::Unknown,
+            RunStatus::Partial,
+            KnownCount::Known { value: 0 },
+        ),
+    ] {
+        let mut snapshot = complete_snapshot_without_feedback();
+        snapshot.reviews_completeness = reviews;
+        snapshot.issue_comments_completeness = comments;
+        let view = session_with(snapshot, vec![]).view(Actor::Human).unwrap();
+        let feedback = source_of(&view, source::REVIEWS_AND_COMMENTS);
+        assert_eq!(feedback.completeness, expected);
+        assert_eq!(feedback.status, Some(status));
+        assert_eq!(feedback.items, count);
+        assert!(!feedback.limitations.is_empty());
+        assert_eq!(
+            source_of(&view, source::PR_DIFF).completeness,
+            Completeness::Complete
+        );
+    }
+}
+
+#[test]
+fn empty_complete_feedback_is_clean() {
+    let mut snapshot = complete_snapshot_without_feedback();
+    snapshot.reviews.clear();
+    snapshot.issue_comments.clear();
+    snapshot.reviews_completeness = Completeness::Complete;
+    snapshot.issue_comments_completeness = Completeness::Complete;
+    let view = session_with(snapshot, vec![]).view(Actor::Human).unwrap();
+    let feedback = source_of(&view, source::REVIEWS_AND_COMMENTS);
+    assert_eq!(feedback.status, Some(RunStatus::Succeeded));
+    assert_eq!(feedback.completeness, Completeness::Complete);
+    assert_eq!(feedback.items, KnownCount::Known { value: 0 });
+    assert_eq!(feedback.state, SourceState::Clean);
+    assert!(feedback.reason_codes.is_empty());
+    assert!(feedback.limitations.is_empty());
+}
+
+#[test]
 fn incomplete_diff_ingestion_is_incomplete() {
     let mut snapshot = demo::snapshot(0);
     snapshot.complete = false;
@@ -289,6 +367,8 @@ async fn real_diff_provider_partial_status_is_incomplete() {
 async fn complete_sources_are_persisted_per_snapshot_with_their_limitations() {
     let mut snapshot = demo::snapshot(0);
     snapshot.github_threads_completeness = Completeness::Partial;
+    snapshot.issue_comments_completeness = Completeness::Partial;
+    snapshot.issue_comments_problems = vec!["page limit reached".into()];
     snapshot.github_threads_problems = vec![ThreadImportProblem::StalledCursor {
         scope: "thread T".into(),
     }];
@@ -322,6 +402,20 @@ async fn complete_sources_are_persisted_per_snapshot_with_their_limitations() {
     assert!(
         runs.iter()
             .any(|r| r.value().provider_id == source::PR_DIFF)
+    );
+    let feedback: Vec<_> = runs
+        .iter()
+        .map(|r| r.value())
+        .filter(|r| r.provider_id == source::REVIEWS_AND_COMMENTS)
+        .collect();
+    assert_eq!(feedback.len(), 1);
+    assert_eq!(feedback[0].coverage.completeness, Completeness::Partial);
+    assert_eq!(feedback[0].status, RunStatus::Partial);
+    assert!(
+        feedback[0]
+            .warnings
+            .iter()
+            .any(|w| w.message.contains("page limit reached"))
     );
 }
 
@@ -568,7 +662,7 @@ async fn reconnect_mid_run_converges_to_the_authoritative_view() {
     assert_eq!(first.event_type, "analysis.run.queued");
     let mid = session.view(Actor::Human).unwrap();
     assert!(matches!(source_of(&mid, DIFF).state, SourceState::Pending));
-    assert_eq!(mid.analysis.overall, OverallCoverage::Incomplete); // reviews unverified
+    assert_eq!(mid.analysis.overall, OverallCoverage::Pending); // provider is still running
     drop(flaky);
 
     gate.add_permits(1);

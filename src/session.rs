@@ -718,19 +718,69 @@ fn import_sources(snapshot: &PrSnapshot) -> Vec<ImportSource> {
         limitations: problems.iter().map(ToString::to_string).collect(),
     });
 
-    // `gh pr view --json reviews,comments` does not report whether it saw
-    // every page, so this source can never claim completeness yet.
-    // TODO(#24): paginated review/comment import with real completeness.
+    // The combined source is complete only when both independent connections
+    // are complete. A failed connection takes precedence over a partial one.
+    let feedback_completeness = match (
+        snapshot.reviews_completeness,
+        snapshot.issue_comments_completeness,
+    ) {
+        (Completeness::Failed, _) | (_, Completeness::Failed) => Completeness::Failed,
+        (Completeness::Complete, Completeness::Complete) => Completeness::Complete,
+        (Completeness::Partial, _) | (_, Completeness::Partial) => Completeness::Partial,
+        _ => Completeness::Unknown,
+    };
+    let feedback_status = match feedback_completeness {
+        Completeness::Complete => RunStatus::Succeeded,
+        Completeness::Failed => RunStatus::Failed,
+        _ => RunStatus::Partial,
+    };
+    let mut feedback_codes = Vec::new();
+    let mut feedback_limitations = Vec::new();
+    for (name, completeness) in [
+        ("reviews", snapshot.reviews_completeness),
+        ("PR comments", snapshot.issue_comments_completeness),
+    ] {
+        if completeness != Completeness::Complete {
+            feedback_limitations.push(format!(
+                "{name} import is {completeness:?}; coverage is not complete"
+            ));
+        }
+    }
+    feedback_limitations.extend(
+        snapshot
+            .reviews_problems
+            .iter()
+            .map(|p| format!("reviews: {p}")),
+    );
+    feedback_limitations.extend(
+        snapshot
+            .issue_comments_problems
+            .iter()
+            .map(|p| format!("PR comments: {p}")),
+    );
+    match feedback_completeness {
+        Completeness::Failed => feedback_codes.push(source_reason::GITHUB_SOURCE_FAILED.into()),
+        Completeness::Partial => feedback_codes.push(source_reason::GITHUB_SOURCE_PARTIAL.into()),
+        Completeness::Unknown => {
+            feedback_codes.push(source_reason::COMPLETENESS_UNKNOWN.into());
+            feedback_codes.push(source_reason::PAGINATION_UNVERIFIED.into());
+        }
+        _ => {}
+    }
     out.push(ImportSource {
         source_id: source::REVIEWS_AND_COMMENTS,
-        status: RunStatus::Partial,
-        completeness: Completeness::Unknown,
-        items: KnownCount::Known {
-            value: (snapshot.reviews.len() + snapshot.issue_comments.len()) as u32,
+        status: feedback_status,
+        completeness: feedback_completeness,
+        items: if feedback_completeness == Completeness::Failed {
+            KnownCount::Unknown
+        } else {
+            KnownCount::Known {
+                value: (snapshot.reviews.len() + snapshot.issue_comments.len()) as u32,
+            }
         },
         item_kind: "reviews_and_comments",
-        reason_codes: vec![source_reason::PAGINATION_UNVERIFIED.into()],
-        limitations: vec!["review verdicts and PR comments are not verified as complete".into()],
+        reason_codes: feedback_codes,
+        limitations: feedback_limitations,
     });
     out
 }
