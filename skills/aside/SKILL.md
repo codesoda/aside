@@ -32,7 +32,7 @@ With the person's permission to draft pre-review comments, a verified concern on
 ## Work with feedback
 
 1. Read `GET /api/v1/session`: `pr`, `files`, `fileStates`, `threads`, `rules`, `progress`, and `sequence` describe the current review. A `fileId` comes from the session, never from an arbitrary path.
-2. Follow `GET /api/v1/events` for typed SSE events. On `resync` or a sequence gap, fetch `/api/v1/session` again.
+2. Follow `GET /api/v1/events` for typed SSE events (or the running process's JSONL stdout). On `resync` or a sequence gap, fetch `/api/v1/session` again. A human-created `thread.created` event includes `threadId`, `path`, `side`, `line`, optional `startLine`, `lineText`, `headSha`, and the user's `body`. Treat it as a request for a contextual reply; agent-created threads carry only `threadId` and must not trigger an automatic response. Fetch the current thread before replying.
 3. Investigate a human comment in your own workspace. Aside itself does not edit code. Re-fetch the session before replying if the PR changes; outdated and orphaned anchors must not be moved to a guessed line.
 4. Reply with `POST /api/v1/threads/{id}/replies`, JSON `{ "body": "..." }`, authenticated with the agent token. The server persists it as an agent draft and broadcasts an event. Do not claim it was published to GitHub.
 

@@ -39,8 +39,8 @@ export function setReviewed(fileId: string, diffDigest: string, reviewed: boolea
   return mutate(`/api/v1/files/${encodeURIComponent(fileId)}/reviewed`, reviewed ? 'POST' : 'DELETE', { diffDigest });
 }
 
-export function createThread(fileId: string, diffDigest: string, side: 'LEFT' | 'RIGHT', line: number, body: string): Promise<void> {
-  return mutate('/api/v1/threads', 'POST', { fileId, diffDigest, side, line, body });
+export function createThread(fileId: string, diffDigest: string, side: 'LEFT' | 'RIGHT', line: number, body: string, startLine?: number): Promise<void> {
+  return mutate('/api/v1/threads', 'POST', { fileId, diffDigest, side, line, body, ...(startLine === undefined ? {} : { startLine }) });
 }
 
 export function replyToThread(threadId: string, body: string): Promise<void> {

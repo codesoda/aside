@@ -21,7 +21,7 @@
   let actionError = $state<string | null>(null);
   let busy = $state(false);
   let selectedId = $state<string | null>(null);
-  let anchor = $state<{ fileId: string; digest: string; side: Side; line: number } | null>(null);
+  let anchor = $state<{ fileId: string; digest: string; side: Side; line: number; startLine?: number } | null>(null);
   let draft = $state('');
   let replies = $state<Record<string, string>>({});
   let selectedThreadId = $state<string | null>(null);
@@ -159,6 +159,25 @@
     return line.kind === 'deletion' ? 'LEFT' : 'RIGHT';
   }
 
+  function selectCode() {
+    if (!file || !file.patchComplete || fileState?.scope.ignored) return;
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || !selection.toString().trim() || selection.rangeCount === 0) return;
+    const range = selection.getRangeAt(0);
+    const code = document.querySelector('#file-review .workspace-code');
+    if (!code || !code.contains(range.commonAncestorContainer)) return;
+    const lines = [...code.querySelectorAll<HTMLElement>('[data-code-line]')]
+      .filter((element) => range.intersectsNode(element));
+    if (!lines.length || lines.some((element) => !element.dataset.side || element.dataset.side !== lines[0].dataset.side)) return;
+    const numbers = lines.map((element) => Number(element.dataset.codeLine));
+    if (numbers.some((number) => !Number.isInteger(number)) || numbers.at(-1)! - numbers[0] !== numbers.length - 1) return;
+    anchor = { fileId: file.id, digest: file.diffDigest, side: lines[0].dataset.side as Side,
+      line: numbers.at(-1)!, ...(numbers.length > 1 ? { startLine: numbers[0] } : {}) };
+    draft = '';
+    actionError = null;
+    selection.removeAllRanges();
+  }
+
   function selectLine(line: DiffLine) {
     if (!file || !file.patchComplete || fileState?.scope.ignored) return;
     const side = lineSide(line);
@@ -205,9 +224,9 @@
 
   function saveDraft() {
     if (!file || !anchor || !draft.trim() || anchor.fileId !== file.id || anchor.digest !== file.diffDigest || fileState?.scope.ignored) return;
-    const { fileId, digest, side, line } = anchor;
+    const { fileId, digest, side, line, startLine } = anchor;
     const body = draft.trim();
-    void act(() => createThread(fileId, digest, side, line, body), () => { anchor = null; draft = ''; });
+    void act(() => createThread(fileId, digest, side, line, body, startLine), () => { anchor = null; draft = ''; });
   }
 
   function saveReply(threadId: string) {
@@ -217,6 +236,8 @@
   }
 
 </script>
+
+<svelte:window onmouseup={selectCode} onkeyup={selectCode} />
 
 <div class="workspace">
   {#if !session}
@@ -430,11 +451,11 @@
                             {:else}
                               <span class="w-7 shrink-0"></span>
                             {/if}
-                            <span class="px-2">{line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}{line.text}</span>
+                            <span class="px-2" data-code-line={lineSide(line) ? (lineSide(line) === 'LEFT' ? line.oldLine : line.newLine) : undefined} data-side={lineSide(line) ?? undefined}>{line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}{line.text}</span>
                           </div>
                           {#if !fileState?.scope.ignored && anchor?.fileId === file.id && anchor.digest === file.diffDigest && anchor.side === lineSide(line) && anchor.line === (anchor.side === 'LEFT' ? line.oldLine : line.newLine)}
                             <div class="min-w-0 border-y border-line bg-white p-3 font-sans whitespace-normal">
-                              <label for="draft" class="block text-sm font-semibold">Draft on {anchor.side === 'LEFT' ? 'old' : 'new'} line {anchor.line}</label>
+                              <label for="draft" class="block text-sm font-semibold">Draft on {anchor.side === 'LEFT' ? 'old' : 'new'} {anchor.startLine ? `lines ${anchor.startLine}–${anchor.line}` : `line ${anchor.line}`}</label>
                               <textarea id="draft" bind:value={draft} rows="3" class="workspace-input mt-2 w-full" placeholder="Write a review comment"></textarea>
                               <div class="mt-2 flex gap-2">
                                 <button type="button" disabled={busy || !draft.trim()} onclick={saveDraft} class="workspace-button primary-button">Save draft</button>

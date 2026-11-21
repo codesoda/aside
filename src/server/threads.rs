@@ -49,6 +49,11 @@ pub(super) async fn create_thread(
     {
         return Err(ApiError::bad("invalid startLine"));
     }
+    let context = json!({
+        "path": file.path, "side": input.side, "line": input.line,
+        "startLine": input.start_line, "lineText": line.text,
+        "headSha": snapshot.pr.head_sha, "body": input.body.trim(),
+    });
     let id = new_id("thr");
     let thread = NewThread {
         id: id.clone(),
@@ -89,9 +94,16 @@ pub(super) async fn create_thread(
     store.insert_comment(&comment, None).map_err(db_error)?;
     drop(store);
     drop(snapshot);
-    let event = state
-        .session
-        .notify("thread.created", json!({"threadId":id}));
+    let event = state.session.notify(
+        "thread.created",
+        if actor == Actor::Human {
+            let mut context = context;
+            context["threadId"] = json!(id);
+            context
+        } else {
+            json!({"threadId":id})
+        },
+    );
     Ok(Json(
         json!({"thread":state.session.store.lock().map_err(|_| ApiError::internal())?.get_thread(&state.session.pr_id, &id).map_err(db_error)?,"sequence":event.sequence}),
     ))
@@ -173,6 +185,85 @@ pub(super) async fn update_thread(
     Ok(Json(
         json!({"thread":state.session.store.lock().map_err(|_| ApiError::internal())?.get_thread(&state.session.pr_id, &id).map_err(db_error)?,"sequence":event.sequence}),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn human_thread_event_gives_host_the_message_and_code_context() {
+        let session = crate::session::Session::new(
+            crate::demo::snapshot(0),
+            crate::store::Store::open_in_memory().unwrap(),
+            None,
+            None,
+        )
+        .unwrap();
+        let (file_id, digest, side, line, path, text) = {
+            let snapshot = session.snapshot.read().unwrap();
+            let file = snapshot
+                .files
+                .iter()
+                .find(|file| {
+                    file.hunks.iter().any(|hunk| {
+                        hunk.lines
+                            .iter()
+                            .any(|line| line.new_line.is_some() && line.kind != LineKind::Meta)
+                    })
+                })
+                .unwrap();
+            let line = file
+                .hunks
+                .iter()
+                .flat_map(|hunk| &hunk.lines)
+                .find(|line| line.new_line.is_some() && line.kind != LineKind::Meta)
+                .unwrap();
+            (
+                file.id.clone(),
+                file.diff_digest.clone(),
+                Side::Right,
+                line.new_line.unwrap(),
+                file.path.clone(),
+                line.text.clone(),
+            )
+        };
+        let state = AppState::new(Arc::clone(&session), "ui".into(), "agent".into());
+        let mut events = session.events.subscribe();
+        let input = || ThreadInput {
+            file_id: file_id.clone(),
+            diff_digest: digest.clone(),
+            side,
+            line,
+            start_line: None,
+            body: "  Could you check this?  ".into(),
+        };
+        let _ = create_thread(
+            State(state.clone()),
+            axum::Extension(Actor::Human),
+            Json(input()),
+        )
+        .await
+        .unwrap();
+        let event = events.recv().await.unwrap();
+        assert_eq!(event.event_type, "thread.created");
+        assert_eq!(event.payload["path"], path);
+        assert_eq!(event.payload["lineText"], text);
+        assert_eq!(event.payload["line"], line);
+        assert_eq!(event.payload["body"], "Could you check this?");
+        assert!(event.payload["threadId"].as_str().is_some());
+
+        let _ = create_thread(State(state), axum::Extension(Actor::Agent), Json(input()))
+            .await
+            .unwrap();
+        let event = events.recv().await.unwrap();
+        assert_eq!(
+            event.payload.as_object().unwrap().len(),
+            1,
+            "agent drafts do not request a reply"
+        );
+    }
 }
 
 fn editable_comment(state: &AppState, id: &str, actor: Actor) -> ApiResult<Comment> {

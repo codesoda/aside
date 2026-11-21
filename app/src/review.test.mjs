@@ -383,6 +383,31 @@ test('the diff still submits a line draft, replies locally and advances after Vi
   assert.match(diff.querySelector('#file-review h3').textContent, /gen\/out\.rs/);
 });
 
+test('selecting adjacent code lines creates a contextual thread anchored to the range', async () => {
+  workspaceRoutes();
+  routes['POST /api/v1/threads'] = () => json({});
+  await start();
+  const lines = [...document.querySelectorAll('#file-review [data-code-line]')];
+  const range = document.createRange();
+  range.setStart(lines[0].lastChild, 1);
+  range.setEnd(lines[1].lastChild, lines[1].lastChild.textContent.length);
+  window.getSelection().removeAllRanges();
+  window.getSelection().addRange(range);
+  document.querySelector('.workspace-code').dispatchEvent(new window.MouseEvent('mouseup', { bubbles: true }));
+  await tick();
+  assert.match(document.querySelector('label[for="draft"]').textContent, /new lines 1–2/);
+  const input = document.getElementById('draft');
+  input.value = 'Why is this check added?';
+  input.dispatchEvent(new window.Event('input', { bubbles: true }));
+  await tick();
+  button('Save draft').click();
+  await settle();
+  assert.deepEqual(JSON.parse(mutations()[0].body), {
+    fileId: 'f-auth', diffDigest: 'digest-f-auth', side: 'RIGHT', line: 2,
+    body: 'Why is this check added?', startLine: 1,
+  });
+});
+
 test('stale cursors during a live run restart pagination instead of splicing pages', async () => {
   const { fetchAllPages, ResultsChangedError } = await import('./api.ts');
   let served = 0;
