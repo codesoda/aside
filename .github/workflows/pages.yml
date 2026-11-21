@@ -24,7 +24,8 @@ jobs:
         run: |
           test -f web/index.html
           test -f web/agents.md
-          grep -Fq 'https://asidecode.dev/agents.md' web/index.html
+          grep -Fq 'curl -fsSL https://raw.githubusercontent.com/codesoda/aside/main/install.sh | sh' web/index.html
+          grep -Fq 'irm https://raw.githubusercontent.com/codesoda/aside/main/install.ps1 | iex' web/index.html
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v4
         with:

@@ -5,7 +5,9 @@ on:
     types: [opened, synchronize, reopened]
     paths:
       - 'install.sh'
+      - 'install.ps1'
       - 'tests/install_test.py'
+      - 'tests/install_windows.ps1'
       - '.github/workflows/installer.yml'
 
 permissions:
@@ -25,3 +27,14 @@ jobs:
           persist-credentials: false
       - name: Run offline installer contract tests
         run: python3 tests/install_test.py
+
+  windows-installer:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Smoke test official Windows release install
+        shell: pwsh
+        run: ./tests/install_windows.ps1

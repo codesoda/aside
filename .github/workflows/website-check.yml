@@ -33,6 +33,7 @@ jobs:
             if curl -fsS http://127.0.0.1:4173/ -o /tmp/aside-home.html; then break; fi
             sleep 1
           done
-          grep -Fq 'https://asidecode.dev/agents.md' /tmp/aside-home.html
+          grep -Fq 'curl -fsSL https://raw.githubusercontent.com/codesoda/aside/main/install.sh | sh' /tmp/aside-home.html
+          grep -Fq 'irm https://raw.githubusercontent.com/codesoda/aside/main/install.ps1 | iex' /tmp/aside-home.html
           curl -fsS http://127.0.0.1:4173/agents.md -o /tmp/aside-agents.md
           grep -Fq 'Set up Aside with a coding agent' /tmp/aside-agents.md
