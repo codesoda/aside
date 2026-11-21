@@ -291,11 +291,11 @@ mod tests {
     fn redirect_and_version_status() {
         let tag = tag_from_redirect(
             reqwest::StatusCode::FOUND,
-            Some("/codesoda/aside/releases/tag/v0.2.0"),
+            Some("/codesoda/aside/releases/tag/v0.2.1"),
         )
         .unwrap();
         let status = status_for(tag).unwrap();
-        assert_eq!((status.latest.as_str(), status.available), ("0.2.0", true));
+        assert_eq!((status.latest.as_str(), status.available), ("0.2.1", true));
         assert!(!status_for("v0.1.0").unwrap().available);
         assert!(!status_for("v0.0.9").unwrap().available);
         assert!(status_for("v0.2.0-beta.1").is_err());
