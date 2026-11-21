@@ -158,10 +158,6 @@ fn complete_snapshot_without_feedback() -> PrSnapshot {
     snapshot
 }
 
-// ---------------------------------------------------------------------------
-// No partial import is displayed as clean
-// ---------------------------------------------------------------------------
-
 #[test]
 fn complete_thread_import_with_no_threads_is_clean() {
     let session = session_with(complete_snapshot_without_feedback(), vec![]);
@@ -329,10 +325,6 @@ async fn complete_sources_are_persisted_per_snapshot_with_their_limitations() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Invalidation
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn head_change_invalidates_and_reruns() {
     let (provider, calls) = Scripted::new(fixture_on_first_snapshot(), None);
@@ -477,10 +469,6 @@ async fn restart_reports_head_change_against_the_persisted_snapshot() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Refresh never loses triage or history
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn triage_survives_a_head_change_and_old_findings_become_historical() {
     let (provider, _) = Scripted::new(fixture_on_first_snapshot(), None);
@@ -529,10 +517,6 @@ async fn triage_survives_a_head_change_and_old_findings_become_historical() {
         Some(saved)
     );
 }
-
-// ---------------------------------------------------------------------------
-// SSE lifecycle, reconnect and late results
-// ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn run_lifecycle_events_are_small_versioned_and_ordered() {

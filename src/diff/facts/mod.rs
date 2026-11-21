@@ -626,7 +626,6 @@ pub fn scan(input: &DiffFactsInput<'_>, config: &DiffFactsConfig) -> DiffFacts {
             Applicability::Unavailable
         };
 
-        // ---- file_change (always) ----
         let measurement = json!({
             "operation": operation(file),
             "changeKind": file.change_kind.as_str(),
@@ -678,7 +677,6 @@ pub fn scan(input: &DiffFactsInput<'_>, config: &DiffFactsConfig) -> DiffFacts {
             evidence_ids: vec![ev],
         });
 
-        // ---- large_change ----
         let changed = file.additions + file.deletions;
         if counts_known && changed >= config.large_change_lines {
             let measurement = json!({
@@ -731,7 +729,6 @@ pub fn scan(input: &DiffFactsInput<'_>, config: &DiffFactsConfig) -> DiffFacts {
             });
         }
 
-        // ---- generated_file ----
         if generated {
             let measurement = json!({ "hints": generated_hints });
             let ev = em.measurement_evidence(
@@ -765,7 +762,6 @@ pub fn scan(input: &DiffFactsInput<'_>, config: &DiffFactsConfig) -> DiffFacts {
             });
         }
 
-        // ---- dependency / config (path based, any language) ----
         if let Some(dep) = classify::dependency_kind(&file.path) {
             path_rule(&mut em, file, PathRule::Dependency(dep), applicability);
         }
@@ -773,7 +769,6 @@ pub fn scan(input: &DiffFactsInput<'_>, config: &DiffFactsConfig) -> DiffFacts {
             path_rule(&mut em, file, PathRule::Config(cfg), applicability);
         }
 
-        // ---- line-level content rules ----
         let content_rules = [
             rules::TEST_ASSERTIONS_ADDED,
             rules::TESTS_REMOVED,
@@ -878,7 +873,6 @@ pub fn scan(input: &DiffFactsInput<'_>, config: &DiffFactsConfig) -> DiffFacts {
         }
     }
 
-    // ---- PR-level facts ----
     pr_summary(&mut em, &files);
     if !test_files.is_empty() {
         let paths: Vec<&str> = test_files.iter().map(|f| f.path.as_str()).collect();

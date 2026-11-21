@@ -8,8 +8,7 @@ import type { SessionView } from './generated/SessionView';
 export type { Evidence, FindingItem, QueueView, SessionView };
 
 export class ApiError extends Error {
-  // Plain fields (not parameter properties) so Node's type stripping can run
-  // this module under node:test.
+  // Keep explicit fields: node:test type stripping rejects parameter properties.
   status: number;
   code: string;
 

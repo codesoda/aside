@@ -110,8 +110,6 @@ where
     serde_json::from_str(&serde_json::to_string(value).unwrap()).unwrap()
 }
 
-// --- Schema versioning ---------------------------------------------------
-
 #[test]
 fn schema_version_is_explicit_and_serialized() {
     assert_eq!(ANALYSIS_SCHEMA_VERSION, 1);
@@ -134,8 +132,6 @@ fn unsupported_schema_version_fails_validation() {
         Err(vec![FindingContractError::UnsupportedSchemaVersion(2)])
     );
 }
-
-// --- Stable IDs ----------------------------------------------------------
 
 #[test]
 fn ids_are_deterministic_and_pinned() {
@@ -242,8 +238,6 @@ fn evidence_and_imported_ids_are_deterministic() {
         ImportedCheckAnnotation::content_fingerprint(7, "a.rs", 1, 2, "msg", 1)
     );
 }
-
-// --- Serde round trips ---------------------------------------------------
 
 #[test]
 fn finding_matches_documented_json_shape_and_round_trips() {
@@ -363,8 +357,6 @@ fn unknown_enum_values_degrade_safely() {
     assert_eq!(st, SourceStatus::Unknown);
 }
 
-// --- Applicability / unknown semantics -----------------------------------
-
 #[test]
 fn not_applicable_unknown_and_no_finding_are_distinct() {
     let no_finding = ScopeOutcome::Analyzed { findings: 0 };
@@ -442,8 +434,6 @@ fn applicability_unknown_and_unavailable_are_not_current() {
         serde_json::to_value(Unavailable).unwrap()
     );
 }
-
-// --- Findings never set file reviewed ------------------------------------
 
 #[test]
 fn finding_contracts_have_no_review_state_fields() {
@@ -547,8 +537,6 @@ fn generated_typescript_has_no_review_state() {
         assert!(!lower.contains("filestatus"), "{decl}");
     }
 }
-
-// --- Other invariants ----------------------------------------------------
 
 #[test]
 fn high_attention_requires_evidence_and_imports_are_not_facts() {
