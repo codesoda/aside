@@ -3,10 +3,15 @@ use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 
 use crate::diff::{self, ApiFile, Limits};
-use crate::model::{ImportedReview, IssueComment, PrSnapshot, PullRequest, SCHEMA_VERSION};
+use crate::model::{PrSnapshot, PullRequest, SCHEMA_VERSION};
 use crate::util::now_rfc3339;
 
-use super::{GhRunner, PrRef, runner::run_json, threads::fetch_threads};
+use super::{
+    GhRunner, PrRef,
+    feedback::{fetch_comments, fetch_reviews},
+    runner::run_json,
+    threads::fetch_threads,
+};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -28,35 +33,11 @@ struct GhPr {
     head_ref_oid: String,
     #[serde(default)]
     changed_files: Option<u64>,
-    #[serde(default)]
-    reviews: Vec<GhReview>,
-    #[serde(default)]
-    comments: Vec<GhIssueComment>,
 }
 
 #[derive(Deserialize)]
 struct GhLogin {
     login: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GhReview {
-    author: Option<GhLogin>,
-    #[serde(default)]
-    state: String,
-    #[serde(default)]
-    body: String,
-    submitted_at: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GhIssueComment {
-    author: Option<GhLogin>,
-    #[serde(default)]
-    body: String,
-    created_at: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -78,7 +59,7 @@ fn login(a: &Option<GhLogin>) -> String {
         .unwrap_or_else(|| "ghost".into())
 }
 
-pub(super) const PR_FIELDS: &str = "number,title,body,url,state,isDraft,author,baseRefName,baseRefOid,headRefName,headRefOid,changedFiles,reviews,comments";
+pub(super) const PR_FIELDS: &str = "number,title,body,url,state,isDraft,author,baseRefName,baseRefOid,headRefName,headRefOid,changedFiles";
 
 /// Fetch everything Aside needs for one PR revision.
 pub fn fetch_snapshot(gh: &dyn GhRunner, pr_ref: &PrRef, limits: &Limits) -> Result<PrSnapshot> {
@@ -119,6 +100,15 @@ pub fn fetch_snapshot(gh: &dyn GhRunner, pr_ref: &PrRef, limits: &Limits) -> Res
     let github_threads_completeness = thread_import.completeness;
     let github_threads_problems = thread_import.problems;
     let github_threads = thread_import.threads;
+
+    let reviews = fetch_reviews(gh, pr_ref);
+    let comments = fetch_comments(gh, pr_ref);
+    for problem in &reviews.problems {
+        warnings.push(format!("reviews incomplete: {problem}"));
+    }
+    for problem in &comments.problems {
+        warnings.push(format!("comments incomplete: {problem}"));
+    }
 
     // The diff and paginated files API target a mutable PR number. A force push
     // or base update during ingestion must never yield a complete mixed revision.
@@ -163,25 +153,12 @@ pub fn fetch_snapshot(gh: &dyn GhRunner, pr_ref: &PrRef, limits: &Limits) -> Res
         github_threads,
         github_threads_completeness,
         github_threads_problems,
-        reviews: meta
-            .reviews
-            .iter()
-            .map(|r| ImportedReview {
-                author: login(&r.author),
-                state: r.state.clone(),
-                body: r.body.clone(),
-                submitted_at: r.submitted_at.clone(),
-            })
-            .collect(),
-        issue_comments: meta
-            .comments
-            .iter()
-            .map(|c| IssueComment {
-                author: login(&c.author),
-                body: c.body.clone(),
-                created_at: c.created_at.clone(),
-            })
-            .collect(),
+        reviews: reviews.records,
+        reviews_completeness: reviews.completeness,
+        reviews_problems: reviews.problems,
+        issue_comments: comments.records,
+        issue_comments_completeness: comments.completeness,
+        issue_comments_problems: comments.problems,
         warnings,
         complete,
         fetched_at: now_rfc3339(),

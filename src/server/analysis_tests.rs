@@ -507,6 +507,50 @@ async fn summary_matches_the_session_view() {
     }
 }
 
+#[tokio::test]
+async fn feedback_coverage_survives_refresh_and_api_reload() {
+    let mut snapshot = demo::snapshot(0);
+    snapshot.reviews_completeness = Completeness::Complete;
+    snapshot.issue_comments_completeness = Completeness::Partial;
+    let session = Session::with_analysis(
+        snapshot,
+        Store::open_in_memory().unwrap(),
+        None,
+        None,
+        vec![],
+        SchedulerConfig::default(),
+    )
+    .unwrap();
+    session.start_analysis().unwrap();
+    let app = app(&session);
+    let before = ok(&app, "/api/v1/analysis/summary").await;
+    let feedback = |summary: &Value| {
+        summary["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["sourceId"] == "github.reviews_and_comments")
+            .unwrap()
+            .clone()
+    };
+    let initial = feedback(&before);
+    assert_eq!(initial["completeness"], "partial");
+    assert_eq!(initial["status"], "partial");
+    assert_eq!(initial["state"], "incomplete");
+    assert!(!initial["limitations"].as_array().unwrap().is_empty());
+
+    session.refresh().await.unwrap();
+    let refreshed = ok(&app, "/api/v1/analysis/summary").await;
+    assert_ne!(before["snapshotId"], refreshed["snapshotId"]);
+    assert_eq!(feedback(&refreshed)["snapshotId"], refreshed["snapshotId"]);
+    assert_eq!(
+        refreshed["sources"],
+        ok(&app, "/api/v1/analysis/summary").await["sources"]
+    );
+    assert_eq!(feedback(&refreshed)["completeness"], "complete");
+    assert_eq!(feedback(&refreshed)["status"], "succeeded");
+}
+
 #[test]
 fn revision_conflict_surfaces_as_a_recoverable_409() {
     let error = super::super::db_error(crate::store::RevisionConflict { current: None }.into());

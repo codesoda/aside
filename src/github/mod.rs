@@ -3,6 +3,9 @@
 //! `gh` is always run with an argv array, never through a shell. All calls go
 //! through [`GhRunner`] so tests can substitute a fake.
 
+mod feedback;
+#[cfg(test)]
+mod feedback_tests;
 mod git_fallback;
 mod review;
 mod runner;
@@ -283,8 +286,11 @@ mod tests {
         assert_eq!(snap.files.len(), 1);
         assert!(snap.complete);
         assert_eq!(snap.github_threads[0].comments[0].database_id, Some(11));
-        assert_eq!(snap.reviews[0].author, "bob");
-        assert!(snap.warnings.is_empty());
+        assert!(snap.reviews.is_empty());
+        assert_eq!(
+            snap.reviews_completeness,
+            crate::model::Completeness::Failed
+        );
         assert_eq!(
             snap.github_threads_completeness,
             crate::model::Completeness::Complete
