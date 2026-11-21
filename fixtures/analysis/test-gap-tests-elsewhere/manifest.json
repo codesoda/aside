@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "name": "test-gap-tests-elsewhere",
+  "synthetic": true,
+  "description": "Synthetic boundary fixture (#36). Code change whose tests live in an unchanged file; no test file is in the PR.",
+  "repositoryId": "synthetic/boundary",
+  "prNumber": 9005,
+  "baseSha": "ebfe9dbfbc14fde05e2e2fafeb2112f155cdbe86",
+  "headSha": "fc195fa38bb996a028c8b2b22db526d3ace5ce5f",
+  "snapshotComplete": true,
+  "observedAt": "2026-01-01T00:00:00Z",
+  "scenarios": [
+    "19.2.test-files-not-modified"
+  ],
+  "unsupportedPaths": [],
+  "expectedCompleteness": "complete"
+}

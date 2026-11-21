@@ -510,3 +510,17 @@ fn run_id_scopes_evidence_but_not_findings() {
             .all(|f| f.source.run_id.as_ref() == Some(&rid))
     );
 }
+
+#[test]
+fn config_digest_changes_with_engine_version() {
+    let config = DiffFactsConfig::default();
+    assert_eq!(config.digest(), config.digest_for_engine(ENGINE_VERSION));
+    assert_ne!(
+        config.digest_for_engine("aside.diff-facts/1"),
+        config.digest_for_engine("aside.diff-facts/2")
+    );
+    assert_ne!(
+        config.digest(),
+        config.digest_for_engine("aside.diff-facts/1")
+    );
+}

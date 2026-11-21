@@ -1,0 +1,98 @@
+[
+  {
+    "ruleId": "aside.diff.pr_summary",
+    "path": null,
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "PR totals; null (unknown) whenever a binary, truncated or unlisted file makes them unmeasurable."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "README.md",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "assets/icon.png",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "bin/tool",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "internal/sync/sync.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "internal/sync/sync_test.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "lib/tool.rb",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "src/command.rs",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "src/table.rs",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.tests_touched",
+    "path": null,
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "Measured count of test files by path convention."
+  },
+  {
+    "ruleId": "aside.diff.schema_contract",
+    "path": "internal/sync/sync.go",
+    "assertionKind": "attention_hint",
+    "attention": "info",
+    "verdict": "appropriate",
+    "note": "Exported Go function gained a parameter: a real contract change for callers."
+  },
+  {
+    "ruleId": "aside.diff.schema_contract",
+    "path": "src/command.rs",
+    "assertionKind": "attention_hint",
+    "attention": "info",
+    "verdict": "appropriate",
+    "note": "A public-looking signature really changed; info-level prompt to check callers."
+  }
+]

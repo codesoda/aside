@@ -1,0 +1,25 @@
+diff --git a/src/math.rs b/src/math.rs
+index 1212121..5656565 100644
+--- a/src/math.rs
++++ b/src/math.rs
+@@ -2,10 +2,2 @@
+     a + b
+ }
+-
+-#[cfg(test)]
+-mod tests {
+-    #[test]
+-    fn adds() {
+-        assert_eq!(super::add(1, 2), 3);
+-    }
+-}
+diff --git a/tests/math.rs b/tests/math.rs
+new file mode 100644
+index 0000000..7878787
+--- /dev/null
++++ b/tests/math.rs
+@@ -0,0 +1,4 @@
++#[test]
++fn adds() {
++    assert_eq!(tool::add(1, 2), 3);
++}
