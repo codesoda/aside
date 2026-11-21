@@ -49,7 +49,7 @@ use crate::util::sha256_hex;
 /// Provider ID for runs of this scan.
 pub const PROVIDER_ID: &str = "aside.diff";
 /// Engine version. Bump when any rule version or the output shape changes.
-pub const ENGINE_VERSION: &str = "aside.diff-facts/2";
+pub const ENGINE_VERSION: &str = "aside.diff-facts/3";
 
 /// One deterministic rule and its immutable version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -780,12 +780,13 @@ pub fn scan(input: &DiffFactsInput<'_>, config: &DiffFactsConfig) -> DiffFacts {
             })
         });
         if let Some(outcome) = gate {
-            if !file.patch_complete {
-                reason_codes.push("patch_incomplete".into());
-            }
-            if matches!(&outcome, ScopeOutcome::Unknown { reason } if reason == "unsupported_language")
-            {
-                reason_codes.push("unsupported_language".into());
+            // A scope whose content was NOT examined — unknown (patch gaps,
+            // unsupported languages) or deliberately skipped (generated,
+            // oversized) — marks the whole run partial with a reason naming
+            // why (#65). Not-applicable outcomes (binary, mode-only) mean
+            // there was no content to read, and do not reduce coverage.
+            if let ScopeOutcome::Unknown { reason } | ScopeOutcome::NotRun { reason } = &outcome {
+                reason_codes.push(reason.clone());
             }
             for rule in content_rules {
                 entries.push(CoverageEntry {

@@ -22,6 +22,7 @@ bundled public capture.
 | `boundary-file-kinds` | Deleted source, deleted/added/modified binaries, mode-only (Rust and shell) |
 | `boundary-truncated` | Unverified snapshot plus a patch truncated mid-hunk |
 | `boundary-mixed` | Docs, binary, mode-only, Go code and test, deleted Ruby, rename with edit, truncated patch |
+| `boundary-generated` | A PR whose only file is generated: run is partial with reason `generated_file` (#65) |
 | `test-gap-tests-elsewhere` | Code change, tests live in an unchanged file |
 | `test-gap-moved-tests` | Inline tests moved to `tests/` |
 | `test-gap-docs-only` | Markdown only |
