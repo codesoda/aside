@@ -6,6 +6,10 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 $Repo = 'https://github.com/codesoda/aside'
 $InstallDir = Join-Path $HOME '.aside/bin'
 $Binary = Join-Path $InstallDir 'aside.exe'
+$InspectBinary = Join-Path $InstallDir 'inspect.exe'
+$InspectVersion = 'v0.1.1'
+$InspectAsset = 'inspect-windows-x86_64.exe'
+$InspectSHA256 = '29b26dd277c373f74f5aea9bef5661a42fe9f4c0fce72dd75c353ad796f2f1b1'
 
 function Get-Target {
     $Arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
@@ -38,19 +42,25 @@ function Get-LatestTag {
     } finally { $Client.Dispose(); $Handler.Dispose() }
 }
 
-function Install-Binary([string] $Source) {
+function Assert-SafeDestination([string] $Destination) {
     foreach ($Dir in @((Join-Path $HOME '.aside'), $InstallDir)) {
         if (Test-Path -LiteralPath $Dir) {
             $ExistingDir = Get-Item -LiteralPath $Dir -Force
             if ($ExistingDir.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Refusing to install through reparse point $Dir" }
         }
     }
-    if (Test-Path -LiteralPath $Binary) {
-        $Existing = Get-Item -LiteralPath $Binary -Force
-        if ($Existing.LinkType -or $Existing.PSIsContainer) { throw "Refusing to replace $Binary" }
+    if (Test-Path -LiteralPath $Destination) {
+        $Existing = Get-Item -LiteralPath $Destination -Force
+        if ($Existing.Attributes -band [IO.FileAttributes]::ReparsePoint -or $Existing.LinkType -or $Existing.PSIsContainer) {
+            throw "Refusing to replace $Destination"
+        }
     }
+}
+
+function Install-Binary([string] $Source, [string] $Destination = $Binary) {
+    Assert-SafeDestination $Destination
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-    Copy-Item -LiteralPath $Source -Destination $Binary -Force
+    Copy-Item -LiteralPath $Source -Destination $Destination -Force
 
     $UserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
     $Entries = @($UserPath -split ';' | Where-Object { $_.TrimEnd('\') -ieq $InstallDir.TrimEnd('\') })
@@ -61,7 +71,7 @@ function Install-Binary([string] $Source) {
     }
 }
 
-function Install-FromSource {
+function Install-FromSource([string] $StagingDir) {
     if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) { throw 'cargo is required to build from source' }
     if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) { throw 'pnpm is required to build the frontend from source' }
     & pnpm -C (Join-Path $PSScriptRoot 'app') install --frozen-lockfile
@@ -75,10 +85,10 @@ function Install-FromSource {
     } finally { Pop-Location }
     $Source = Join-Path $PSScriptRoot 'target/release/aside.exe'
     if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) { throw 'Source build did not produce aside.exe' }
-    Install-Binary $Source
+    Copy-Item -LiteralPath $Source -Destination (Join-Path $StagingDir 'aside.exe')
 }
 
-function Install-FromRelease {
+function Install-FromRelease([string] $StagingDir) {
     $Target = Get-Target
     $Tag = Get-LatestTag
     $Asset = "aside-$Tag-$Target.zip"
@@ -114,36 +124,100 @@ function Install-FromRelease {
                 try { $InputStream.CopyTo($OutputStream) } finally { $OutputStream.Dispose() }
             } finally { $InputStream.Dispose() }
         } finally { $Zip.Dispose() }
-        Install-Binary $Source
+        Copy-Item -LiteralPath $Source -Destination (Join-Path $StagingDir 'aside.exe')
     } finally { Remove-Item -LiteralPath $TempDir -Recurse -Force }
 }
 
 try {
-    # Even when run from the repository checkout, install the latest release by default.
-    if ($FromSource) {
-        if (-not $PSScriptRoot -or
-            -not (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'Cargo.toml') -PathType Leaf) -or
-            -not (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'skills/aside/SKILL.md') -PathType Leaf) -or
-            -not (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'app/package.json') -PathType Leaf)) {
-            throw '-FromSource requires the Aside checkout with app/ and skills/aside/'
-        }
-        Install-FromSource
-    } else {
-        Install-FromRelease
+    # Inspect has no native Windows ARM64 release. Do not install either executable there.
+    $Target = Get-Target
+    if ($Target -ne 'x86_64-pc-windows-msvc') { throw 'Inspect v0.1.1 has no native Windows ARM64 executable; refusing to install' }
+    Assert-SafeDestination $Binary
+    Assert-SafeDestination $InspectBinary
+    if ($FromSource -and (-not $PSScriptRoot -or
+        -not (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'Cargo.toml') -PathType Leaf) -or
+        -not (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'skills/aside/SKILL.md') -PathType Leaf) -or
+        -not (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'app/package.json') -PathType Leaf))) {
+        throw '-FromSource requires the Aside checkout with app/ and skills/aside/'
     }
-    & $Binary --version
-    if ($LASTEXITCODE -ne 0) { throw 'Installed binary failed to run' }
-    & $Binary skill
-    if ($LASTEXITCODE -ne 0) { throw 'Embedded skill installation failed' }
-    Write-Host "Installed aside at $Binary."
+
+    # Fetch and verify Inspect before installing either executable, including in -FromSource mode.
+    $InspectTemp = Join-Path ([IO.Path]::GetTempPath()) ("aside-inspect-" + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $InspectTemp | Out-Null
+    try {
+        $InspectSource = Join-Path $InspectTemp $InspectAsset
+        Invoke-WebRequest -Uri "https://github.com/Ataraxy-Labs/inspect/releases/download/$InspectVersion/$InspectAsset" -OutFile $InspectSource -UseBasicParsing
+        if (-not (Test-Path -LiteralPath $InspectSource -PathType Leaf) -or (Get-Item -LiteralPath $InspectSource).Length -le 0 -or
+            (Get-FileHash -LiteralPath $InspectSource -Algorithm SHA256).Hash -ine $InspectSHA256) {
+            throw "SHA256 mismatch or empty download for $InspectAsset; refusing to install"
+        }
+
+        # Stage Aside before changing either managed binary.
+        if ($FromSource) {
+            Install-FromSource $InspectTemp
+        } else {
+            Install-FromRelease $InspectTemp
+        }
+        $AsideSource = Join-Path $InspectTemp 'aside.exe'
+        if (-not (Test-Path -LiteralPath $AsideSource -PathType Leaf) -or
+            (Get-Item -LiteralPath $AsideSource).Length -le 0) { throw 'Staged Aside binary is missing or empty' }
+
+        # Snapshot both destinations before the first copy. Keep backups outside the install directory.
+        $Managed = @(
+            @{ Destination = $Binary; Backup = (Join-Path $InspectTemp 'aside.backup'); Existed = $false },
+            @{ Destination = $InspectBinary; Backup = (Join-Path $InspectTemp 'inspect.backup'); Existed = $false }
+        )
+        foreach ($Entry in $Managed) {
+            Assert-SafeDestination $Entry.Destination
+            if (Test-Path -LiteralPath $Entry.Destination) {
+                Copy-Item -LiteralPath $Entry.Destination -Destination $Entry.Backup
+                $Entry.Existed = $true
+            }
+        }
+        try {
+            Install-Binary $AsideSource
+            Install-Binary $InspectSource $InspectBinary
+            & $Binary --version
+            if ($LASTEXITCODE -ne 0) { throw 'Installed binary failed to run' }
+            & $Binary skill
+            if ($LASTEXITCODE -ne 0) { throw 'Embedded skill installation failed' }
+        } catch {
+            $InstallError = $_
+            foreach ($Entry in $Managed) {
+                try {
+                    Assert-SafeDestination $Entry.Destination
+                    if ($Entry.Existed) {
+                        Copy-Item -LiteralPath $Entry.Backup -Destination $Entry.Destination -Force
+                    } elseif (Test-Path -LiteralPath $Entry.Destination) {
+                        Remove-Item -LiteralPath $Entry.Destination -Force
+                    }
+                } catch {
+                    Write-Warning "Could not restore $($Entry.Destination): $_"
+                }
+            }
+            throw $InstallError
+        }
+    } finally {
+        try { Remove-Item -LiteralPath $InspectTemp -Recurse -Force }
+        catch { Write-Warning "Could not clean up temporary installer files: $_" }
+    }
+    # User PATH changes do not update this PowerShell process or agents launched from it.
+    $env:Path = "$InstallDir;$env:Path"
+    Write-Host "Installed aside at $Binary and Inspect $InspectVersion at $InspectBinary."
+    Write-Host 'Inspect is licensed under FSL-1.1-ALv2: https://github.com/Ataraxy-Labs/inspect/blob/v0.1.1/LICENSE.md'
     if (-not [Console]::IsInputRedirected) {
-        $Answer = Read-Host 'Run the interactive aside demo now? [y/N]'
+        $Answer = Read-Host 'Run a live Aside review example with an agent? [y/N]'
         if ($Answer -match '^(?i:y|yes)$') {
-            & $Binary demo
-            if ($LASTEXITCODE -ne 0) { throw 'Demo failed' }
-        } else { Write-Host 'Run aside demo when ready.' }
+            $Agent = (Read-Host 'Choose agent (claude/codex/pi)').Trim().ToLowerInvariant()
+            if ($Agent -notin @('claude', 'codex', 'pi')) { throw "Unknown agent: $Agent" }
+            $Launcher = Get-Command $Agent -CommandType Application -ErrorAction SilentlyContinue
+            if (-not $Launcher) { throw "Agent launcher not found: $Agent" }
+            $Prompt = 'use aside to review https://github.com/cli/cli/pull/14921'
+            & $Launcher.Source $Prompt
+            if ($LASTEXITCODE -ne 0) { throw "$Agent live example failed" }
+        } else { Write-Host 'Skipped live example.' }
     } else {
-        Write-Host 'Host agent: ask the user whether to run aside demo; run it only with explicit approval.'
+        Write-Host 'Skipped live example (noninteractive).'
     }
 } catch {
     Write-Error "aside installation failed: $_"
