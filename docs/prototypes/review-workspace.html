@@ -1,0 +1,1450 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Aside · Review Workspace Prototype</title>
+    <!-- Standalone baseline from the interactive preview at https://asidecode.dev/#preview (web/index.html). -->
+    <style>
+      :root {
+        --ink: #15201d;
+        --sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+        --purple: #6553d8;
+        --purple-light: #f0edff;
+        --dark: #202826;
+        --mono:
+          ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        color: var(--ink);
+        background: #fff;
+        font-family: var(--sans);
+        -webkit-font-smoothing: antialiased;
+      }
+      button,
+      input {
+        font: inherit;
+      }
+      button {
+        cursor: pointer;
+      }
+      button:focus-visible,
+      input:focus-visible {
+        outline: 3px solid #a59aee;
+        outline-offset: 3px;
+      }
+      ::selection {
+        background: #ddd7ff;
+      }
+      .icon {
+        width: 16px;
+        height: 16px;
+        display: inline-block;
+        vertical-align: middle;
+        flex-shrink: 0;
+        stroke: currentColor;
+        fill: none;
+        stroke-width: 1.8;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .app-shell {
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+      .app-shell > .app-body {
+        flex: 1;
+      }
+      .app-toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 15px;
+        border-bottom: 1px solid #e8ede7;
+        padding: 17px 22px;
+        background: #fff;
+      }
+      .pr-crumb {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: #8d978f;
+        margin-bottom: 7px;
+      }
+      .pr-title {
+        font-size: 17px;
+        font-weight: 780;
+        letter-spacing: -0.03em;
+        margin: 0;
+      }
+      .pr-number {
+        font-weight: 500;
+        color: #839088;
+      }
+      .toolbar-right {
+        display: flex;
+        gap: 7px;
+        align-items: center;
+      }
+      .status-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 10px;
+        font-weight: 700;
+        border-radius: 20px;
+        padding: 7px 10px;
+        background: #eaf5ef;
+        color: #36715a;
+      }
+      .status-pill .dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: currentColor;
+      }
+      .ghost-btn {
+        background: white;
+        color: #55625a;
+        border: 1px solid #e1e6df;
+        border-radius: 8px;
+        padding: 7px 10px;
+        display: inline-flex;
+        gap: 6px;
+        align-items: center;
+        font-size: 11px;
+        font-weight: 700;
+      }
+      .ghost-btn:hover {
+        background: #f4f6f2;
+      }
+      .app-tabs {
+        display: flex;
+        flex-wrap: wrap;
+        padding: 0 22px;
+        gap: 23px;
+        background: #fff;
+        border-bottom: 1px solid #e7ebe6;
+      }
+      .app-tab {
+        border: 0;
+        border-bottom: 2px solid transparent;
+        background: transparent;
+        min-height: 43px;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        font-size: 12px;
+        color: #79857b;
+        font-weight: 680;
+        padding: 0 3px;
+      }
+      .app-tab.active {
+        border-bottom-color: var(--purple);
+        color: #28372f;
+      }
+      .count {
+        background: #edf0ed;
+        border-radius: 99px;
+        padding: 2px 6px;
+        font-size: 10px;
+      }
+      .app-body {
+        display: grid;
+        grid-template-columns: 282px minmax(0, 1fr);
+        min-height: 435px;
+        background: #fff;
+      }
+      .app-body.tree-collapsed {
+        grid-template-columns: 54px minmax(0, 1fr);
+      }
+      .app-body.tree-collapsed .side-panel {
+        padding: 20px 8px;
+      }
+      .app-body.tree-collapsed .side-heading {
+        margin: 0;
+        justify-content: center;
+      }
+      .app-body.tree-collapsed .side-heading-text,
+      .app-body.tree-collapsed .side-desc,
+      .app-body.tree-collapsed .tree-controls,
+      .app-body.tree-collapsed #file-tree,
+      .app-body.tree-collapsed .sidebar-tip {
+        display: none;
+      }
+      .tree-collapse {
+        border: 1px solid #dfe5dc;
+        border-radius: 6px;
+        background: #fff;
+        color: #526457;
+        width: 25px;
+        height: 25px;
+        display: grid;
+        place-items: center;
+        font-size: 15px;
+        line-height: 1;
+        flex: none;
+      }
+      .tree-collapse:hover {
+        background: var(--purple-light);
+        color: var(--purple);
+      }
+      .side-panel {
+        background: #fbfcfa;
+        border-right: 1px solid #e7ebe5;
+        padding: 20px 14px;
+      }
+      .side-heading {
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.01em;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin: 0 8px 7px;
+      }
+      .side-desc {
+        font-size: 11px;
+        line-height: 1.5;
+        color: #8a968a;
+        margin: 0 8px 17px;
+      }
+      .tree-controls {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        color: #7e8a80;
+        margin: 0 8px 9px;
+        font-size: 10px;
+        font-weight: 650;
+      }
+      .toggle-ignored {
+        border: 0;
+        background: none;
+        color: var(--purple);
+        font-size: 10px;
+        font-weight: 750;
+        padding: 0;
+      }
+      .tree-group {
+        font-size: 11px;
+        font-weight: 800;
+        color: #526457;
+        padding: 12px 8px 5px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .folder-ignore {
+        border: 0;
+        background: transparent;
+        font-size: 10px;
+        color: #8f9d92;
+        font-weight: 700;
+        padding: 3px 4px;
+        border-radius: 5px;
+      }
+      .folder-ignore:hover {
+        background: #ece9fb;
+        color: var(--purple);
+      }
+      .tree-file {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        width: 100%;
+        border: 0;
+        background: none;
+        text-align: left;
+        border-radius: 7px;
+        padding: 9px 8px 9px 17px;
+        color: #526055;
+        font-family: var(--mono);
+        font-size: 10.5px;
+        min-width: 0;
+      }
+      .tree-file:hover {
+        background: #f1f4ee;
+      }
+      .tree-file.active {
+        color: #4d42c3;
+        background: #f0edff;
+        font-weight: 700;
+      }
+      .tree-file.ignored {
+        color: #a5aea4;
+      }
+      .tree-file.ignored .file-name {
+        text-decoration: line-through;
+      }
+      .file-symbol {
+        font-size: 12px;
+        color: #86958a;
+      }
+      .file-name {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        flex: 1;
+      }
+      .file-actions {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        margin-left: auto;
+      }
+      .file-status {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #e2b66a;
+      }
+      .file-status.done {
+        background: #5a9b7d;
+      }
+      .file-status.ignored {
+        background: #bac4b8;
+      }
+      .ignore-toggle {
+        color: #929e95;
+        background: transparent;
+        border: 0;
+        border-radius: 5px;
+        font-size: 13px;
+        line-height: 1;
+        padding: 2px 4px;
+        opacity: 0;
+        transition: opacity 0.15s;
+      }
+      .tree-file:hover .ignore-toggle,
+      .tree-file:focus-within .ignore-toggle,
+      .tree-file.active .ignore-toggle {
+        opacity: 1;
+      }
+      .ignore-toggle:hover {
+        background: #e6e5f7;
+        color: #594bc6;
+      }
+      .sidebar-tip {
+        margin: 19px 7px 0;
+        border: 1px dashed #cbd3c9;
+        border-radius: 9px;
+        padding: 11px;
+        color: #7b887d;
+        font-size: 10px;
+        line-height: 1.5;
+      }
+      .app-main {
+        padding: 23px 25px 26px;
+        min-width: 0;
+      }
+      .app-view-heading {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 19px;
+      }
+      .micro-eyebrow {
+        font-size: 10px;
+        text-transform: uppercase;
+        color: var(--purple);
+        font-weight: 800;
+        letter-spacing: 0.12em;
+        margin-bottom: 7px;
+      }
+      .app-view-heading h2 {
+        font-size: 18px;
+        margin: 0 0 5px;
+        letter-spacing: -0.035em;
+      }
+      .app-view-heading p {
+        font-size: 11px;
+        color: #819086;
+        line-height: 1.45;
+        margin: 0;
+      }
+      .small-cta {
+        padding: 9px 12px;
+        border: 0;
+        border-radius: 8px;
+        background: var(--dark);
+        color: #fff;
+        font-size: 11px;
+        font-weight: 800;
+        display: inline-flex;
+        gap: 7px;
+        align-items: center;
+        white-space: nowrap;
+      }
+      .small-cta:hover {
+        background: var(--purple);
+      }
+      .stats-row {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 9px;
+        margin-bottom: 18px;
+      }
+      .stat {
+        border: 1px solid #e8ece6;
+        padding: 13px 15px;
+        border-radius: 10px;
+        background: #fff;
+      }
+      .stat strong {
+        font-size: 23px;
+        letter-spacing: -0.05em;
+      }
+      .stat span {
+        font-size: 10px;
+        color: #839088;
+        margin-left: 6px;
+      }
+      .findings-title {
+        font-size: 11px;
+        font-weight: 800;
+        margin-bottom: 10px;
+      }
+      .finding {
+        display: flex;
+        gap: 10px;
+        align-items: flex-start;
+        padding: 13px 14px;
+        border: 1px solid #e8ebe6;
+        border-radius: 9px;
+        margin-bottom: 8px;
+        cursor: pointer;
+        transition:
+          box-shadow 0.2s,
+          border-color 0.2s;
+      }
+      .finding:hover {
+        box-shadow: 0 6px 20px #1c2b1e0c;
+        border-color: #c6c0f2;
+      }
+      .finding-mark {
+        display: grid;
+        place-items: center;
+        border-radius: 7px;
+        flex-shrink: 0;
+        width: 27px;
+        height: 27px;
+        background: #fbefdd;
+        color: #a56d2f;
+        font-size: 14px;
+      }
+      .finding-mark.purple {
+        background: #eeebff;
+        color: #6653d8;
+      }
+      .finding-mark.green {
+        background: #eaf5ef;
+        color: #5d8569;
+      }
+      .finding-text {
+        min-width: 0;
+        flex: 1;
+      }
+      .finding-text strong {
+        display: block;
+        font-family: var(--mono);
+        font-weight: 760;
+        font-size: 11px;
+        margin: 1px 0 5px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .finding-text p {
+        margin: 0;
+        font-size: 10.5px;
+        line-height: 1.5;
+        color: #819086;
+      }
+      .finding-chip {
+        font-size: 9px;
+        white-space: nowrap;
+        background: #f1f3f0;
+        border-radius: 5px;
+        padding: 4px 6px;
+        color: #758077;
+        font-weight: 700;
+      }
+      .below-finding {
+        color: #939c94;
+        font-size: 10px;
+        margin-top: 15px;
+      }
+      .view-hidden {
+        display: none !important;
+      }
+      .review-diff {
+        max-height: 250px;
+        overflow: auto;
+      }
+      .diff-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        align-items: center;
+        padding: 13px 15px;
+        border: 1px solid #e3e7e0;
+        background: #f7f9f6;
+        border-radius: 9px 9px 0 0;
+        position: sticky;
+        top: 0;
+        z-index: 1;
+      }
+      .diff-head-actions {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .diff-head .reviewed-label {
+        white-space: nowrap;
+        font-size: 11px;
+        font-weight: 700;
+      }
+      .diff-path {
+        font-family: var(--mono);
+        font-size: 11px;
+        font-weight: 750;
+      }
+      .diff-subtitle {
+        font-size: 10px;
+        color: #89948a;
+        margin-top: 4px;
+      }
+      .diff-count {
+        font-size: 10px;
+        display: flex;
+        gap: 4px;
+        white-space: nowrap;
+      }
+      .diff-count .plus {
+        color: #347859;
+      }
+      .diff-count .minus {
+        color: #b65d55;
+      }
+      .code-block {
+        overflow: auto;
+        border: 1px solid #e3e7e0;
+        border-top: 0;
+        border-radius: 0 0 9px 9px;
+        font: 11px/1.8 var(--mono);
+        padding: 10px 0;
+        background: #fff;
+        min-height: 192px;
+      }
+      .code-line {
+        display: flex;
+        white-space: pre;
+        min-width: max-content;
+      }
+      .code-line.add {
+        background: #eaf5eb;
+        color: #335a45;
+      }
+      .code-line.del {
+        background: #faecea;
+        color: #914e4d;
+      }
+      .code-line.context {
+        color: #42524a;
+      }
+      .line-no {
+        display: inline-block;
+        min-width: 52px;
+        text-align: right;
+        padding-right: 15px;
+        flex-shrink: 0;
+        color: #9ba7a0;
+        user-select: none;
+        border-right: 1px solid #ebeee8;
+        margin-right: 14px;
+      }
+      .review-note {
+        display: flex;
+        gap: 10px;
+        margin-top: 12px;
+        border: 1px solid #e2def6;
+        border-radius: 10px;
+        padding: 12px;
+        background: #faf9ff;
+      }
+      .avatar {
+        flex-shrink: 0;
+        width: 27px;
+        height: 27px;
+        display: grid;
+        place-items: center;
+        border-radius: 8px;
+        background: #d7cdf5;
+        color: #5645b1;
+        font-size: 10px;
+        font-weight: 850;
+      }
+      .review-note strong {
+        font-size: 10px;
+      }
+      .review-note p {
+        color: #68726e;
+        font-size: 10px;
+        line-height: 1.5;
+        margin: 5px 0 0;
+      }
+      .diff-foot {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-top: 14px;
+        font-size: 10px;
+        color: #859189;
+      }
+      .reviewed-label {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+      }
+      .review-checkbox {
+        width: 15px;
+        height: 15px;
+        accent-color: var(--purple);
+      }
+      .review-layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 230px;
+        gap: 14px;
+        align-items: start;
+      }
+      .review-diff {
+        min-width: 0;
+      }
+      .thread-panel {
+        min-width: 0;
+        border: 1px solid #e2e6df;
+        border-radius: 10px;
+        background: #fbfcfa;
+        padding: 12px;
+      }
+      .thread-panel h3 {
+        font-size: 11px;
+        margin: 0 0 9px;
+      }
+      .thread-panel .review-note {
+        margin-top: 0;
+        scroll-margin: 12px;
+      }
+      .thread-panel .review-note.active {
+        border-color: var(--purple);
+        box-shadow: 0 0 0 2px #e2ddff;
+      }
+      .thread-panel .review-note:focus {
+        outline: 2px solid var(--purple);
+        outline-offset: 2px;
+      }
+      .thread-empty {
+        font-size: 11px;
+        color: #819086;
+        margin: 0;
+      }
+      .thread-marker {
+        width: 11px;
+        height: 11px;
+        flex: none;
+        align-self: center;
+        margin: 0 8px;
+        border: 2px solid #fff;
+        border-radius: 50%;
+        background: var(--purple);
+        box-shadow: 0 0 0 1px #5947bc;
+        cursor: pointer;
+      }
+      .thread-marker:hover,
+      .thread-marker.active {
+        box-shadow: 0 0 0 3px #dcd5ff;
+      }
+      .toast {
+        position: fixed;
+        bottom: 22px;
+        left: 50%;
+        transform: translate(-50%, 30px);
+        opacity: 0;
+        pointer-events: none;
+        padding: 11px 17px;
+        border-radius: 10px;
+        background: #1e2923;
+        color: white;
+        z-index: 40;
+        box-shadow: 0 14px 30px #0002;
+        font-size: 12px;
+        font-weight: 750;
+        transition:
+          opacity 0.2s,
+          transform 0.2s;
+      }
+      .toast.on {
+        transform: translate(-50%, 0);
+        opacity: 1;
+      }
+      @media (max-width: 1030px) {
+        .app-body {
+          grid-template-columns: 238px minmax(0, 1fr);
+        }
+        .side-panel {
+          padding-inline: 9px;
+        }
+        .app-main {
+          padding: 19px 17px;
+        }
+      }
+      @media (max-width: 760px) {
+        .review-layout {
+          grid-template-columns: 1fr;
+        }
+        .app-toolbar {
+          padding: 15px;
+        }
+        .pr-title {
+          font-size: 14px;
+        }
+        .app-tabs {
+          padding: 0 13px;
+        }
+        .app-body {
+          grid-template-columns: 1fr;
+          align-content: start;
+        }
+        .side-panel {
+          border-right: 0;
+          border-bottom: 1px solid #e7ebe5;
+          padding: 13px;
+        }
+        .tree-file {
+          padding: 9px;
+        }
+        .app-body.tree-collapsed {
+          grid-template-columns: 1fr;
+        }
+        .app-body.tree-collapsed .side-panel {
+          padding: 10px 13px;
+        }
+        .app-body.tree-collapsed .side-heading {
+          justify-content: flex-start;
+        }
+        .side-panel .sidebar-tip {
+          display: none;
+        }
+        .app-main {
+          padding: 19px 13px;
+        }
+        .app-view-heading {
+          align-items: center;
+        }
+        .app-view-heading h2 {
+          font-size: 17px;
+        }
+      }
+      @media (max-width: 430px) {
+        .diff-head {
+          flex-wrap: wrap;
+        }
+        .diff-head-actions {
+          width: 100%;
+          justify-content: space-between;
+        }
+        .app-toolbar .toolbar-right .status-pill {
+          font-size: 9px;
+        }
+        .app-tabs {
+          gap: 10px;
+        }
+        .app-toolbar {
+          flex-wrap: wrap;
+          gap: 8px;
+        }
+        .app-tab {
+          font-size: 11px;
+        }
+        .stats-row {
+          gap: 5px;
+        }
+        .stat {
+          padding: 10px 8px;
+        }
+        .stat strong {
+          font-size: 20px;
+        }
+        .stat span {
+          font-size: 9px;
+          margin-left: 3px;
+        }
+        .finding-chip {
+          display: none;
+        }
+        .review-note {
+          padding: 10px;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          transition: none !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <svg aria-hidden="true" style="display: none">
+      <symbol id="i-arrow" viewBox="0 0 24 24">
+        <path d="M5 12h14m-6-6 6 6-6 6" />
+      </symbol>
+    </svg>
+    <main class="app-shell" aria-label="Aside review workspace prototype">
+      <div class="app-toolbar">
+        <div>
+          <div class="pr-crumb">
+            codesoda / aside
+            <span style="color: #a5aea5">/ pull requests /</span> #42
+          </div>
+          <h1 class="pr-title">
+            Harden session token refresh <span class="pr-number">#42</span>
+          </h1>
+        </div>
+        <div class="toolbar-right">
+          <span class="status-pill"><span class="dot"></span> Open</span
+          ><button class="ghost-btn" id="reset-demo">Reset demo</button>
+        </div>
+      </div>
+      <div class="app-tabs">
+        <button class="app-tab active" data-tab="prepare">
+          Review prep <span class="count">4</span></button
+        ><button class="app-tab" data-tab="review">
+          Files changed <span class="count">6</span></button
+        ><button class="app-tab" data-tab="feedback">
+          Conversations <span class="count">3</span>
+        </button>
+      </div>
+      <div class="app-body">
+        <aside class="side-panel" aria-label="Review file tree">
+          <div class="side-heading">
+            <span class="side-heading-text"
+              >Changed files <span id="scope-count">3 / 6</span></span
+            ><button
+              type="button"
+              class="tree-collapse"
+              id="tree-collapse"
+              aria-controls="file-tree"
+              aria-expanded="true"
+              aria-label="Collapse file tree"
+              title="Collapse file tree"
+            >
+              ‹
+            </button>
+          </div>
+          <p class="side-desc">
+            Choose what deserves your attention. Exclusions persist across PRs
+            in the same repo.
+          </p>
+          <div class="tree-controls">
+            <span>REVIEW SCOPE</span
+            ><button type="button" class="toggle-ignored" id="toggle-ignored">
+              Hide ignored
+            </button>
+          </div>
+          <div id="file-tree"></div>
+          <div class="sidebar-tip">
+            Tip: use the <strong>eye button</strong> beside a file to ignore or
+            re-include it. The preview remembers your choice in this browser.
+          </div>
+        </aside>
+        <div class="app-main">
+          <div id="prepare-view">
+            <div class="app-view-heading">
+              <div>
+                <div class="micro-eyebrow">
+                  PRE-REVIEW · SCOPE &amp; SIGNALS
+                </div>
+                <h2>Start with the important bits.</h2>
+                <p>
+                  Based on your review history, the PR, and existing feedback.
+                </p>
+              </div>
+              <button class="small-cta" id="start-review">
+                Start reviewing
+                <svg
+                  class="icon"
+                  aria-hidden="true"
+                  style="width: 13px; height: 13px"
+                >
+                  <use href="#i-arrow" />
+                </svg>
+              </button>
+            </div>
+            <div class="stats-row">
+              <div class="stat">
+                <strong id="included-count">3</strong><span>in scope</span>
+              </div>
+              <div class="stat">
+                <strong id="ignored-count">3</strong><span>ignored</span>
+              </div>
+              <div class="stat">
+                <strong id="reviewed-count">1</strong
+                ><span>already reviewed</span>
+              </div>
+            </div>
+            <div class="findings-title">Suggested places to look</div>
+            <div class="finding" data-file="session">
+              <span class="finding-mark">↗</span>
+              <div class="finding-text">
+                <strong>src/auth/session.rs</strong>
+                <p>
+                  High historical churn · Function complexity increased · 2
+                  unresolved review threads.
+                </p>
+              </div>
+              <span class="finding-chip">High attention</span>
+            </div>
+            <div class="finding" data-file="token">
+              <span class="finding-mark purple">⟳</span>
+              <div class="finding-text">
+                <strong>src/auth/token.rs</strong>
+                <p>
+                  Frequently changes with session.rs · Public function modified
+                  in this PR.
+                </p>
+              </div>
+              <span class="finding-chip">Related change</span>
+            </div>
+            <div class="finding" data-file="routes">
+              <span class="finding-mark green">✓</span>
+              <div class="finding-text">
+                <strong>src/api/routes.rs</strong>
+                <p>
+                  Unchanged since your last pass. Your review progress is
+                  preserved.
+                </p>
+              </div>
+              <span class="finding-chip">Already reviewed</span>
+            </div>
+            <div class="below-finding">
+              Illustrative signals only · No analysis has been run against a
+              real repository.
+            </div>
+          </div>
+          <div id="review-view" class="view-hidden">
+            <div class="app-view-heading">
+              <div>
+                <div class="micro-eyebrow">FILES CHANGED · REVIEW</div>
+                <h2 id="review-heading">Pick up where you left off.</h2>
+                <p>
+                  Draft privately. Your reviewed state is tied to the version of
+                  each diff.
+                </p>
+              </div>
+              <button class="ghost-btn" id="back-to-prep">← Scope</button>
+            </div>
+            <div class="review-layout">
+              <div class="review-diff">
+                <div class="diff-head">
+                  <div>
+                    <div class="diff-path" id="diff-path">
+                      src/auth/session.rs
+                    </div>
+                    <div class="diff-subtitle" id="diff-subtitle">
+                      Example patch · 1 hunk
+                    </div>
+                  </div>
+                  <div class="diff-head-actions">
+                    <div class="diff-count">
+                      <span class="plus">+8</span> <span class="minus">−3</span>
+                    </div>
+                    <label class="reviewed-label"
+                      ><input
+                        class="review-checkbox"
+                        type="checkbox"
+                        id="mark-reviewed"
+                      />
+                      Viewed</label
+                    >
+                  </div>
+                </div>
+                <div
+                  class="code-block"
+                  id="diff-lines"
+                  aria-label="Example code diff"
+                ></div>
+                <div class="diff-foot">
+                  <span>Saved locally · no GitHub changes</span>
+                </div>
+              </div>
+              <aside class="thread-panel" aria-label="Threads on selected file">
+                <h3>Threads (<span id="thread-count">1</span>)</h3>
+                <div class="review-note" id="review-thread" tabindex="-1">
+                  <span class="avatar">CR</span>
+                  <div>
+                    <strong
+                      >review-bot
+                      <span style="font-weight: 500; color: #929d92"
+                        >· Existing GitHub thread</span
+                      ></strong
+                    >
+                    <p id="review-comment">
+                      Could two simultaneous refreshes write different tokens?
+                      This path might need a lock or compare-and-swap.
+                    </p>
+                  </div>
+                </div>
+                <p class="thread-empty view-hidden" id="review-empty">
+                  No threads on this file.
+                </p>
+              </aside>
+            </div>
+          </div>
+          <div id="feedback-view" class="view-hidden">
+            <div class="app-view-heading">
+              <div>
+                <div class="micro-eyebrow">EXISTING REVIEW FEEDBACK</div>
+                <h2>All the feedback, one place.</h2>
+                <p>Conversations from people and GitHub review bots.</p>
+              </div>
+              <button class="small-cta" id="feedback-review">
+                Review files
+                <svg
+                  class="icon"
+                  aria-hidden="true"
+                  style="width: 13px; height: 13px"
+                >
+                  <use href="#i-arrow" />
+                </svg>
+              </button>
+            </div>
+            <div class="finding" data-file="session">
+              <span class="finding-mark purple">◎</span>
+              <div class="finding-text">
+                <strong>review-bot · src/auth/session.rs:48</strong>
+                <p>
+                  Is the refresh operation safe under concurrent requests? ·
+                  Unresolved
+                </p>
+              </div>
+              <span class="finding-chip">Bot</span>
+            </div>
+            <div class="finding" data-file="token">
+              <span class="finding-mark">@</span>
+              <div class="finding-text">
+                <strong>maya · src/auth/token.rs:32</strong>
+                <p>
+                  Can we preserve the previous expiry behaviour here? ·
+                  Unresolved
+                </p>
+              </div>
+              <span class="finding-chip">Human</span>
+            </div>
+            <div class="finding" data-file="session">
+              <span class="finding-mark green">✓</span>
+              <div class="finding-text">
+                <strong>ci-checks · src/auth/session.rs</strong>
+                <p>
+                  Integration suite passed on the last commit · Informational
+                </p>
+              </div>
+              <span class="finding-chip">Check</span>
+            </div>
+            <div class="below-finding">
+              Example imported feedback. Aside preserves the original source and
+              thread state.
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script>
+      const STORAGE_KEY = "aside-review-prototype-v1";
+      // Example data only. All review actions stay in this browser.
+      const files = [
+        {
+          id: "session",
+          path: "src/auth/session.rs",
+          short: "session.rs",
+          dir: "src/auth/",
+          reviewed: false,
+          lines: [
+            ["context", "42", " async fn refresh_session(session: &Session) {"],
+            ["del", "43", "-    let token = refresh(session.token).await?;"],
+            ["add", "43", "+    let lock = session.refresh_lock().await;"],
+            ["add", "44", "+    let _guard = lock.acquire().await?;"],
+            ["add", "45", "+    let token = refresh(session.token).await?;"],
+            ["context", "46", "     session.persist(token).await?;"],
+            ["context", "47", " }"],
+          ],
+          comment:
+            "Could two simultaneous refreshes write different tokens? This path might need a lock or compare-and-swap.",
+        },
+        {
+          id: "token",
+          path: "src/auth/token.rs",
+          short: "token.rs",
+          dir: "src/auth/",
+          reviewed: false,
+          lines: [
+            ["context", "26", " pub fn token_valid(token: &Token) -> bool {"],
+            ["del", "27", "-    token.expiry > clock::now()"],
+            ["add", "27", "+    token.expiry > clock::now() + jitter_guard()"],
+            ["context", "28", " }"],
+          ],
+          comment:
+            "Can we preserve the previous expiry behaviour here? This function is called from the worker.",
+        },
+        {
+          id: "routes",
+          path: "src/api/routes.rs",
+          short: "routes.rs",
+          dir: "src/api/",
+          reviewed: true,
+          lines: [
+            ["context", "17", " pub fn routes() -> Router {"],
+            [
+              "add",
+              "18",
+              '+    .route("/session/refresh", post(refresh_session))',
+            ],
+            ["context", "19", " }"],
+          ],
+          comment: "No outstanding inline discussions on this file.",
+        },
+        {
+          id: "types",
+          path: "src/generated/types.rs",
+          short: "types.rs",
+          dir: "src/generated/",
+          reviewed: false,
+          ignored: true,
+          lines: [
+            ["context", "1", " // Generated types — example"],
+            ["add", "2", "+pub struct SessionResponse { ... }"],
+          ],
+          comment:
+            "This generated file is ignored by your repository scope rules.",
+        },
+        {
+          id: "schema",
+          path: "src/generated/schema.rs",
+          short: "schema.rs",
+          dir: "src/generated/",
+          reviewed: false,
+          ignored: true,
+          lines: [
+            ["context", "1", " // Generated schema — example"],
+            ["add", "2", "+const VERSION: u32 = 4;"],
+          ],
+          comment:
+            "This generated file is ignored by your repository scope rules.",
+        },
+        {
+          id: "lock",
+          path: "Cargo.lock",
+          short: "Cargo.lock",
+          dir: "",
+          reviewed: false,
+          ignored: true,
+          lines: [
+            ["context", "1", " version = 4"],
+            ["add", "2", '+name = "session-guard"'],
+          ],
+          comment: "Cargo.lock is ignored by your repository scope rules.",
+        },
+      ];
+      const defaultIgnored = ["types", "schema", "lock"];
+      let state = {
+        ignored: [...defaultIgnored],
+        reviewed: ["routes"],
+        selected: "session",
+        tab: "prepare",
+        showIgnored: true,
+      };
+      try {
+        const s = JSON.parse(localStorage.getItem(STORAGE_KEY));
+        if (s && Array.isArray(s.ignored) && Array.isArray(s.reviewed)) {
+          state = { ...state, ...s, tab: "prepare" };
+        }
+      } catch (_) {
+        /* Private mode still works. */
+      }
+      const $ = (id) => document.getElementById(id),
+        selectedFile = () =>
+          files.find((f) => f.id === state.selected) || files[0];
+      let toastTimer;
+      function toast(msg) {
+        $("toast").textContent = msg;
+        $("toast").classList.add("on");
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => $("toast").classList.remove("on"), 2400);
+      }
+      function save() {
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        } catch (_) {}
+      }
+      function setTab(tab) {
+        state.tab = tab;
+        document
+          .querySelectorAll(".app-tab")
+          .forEach((t) => t.classList.toggle("active", t.dataset.tab === tab));
+        ["prepare", "review", "feedback"].forEach((t) =>
+          $(t + "-view").classList.toggle("view-hidden", tab !== t),
+        );
+        render();
+      }
+      function openFile(id) {
+        state.selected = id;
+        setTab("review");
+      }
+      function toggleFile(id) {
+        const currentlyIgnored = state.ignored.includes(id);
+        state.ignored = currentlyIgnored
+          ? state.ignored.filter((x) => x !== id)
+          : [...state.ignored, id];
+        save();
+        render();
+        toast(
+          currentlyIgnored
+            ? "File included in review"
+            : "File excluded from this review",
+        );
+      }
+      function renderTree() {
+        const groups = [...new Set(files.map((f) => f.dir))];
+        const tree = $("file-tree");
+        tree.innerHTML = "";
+        for (const group of groups) {
+          const groupFiles = files.filter(
+            (f) =>
+              f.dir === group &&
+              (state.showIgnored || !state.ignored.includes(f.id)),
+          );
+          if (!groupFiles.length) continue;
+          if (group) {
+            const head = document.createElement("div");
+            head.className = "tree-group";
+            const title = document.createElement("span");
+            title.textContent = "⌄  " + group;
+            const action = document.createElement("button");
+            action.type = "button";
+            action.className = "folder-ignore";
+            const groupAll = files.filter((f) => f.dir === group);
+            const allIgnored = groupAll.every((f) =>
+              state.ignored.includes(f.id),
+            );
+            action.textContent = allIgnored
+              ? "Include folder"
+              : "Ignore folder";
+            action.setAttribute(
+              "aria-label",
+              (allIgnored ? "Include" : "Ignore") + " all files in " + group,
+            );
+            action.addEventListener("click", () => {
+              const ids = groupAll.map((f) => f.id);
+              state.ignored = allIgnored
+                ? state.ignored.filter((id) => !ids.includes(id))
+                : [...new Set([...state.ignored, ...ids])];
+              save();
+              render();
+              toast((allIgnored ? "Included " : "Ignored ") + group);
+            });
+            head.append(title, action);
+            tree.append(head);
+          }
+          for (const f of groupFiles) {
+            const ignored = state.ignored.includes(f.id);
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className =
+              "tree-file" +
+              (state.selected === f.id ? " active" : "") +
+              (ignored ? " ignored" : "");
+            button.setAttribute("aria-label", "View " + f.path);
+            const status = ignored
+              ? "ignored"
+              : state.reviewed.includes(f.id)
+                ? "done"
+                : "";
+            button.innerHTML = `<span class="file-symbol">▤</span><span class="file-name"></span><span class="file-actions"><span class="file-status ${status}"></span><span class="ignore-toggle" title="${ignored ? "Include" : "Ignore"} this file" aria-label="${ignored ? "Include" : "Ignore"} ${f.path}" role="button" tabindex="0">${ignored ? "◉" : "◌"}</span></span>`;
+            button.querySelector(".file-name").textContent = f.short;
+            button.addEventListener("click", () => openFile(f.id));
+            const icon = button.querySelector(".ignore-toggle");
+            icon.addEventListener("click", (e) => {
+              e.stopPropagation();
+              toggleFile(f.id);
+            });
+            icon.addEventListener("keydown", (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                e.stopPropagation();
+                toggleFile(f.id);
+              }
+            });
+            tree.append(button);
+          }
+        }
+      }
+      function renderCounts() {
+        const inScope = files.filter((f) => !state.ignored.includes(f.id));
+        $("scope-count").textContent = `${inScope.length} / ${files.length}`;
+        $("included-count").textContent = inScope.length;
+        $("ignored-count").textContent = state.ignored.length;
+        $("reviewed-count").textContent = inScope.filter((f) =>
+          state.reviewed.includes(f.id),
+        ).length;
+        $("toggle-ignored").textContent = state.showIgnored
+          ? "Hide ignored"
+          : "Show ignored";
+      }
+      function renderDiff() {
+        const f = selectedFile(),
+          hasThread = f.id === "session" || f.id === "token";
+        $("diff-path").textContent = f.path;
+        $("review-heading").textContent = state.reviewed.includes(f.id)
+          ? "This version is already reviewed."
+          : "Pick up where you left off.";
+        $("review-comment").textContent = f.comment;
+        $("thread-count").textContent = hasThread ? "1" : "0";
+        $("review-thread").classList.toggle("view-hidden", !hasThread);
+        $("review-empty").classList.toggle("view-hidden", hasThread);
+        $("review-thread").classList.remove("active");
+        $("mark-reviewed").checked = state.reviewed.includes(f.id);
+        $("diff-lines").innerHTML = "";
+        for (const [type, no, txt] of f.lines) {
+          const line = document.createElement("div");
+          line.className = "code-line " + type;
+          const number = document.createElement("span");
+          number.className = "line-no";
+          number.textContent = no;
+          line.append(number);
+          if (
+            hasThread &&
+            type === "add" &&
+            no === (f.id === "session" ? "43" : "27")
+          ) {
+            const marker = document.createElement("button");
+            marker.type = "button";
+            marker.className = "thread-marker";
+            marker.setAttribute(
+              "aria-label",
+              "Show thread on " + f.path + " line " + no,
+            );
+            marker.setAttribute("aria-pressed", "false");
+            marker.addEventListener("click", () => {
+              const card = $("review-thread");
+              card.classList.add("active");
+              marker.classList.add("active");
+              marker.setAttribute("aria-pressed", "true");
+              card.focus({ preventScroll: true });
+              card.scrollIntoView({ block: "nearest" });
+            });
+            line.append(marker);
+          }
+          const content = document.createElement("span");
+          content.textContent = txt;
+          line.append(content);
+          $("diff-lines").append(line);
+        }
+      }
+      function render() {
+        renderTree();
+        renderCounts();
+        renderDiff();
+      }
+      let treeCollapsed = false;
+      function renderTreeCollapse() {
+        const body = document.querySelector(".app-body"),
+          button = $("tree-collapse");
+        body.classList.toggle("tree-collapsed", treeCollapsed);
+        button.setAttribute("aria-expanded", String(!treeCollapsed));
+        button.setAttribute(
+          "aria-label",
+          treeCollapsed ? "Expand file tree" : "Collapse file tree",
+        );
+        button.title = treeCollapsed
+          ? "Expand file tree"
+          : "Collapse file tree";
+        button.textContent = treeCollapsed ? "›" : "‹";
+      }
+      document
+        .querySelectorAll(".app-tab")
+        .forEach((t) =>
+          t.addEventListener("click", () => setTab(t.dataset.tab)),
+        );
+      document
+        .querySelectorAll(".finding")
+        .forEach((f) =>
+          f.addEventListener("click", () => openFile(f.dataset.file)),
+        );
+      $("start-review").addEventListener("click", () => setTab("review"));
+      $("back-to-prep").addEventListener("click", () => setTab("prepare"));
+      $("feedback-review").addEventListener("click", () => setTab("review"));
+      $("toggle-ignored").addEventListener("click", () => {
+        state.showIgnored = !state.showIgnored;
+        render();
+      });
+      $("tree-collapse").addEventListener("click", () => {
+        treeCollapsed = !treeCollapsed;
+        renderTreeCollapse();
+      });
+      $("mark-reviewed").addEventListener("change", (e) => {
+        const id = state.selected,
+          checked = e.target.checked;
+        state.reviewed = checked
+          ? [...new Set([...state.reviewed, id])]
+          : state.reviewed.filter((x) => x !== id);
+        if (checked) {
+          const index = files.findIndex((f) => f.id === id);
+          for (let step = 1; step < files.length; step++) {
+            const candidate = files[(index + step) % files.length];
+            if (
+              !state.ignored.includes(candidate.id) &&
+              !state.reviewed.includes(candidate.id)
+            ) {
+              state.selected = candidate.id;
+              break;
+            }
+          }
+        }
+        save();
+        render();
+        toast(
+          checked
+            ? "Review progress saved for this file"
+            : "File marked for re-review",
+        );
+      });
+      $("reset-demo").addEventListener("click", () => {
+        state = {
+          ignored: [...defaultIgnored],
+          reviewed: ["routes"],
+          selected: "session",
+          tab: "prepare",
+          showIgnored: true,
+        };
+        save();
+        setTab("prepare");
+        toast("Demo reset");
+      });
+      renderTreeCollapse();
+      setTab("prepare");
+    </script>
+  </body>
+</html>

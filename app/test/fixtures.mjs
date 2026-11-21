@@ -22,7 +22,7 @@ export function sessionView({ overall = 'pending', sources } = {}) {
   return {
     schemaVersion: 1, sessionId: 's1', demo: true, sequence: 1, actor: 'human',
     repository: { id: 'r', host: 'github.com', owner: 'o', name: 'n', providerId: null },
-    pr: { owner: 'o', repo: 'n', number: 7, title: 'Tidy auth', author: 'alice', baseRef: 'main', headRef: 'feat', headSha: 'abc', baseSha: 'def' },
+    pr: { owner: 'o', repo: 'n', number: 7, title: 'Tidy auth', author: 'alice', state: 'OPEN', isDraft: false, baseRef: 'main', headRef: 'feat', headSha: 'abc', baseSha: 'def' },
     files: [
       file('f-auth', 'src/auth.rs', [
         { id: 'l1', kind: 'context', oldLine: 1, newLine: 1, text: 'fn check() {' },

@@ -24,9 +24,9 @@
 
   // Border style and glyph carry the class as well as colour.
   const styles = {
-    measured: 'border-solid border-[#0969da] bg-[#f6f8fa]',
-    suggestion: 'border-dashed border-[#9a6700] bg-[#fff8c5]/40',
-    external: 'border-double border-4 border-[#8250df] bg-white',
+    measured: 'border-solid border-accent bg-surface',
+    suggestion: 'border-dashed border-[#9a6700] bg-amber-50',
+    external: 'border-double border-4 border-accent bg-accent-soft',
   } as const;
 </script>
 
@@ -36,22 +36,22 @@
     <span class="rounded-full border border-current px-2 font-semibold" data-testid="assertion-label">
       <span aria-hidden="true">{kind.glyph}</span> {kind.label}
     </span>
-    <span class="text-[#59636e]">{providerText(finding)}</span>
-    {#if item.label === 'historical'}<span class="text-[#59636e]">· historical (from snapshot {item.latestSnapshotId})</span>{/if}
+    <span class="text-muted">{providerText(finding)}</span>
+    {#if item.label === 'historical'}<span class="text-muted">· historical (from snapshot {item.latestSnapshotId})</span>{/if}
   </p>
   <h4 class="mt-2 font-semibold">{finding.title}</h4>
-  <p class="mt-1 text-xs text-[#59636e]">Cites {citedLines(finding)}{#if rule} · rule {rule}{/if}</p>
+  <p class="mt-1 text-xs text-muted">Cites {citedLines(finding)}{#if rule} · rule {rule}{/if}</p>
   {#if finding.body}<p class="mt-2 whitespace-pre-wrap break-words">{finding.body}</p>{/if}
   {#if finding.assertionKind === 'defect_hypothesis'}
     <p class="mt-1 text-xs">Validation: {finding.validation.status.replaceAll('_', ' ')}</p>
   {/if}
   <button type="button" onclick={() => void toggleEvidence()} aria-expanded={open} aria-controls={`evidence-${finding.id}`}
     aria-label={`${open ? 'Hide' : 'Show'} evidence for ${finding.title}`}
-    class="mt-2 rounded-md border border-[#d1d9e0] bg-white px-2 py-1 text-xs font-semibold hover:bg-[#f6f8fa] focus-visible:outline-2 focus-visible:outline-[#0969da]">
+    class="mt-2 rounded-md border border-line bg-white px-2 py-1 text-xs font-semibold hover:bg-surface focus-visible:outline-2 focus-visible:outline-accent">
     {open ? 'Hide evidence' : 'Show evidence'}
   </button>
   {#if open}
-    <div id={`evidence-${finding.id}`} class="mt-2 border-t border-[#d1d9e0] pt-2 text-xs">
+    <div id={`evidence-${finding.id}`} class="mt-2 border-t border-line pt-2 text-xs">
       <dl class="grid grid-cols-[auto_1fr] gap-x-2 gap-y-1">
         <dt class="font-semibold">Provider</dt><dd>{finding.source.providerId}{#if finding.source.runId} (run {finding.source.runId}){/if}</dd>
         <dt class="font-semibold">Rule</dt><dd>{rule ?? 'none recorded'}</dd>
@@ -59,21 +59,21 @@
         {#if finding.rationale}<dt class="font-semibold">Why</dt><dd>{finding.rationale}</dd>{/if}
         {#if finding.attention.reasons.length}<dt class="font-semibold">Reasons</dt><dd>{finding.attention.reasons.join('; ')}</dd>{/if}
         {#if finding.suggestedAction}<dt class="font-semibold">To verify</dt><dd>{finding.suggestedAction}</dd>{/if}
-        {#if finding.externalUrl}<dt class="font-semibold">Source</dt><dd><a class="text-[#0969da] underline" href={finding.externalUrl} rel="noreferrer noopener" target="_blank">Open original</a></dd>{/if}
+        {#if finding.externalUrl}<dt class="font-semibold">Source</dt><dd><a class="text-accent underline" href={finding.externalUrl} rel="noreferrer noopener" target="_blank">Open original</a></dd>{/if}
       </dl>
       {#if evidenceError}
         <p role="alert" class="mt-2 text-red-700">{evidenceError}</p>
       {:else if !evidence}
-        <p class="mt-2 text-[#59636e]">Loading evidence…</p>
+        <p class="mt-2 text-muted">Loading evidence…</p>
       {:else if evidence.length === 0}
-        <p class="mt-2 text-[#59636e]">No evidence records were stored for this finding.</p>
+        <p class="mt-2 text-muted">No evidence records were stored for this finding.</p>
       {:else}
         <ul class="mt-2 space-y-2" aria-label={`Evidence for ${finding.title}`}>
           {#each evidence as record (record.id)}
-            <li class="rounded border border-[#d1d9e0] bg-white p-2">
+            <li class="rounded border border-line bg-white p-2">
               <p class="font-semibold">{record.label}</p>
               {#if evidenceValue(record)}<p>{evidenceValue(record)}</p>{/if}
-              <p class="text-[#59636e]">{record.kind}{#if record.method} · method {record.method}{/if}{#if record.anchor} · {citedLines({ anchor: record.anchor })}{/if}</p>
+              <p class="text-muted">{record.kind}{#if record.method} · method {record.method}{/if}{#if record.anchor} · {citedLines({ anchor: record.anchor })}{/if}</p>
               {#each record.limitations as limitation}<p class="text-amber-800">Limitation: {limitation}</p>{/each}
             </li>
           {/each}

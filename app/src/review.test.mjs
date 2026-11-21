@@ -71,6 +71,14 @@ const text = () => document.body.textContent.replace(/\s+/g, ' ');
 const byLabel = (label) => document.querySelector(`[aria-label="${label}"]`);
 const button = (name) => [...document.querySelectorAll('button')].find((b) => b.textContent.replace(/\s+/g, ' ').trim() === name || b.getAttribute('aria-label') === name);
 const mutations = () => calls.filter((c) => c.method !== 'GET');
+const workspaceView = (id) => document.getElementById(`workspace-${id}`);
+const viewButton = (id) => document.querySelector(`button[aria-controls="workspace-${id}"]`);
+
+function workspaceRoutes(view = sessionView) {
+  routes['GET /api/v1/session'] = () => json(view());
+  routes['GET /api/v1/analysis/queue'] = () => json(queueView());
+  routes['GET /api/v1/analysis/findings'] = () => json(page(findings));
+}
 
 test('first paint renders the full review while analysis is still pending, then updates in place', async () => {
   const queue = deferred();
@@ -82,7 +90,9 @@ test('first paint renders the full review while analysis is still pending, then 
 
   // Everything needed to review is on screen with analysis unresolved.
   assert.match(text(), /Tidy auth/);
-  assert.match(text(), /verify_token\(\);/);
+  assert.equal(workspaceView('files').hidden, false);
+  assert.equal(workspaceView('prep').hidden, true);
+  assert.match(workspaceView('files').textContent, /verify_token\(\);/);
   assert.ok(document.querySelector('nav[aria-label="Changed files"]'));
   const viewed = [...document.querySelectorAll('input[type=checkbox]')].find((c) => c.parentElement.textContent.includes('Viewed'));
   assert.equal(viewed.disabled, false);
@@ -270,6 +280,107 @@ test('every new insight control is a native, named, keyboard-focusable element w
   assert.deepEqual([...document.querySelectorAll('article[data-insight-class]')].map((c) => c.dataset.insightClass), ['measured']);
   // Status is announced politely, not as an interruption.
   assert.equal(document.querySelector('[data-testid=analysis-status]').getAttribute('aria-live'), 'polite');
+});
+
+test('workspace navigation keeps drafts and opens the actual file thread without making writes', async () => {
+  workspaceRoutes();
+  await start();
+  const diff = workspaceView('files');
+  const conversations = workspaceView('conversations');
+  diff.querySelector('[title="Draft a comment on this line"]').click();
+  await tick();
+  const draft = document.getElementById('draft');
+  draft.value = 'Still working on this draft';
+  draft.dispatchEvent(new window.Event('input', { bubbles: true }));
+
+  viewButton('conversations').click();
+  await tick();
+  assert.equal(viewButton('conversations').getAttribute('aria-pressed'), 'true');
+  assert.equal(diff.hidden, true);
+  assert.equal(conversations.hidden, false);
+  assert.match(conversations.textContent, /Looks close\./);
+  button('Open GitHub thread by bob on src/auth.rs:2').click();
+  await tick();
+  assert.equal(conversations.hidden, true);
+  assert.equal(diff.hidden, false);
+  assert.equal(document.activeElement.id, 'thread-t1');
+  assert.equal(draft.value, 'Still working on this draft');
+  assert.equal(diff.querySelector('.thread-marker').getAttribute('aria-pressed'), 'true');
+  assert.deepEqual(mutations(), []);
+});
+
+test('review prep shows real suggestions and editable file scope without leaving the view', async () => {
+  const view = sessionView();
+  workspaceRoutes(() => view);
+  routes['POST /api/v1/repositories/current/exclusions'] = () => {
+    const generated = view.fileStates[1];
+    generated.scope.ignored = false;
+    generated.status = 'unreviewed';
+    view.progress.inScope = 2;
+    view.progress.ignored = 0;
+    view.progress.unreviewed = 2;
+    return json({});
+  };
+  await start();
+  viewButton('prep').click();
+  await tick();
+  assert.match(workspaceView('prep').textContent, /Start with the important bits/);
+  assert.ok(button('Review suggested file src/auth.rs'));
+  assert.equal(button('Review suggested file gen/out.rs'), undefined);
+  button('Hide ignored').click();
+  await tick();
+  assert.equal(button('Hide ignored').getAttribute('aria-pressed'), 'true');
+  assert.equal(button('Include file gen/out.rs'), undefined);
+  button('Hide ignored').click();
+  await tick();
+  button('Include file gen/out.rs').click();
+  await settle();
+  assert.equal(workspaceView('prep').hidden, false);
+  assert.deepEqual([...workspaceView('prep').querySelectorAll('dd')].map((el) => el.textContent), ['2', '0', '0']);
+  assert.deepEqual(mutations().map((write) => JSON.parse(write.body)), [{ action: 'include', kind: 'file', expression: 'gen/out.rs' }]);
+  button('Review suggested file src/auth.rs').click();
+  await tick();
+  assert.equal(workspaceView('files').hidden, false);
+  assert.equal(document.activeElement.id, 'file-review-heading');
+  assert.match(workspaceView('files').textContent, /verify_token\(\);/);
+});
+
+test('the diff still submits a line draft, replies locally and advances after Viewed', async () => {
+  const view = sessionView();
+  view.fileStates[1].scope.ignored = false;
+  view.fileStates[1].status = 'unreviewed';
+  workspaceRoutes(() => view);
+  routes['POST /api/v1/threads'] = () => json({});
+  routes['POST /api/v1/threads/t1/replies'] = () => json({});
+  routes['POST /api/v1/files/f-auth/reviewed'] = () => {
+    view.fileStates[0].reviewStatus = 'reviewed-current';
+    return json({});
+  };
+  await start();
+  const diff = workspaceView('files');
+  const fill = (id, value) => {
+    const input = document.getElementById(id);
+    input.value = value;
+    input.dispatchEvent(new window.Event('input', { bubbles: true }));
+  };
+  diff.querySelectorAll('[title="Draft a comment on this line"]')[1].click();
+  await tick();
+  fill('draft', 'My local comment');
+  await tick();
+  button('Save draft').click();
+  await settle();
+  fill('reply-t1', 'My local reply');
+  await tick();
+  button('Save reply').click();
+  await settle();
+  diff.querySelector('input[type=checkbox]').click();
+  await settle();
+  assert.deepEqual(mutations().map(({ path, body }) => [path, JSON.parse(body)]), [
+    ['/api/v1/threads', { fileId: 'f-auth', diffDigest: 'digest-f-auth', side: 'RIGHT', line: 2, body: 'My local comment' }],
+    ['/api/v1/threads/t1/replies', { body: 'My local reply' }],
+    ['/api/v1/files/f-auth/reviewed', { diffDigest: 'digest-f-auth' }],
+  ]);
+  assert.match(diff.querySelector('#file-review h3').textContent, /gen\/out\.rs/);
 });
 
 test('stale cursors during a live run restart pagination instead of splicing pages', async () => {
