@@ -340,4 +340,17 @@ pub(super) const MIGRATIONS: &[&str] = &[
     CREATE INDEX idx_user_state_disposition ON finding_user_state(disposition);
     CREATE INDEX idx_user_state_pr ON finding_user_state(pr_id);
     ",
+    // v4 is procedural: either historical v3 may already be installed.
+    "",
+];
+
+pub(super) const GITHUB_METADATA: &[(&str, &str, &str)] = &[
+    ("review_threads", "original_line", "INTEGER"),
+    ("review_threads", "original_start_line", "INTEGER"),
+    ("review_threads", "start_side", "TEXT"),
+    ("review_threads", "viewer_can_resolve", "INTEGER"),
+    ("review_threads", "viewer_can_unresolve", "INTEGER"),
+    ("review_comments", "author_node_id", "TEXT"),
+    ("review_comments", "author_type", "TEXT"),
+    ("review_comments", "github_updated_at", "TEXT"),
 ];

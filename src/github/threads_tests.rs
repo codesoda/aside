@@ -94,7 +94,7 @@ fn threads_page(nodes: Vec<Value>, next: Option<&str>) -> Value {
 }
 
 fn replies_page(range: std::ops::Range<usize>, next: Option<&str>) -> Value {
-    json!({"data": {"node": {"comments": conn(range, next)}}})
+    json!({"data": {"node": {"id": "T1", "comments": conn(range, next)}}})
 }
 
 fn assert_each_once(t: &GithubThread, n: usize) {
@@ -218,6 +218,8 @@ fn preserves_thread_and_comment_fidelity() {
     assert_eq!(bot.commit_oid.as_deref(), Some("head1"));
     assert_eq!(bot.original_commit_oid.as_deref(), Some("old1"));
     assert_eq!(bot.outdated, Some(false));
+    assert_eq!(t.start_side, None);
+    assert_eq!(t.original_start_line, None);
 }
 
 #[test]
@@ -317,4 +319,249 @@ fn queries_request_page_info_on_every_paged_connection() {
     assert_eq!(threads_query().matches("pageInfo").count(), 2);
     assert!(replies_query().contains("pageInfo"));
     assert!(replies_query().contains("after: $cursor"));
+}
+
+#[test]
+fn malformed_nodes_cursors_and_wrong_thread_retain_imported_data() {
+    let mut malformed = threads_page(vec![thread("T1", conn(0..1, None))], Some("next"));
+    malformed["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"] = Value::Null;
+    assert_eq!(
+        fetch_threads(
+            &PagedGh::default().on("threads", None, Ok(malformed)),
+            &pr()
+        )
+        .completeness,
+        Completeness::Failed
+    );
+
+    let first = threads_page(vec![thread("T1", conn(0..1, Some("c1")))], None);
+    let mut wrong = replies_page(1..2, None);
+    wrong["data"]["node"]["id"] = json!("other");
+    let import = fetch_threads(
+        &PagedGh::default()
+            .on("threads", None, Ok(first))
+            .on("T1", Some("c1"), Ok(wrong)),
+        &pr(),
+    );
+    assert_eq!(import.completeness, Completeness::Partial);
+    assert_each_once(&import.threads[0], 1);
+    assert!(
+        import
+            .problems
+            .iter()
+            .any(|p| p.contains("wrong thread ID"))
+    );
+
+    let gh = PagedGh::default()
+        .on(
+            "threads",
+            None,
+            Ok(threads_page(
+                vec![thread("T1", conn(0..1, None))],
+                Some("a"),
+            )),
+        )
+        .on("threads", Some("a"), Ok(threads_page(vec![], Some("b"))))
+        .on("threads", Some("b"), Ok(threads_page(vec![], Some("a"))));
+    let import = fetch_threads(&gh, &pr());
+    assert_eq!(import.completeness, Completeness::Partial);
+    assert_eq!(import.threads.len(), 1);
+    assert!(import.problems.iter().any(|p| p.contains("cyclic cursor")));
+}
+
+#[test]
+fn conflicting_duplicates_and_invalid_cursor_are_partial() {
+    let first = threads_page(vec![thread("T1", conn(0..1, None))], Some("a"));
+    let mut changed = thread("T1", conn(0..1, None));
+    changed["path"] = json!("different.rs");
+    let import = fetch_threads(
+        &PagedGh::default().on("threads", None, Ok(first)).on(
+            "threads",
+            Some("a"),
+            Ok(threads_page(vec![changed], None)),
+        ),
+        &pr(),
+    );
+    assert_eq!(import.completeness, Completeness::Partial);
+    assert_eq!(import.threads[0].path, "a.rs");
+    let mut invalid = threads_page(vec![], Some("a"));
+    invalid["data"]["repository"]["pullRequest"]["reviewThreads"]["pageInfo"]["endCursor"] =
+        json!(123);
+    assert_eq!(
+        fetch_threads(&PagedGh::default().on("threads", None, Ok(invalid)), &pr()).completeness,
+        Completeness::Partial
+    );
+}
+
+#[test]
+fn raw_metadata_and_legacy_author_alias_roundtrip() {
+    let mut t = thread("T1", conn(0..1, None));
+    t["startDiffSide"] = json!("FUTURE_SIDE");
+    t["originalStartLine"] = json!(4);
+    let import = fetch_threads(
+        &PagedGh::default().on("threads", None, Ok(threads_page(vec![t], None))),
+        &pr(),
+    );
+    assert_eq!(import.completeness, Completeness::Complete);
+    assert_eq!(import.threads[0].start_side.as_deref(), Some("FUTURE_SIDE"));
+    assert_eq!(import.threads[0].original_start_line, Some(4));
+    let mut legacy = serde_json::to_value(&import.threads[0].comments[0]).unwrap();
+    let id = legacy.as_object_mut().unwrap().remove("authorId").unwrap();
+    legacy["authorNodeId"] = id;
+    let comment: GithubComment = serde_json::from_value(legacy).unwrap();
+    assert_eq!(comment.author_id.as_deref(), Some("BOT_1"));
+}
+
+#[test]
+fn error_paths_follow_comment_ids_after_duplicates_on_both_pages() {
+    let mut initial = conn(0..1, Some("c1"));
+    initial["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .extend([comment(0), comment(1)]);
+    initial["nodes"][2]["author"] = Value::Null;
+    let mut first = threads_page(vec![thread("T1", initial)], None);
+    first["errors"] = json!([{"message":"denied", "path":["repository","pullRequest","reviewThreads","nodes",0,"comments","nodes",2,"author"]}]);
+    let mut second = replies_page(1..2, None);
+    second["data"]["node"]["comments"]["nodes"] = json!([comment(0), comment(1), comment(2)]);
+    second["data"]["node"]["comments"]["nodes"][1]["author"] = Value::Null;
+    second["data"]["node"]["comments"]["nodes"][2]["author"] = Value::Null;
+    second["errors"] = json!([{"message":"denied", "path":["node","comments","nodes",2,"author"]}]);
+    let import = fetch_threads(
+        &PagedGh::default()
+            .on("threads", None, Ok(first))
+            .on("T1", Some("c1"), Ok(second)),
+        &pr(),
+    );
+    assert_eq!(import.completeness, Completeness::Partial);
+    let comments = &import.threads[0].comments;
+    assert_eq!(
+        comments
+            .iter()
+            .map(|c| c.node_id.as_str())
+            .collect::<Vec<_>>(),
+        ["C0", "C1", "C2"]
+    );
+    assert!(comments[0].unavailable_fields.is_empty());
+    assert_eq!(comments[1].unavailable_fields, ["author"]);
+    assert_eq!(comments[2].unavailable_fields, ["author"]);
+}
+
+#[test]
+fn initial_reply_error_marker_survives_later_malformed_node_or_page_info() {
+    for failure in ["node", "pageInfo"] {
+        let mut comments = conn(0..1, None);
+        comments["nodes"][0]["author"] = Value::Null;
+        if failure == "node" {
+            comments["nodes"].as_array_mut().unwrap().push(Value::Null);
+        } else {
+            comments.as_object_mut().unwrap().remove("pageInfo");
+        }
+        let mut page = threads_page(vec![thread("T1", comments)], None);
+        page["errors"] = json!([{"message":"denied", "path":["repository","pullRequest","reviewThreads","nodes",0,"comments","nodes",0,"author"]}]);
+        let import = fetch_threads(&PagedGh::default().on("threads", None, Ok(page)), &pr());
+        assert_eq!(import.completeness, Completeness::Partial, "{failure}");
+        assert_eq!(
+            import.threads[0].comments[0].unavailable_fields,
+            ["author"],
+            "{failure}"
+        );
+    }
+}
+
+#[test]
+fn reply_error_markers_survive_malformed_node_page_info_and_cyclic_cursor() {
+    for failure in ["node", "pageInfo", "cursor"] {
+        let first = threads_page(vec![thread("T1", conn(0..1, Some("c1")))], None);
+        let mut second = replies_page(
+            1..2,
+            if failure == "cursor" {
+                Some("c1")
+            } else {
+                None
+            },
+        );
+        second["data"]["node"]["comments"]["nodes"][0]["author"] = Value::Null;
+        if failure == "node" {
+            second["data"]["node"]["comments"]["nodes"]
+                .as_array_mut()
+                .unwrap()
+                .push(Value::Null);
+        } else if failure == "pageInfo" {
+            second["data"]["node"]["comments"]
+                .as_object_mut()
+                .unwrap()
+                .remove("pageInfo");
+        }
+        second["errors"] =
+            json!([{"message":"denied", "path":["node","comments","nodes",0,"author"]}]);
+        let import = fetch_threads(
+            &PagedGh::default()
+                .on("threads", None, Ok(first))
+                .on("T1", Some("c1"), Ok(second)),
+            &pr(),
+        );
+        assert_eq!(import.completeness, Completeness::Partial, "{failure}");
+        assert_eq!(
+            import.threads[0].comments[1].unavailable_fields,
+            ["author"],
+            "{failure}"
+        );
+    }
+}
+
+#[test]
+fn complete_import_then_field_error_refresh_preserves_only_unavailable_metadata() {
+    use crate::store::Store;
+    let complete = fetch_threads(
+        &PagedGh::default().on(
+            "threads",
+            None,
+            Ok(threads_page(vec![thread("T1", conn(0..1, None))], None)),
+        ),
+        &pr(),
+    );
+    assert_eq!(complete.completeness, Completeness::Complete);
+    let mut partial_page = threads_page(vec![thread("T1", conn(0..1, None))], None);
+    let node = &mut partial_page["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"][0];
+    node["originalLine"] = Value::Null;
+    node["viewerCanResolve"] = Value::Null;
+    node["startDiffSide"] = json!("LEFT");
+    node["isResolved"] = json!(false);
+    node["comments"]["nodes"][0]["author"] = Value::Null;
+    node["comments"]["nodes"][0]["body"] = json!("edited");
+    partial_page["errors"] = json!([
+        {"message":"denied", "path":["repository","pullRequest","reviewThreads","nodes",0,"originalLine"]},
+        {"message":"denied", "path":["repository","pullRequest","reviewThreads","nodes",0,"viewerCanResolve"]},
+        {"message":"denied", "path":["repository","pullRequest","reviewThreads","nodes",0,"comments","nodes",0,"author"]}
+    ]);
+    let partial = fetch_threads(
+        &PagedGh::default().on("threads", None, Ok(partial_page)),
+        &pr(),
+    );
+    assert_eq!(partial.completeness, Completeness::Partial);
+    let mut store = Store::open_in_memory().unwrap();
+    let repo = store
+        .resolve_repository("github.com", "o", "r", None)
+        .unwrap();
+    let pr_id = store
+        .upsert_pull_request(&repo.id, 1, "title", "url")
+        .unwrap();
+    store
+        .sync_github_threads(&pr_id, "head", &complete.threads)
+        .unwrap();
+    store
+        .sync_github_threads(&pr_id, "head", &partial.threads)
+        .unwrap();
+    let threads = store.list_threads(&pr_id).unwrap();
+    assert_eq!(threads.len(), 1);
+    assert!(!threads[0].resolved);
+    assert_eq!(threads[0].comments[0].author, "coderabbitai");
+    assert_eq!(threads[0].comments[0].body, "edited");
+    assert!(
+        partial.threads[0]
+            .unavailable_fields
+            .contains(&"originalLine".into())
+    );
+    assert_eq!(partial.threads[0].start_side.as_deref(), Some("LEFT"));
 }

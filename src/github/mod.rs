@@ -10,7 +10,7 @@ mod snapshot;
 mod threads;
 
 pub use review::{
-    NewReviewComment, create_review, fetch_head_sha, reply_to_comment, review_comments,
+    NewReviewComment, create_review, fetch_revision, reply_to_comment, review_comments,
 };
 
 #[allow(unused_imports)]
@@ -146,6 +146,114 @@ mod tests {
                 "comments": {"pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": [{"id": "C1", "databaseId": 11, "body": "why?", "createdAt": "2026-01-01T00:00:00Z", "author": {"login": "bob"}}]}}]
         }}}}})
         .to_string()
+    }
+
+    fn snapshot_gh(threads: Result<&str, &str>) -> FakeGh {
+        let gh = FakeGh::default();
+        gh.on(&["pr", "view"], Ok(&pr_json()));
+        gh.on(&["repo", "view"], Ok(r#"{"id":"R_1"}"#));
+        gh.on(
+            &["pr", "diff"],
+            Ok("diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-x\n+y\n"),
+        );
+        gh.on(&["api", "--paginate"], Ok(r#"[[{"filename":"a.rs","status":"modified","patch":null,"additions":1,"deletions":1}]]"#));
+        gh.on(&["api", "graphql"], threads);
+        gh
+    }
+
+    fn test_pr_ref() -> PrRef {
+        PrRef {
+            owner: "o".into(),
+            repo: "r".into(),
+            number: 7,
+        }
+    }
+
+    #[tokio::test]
+    async fn graphql_error_during_refresh_preserves_imported_threads() {
+        use crate::{session::Session, store::Store};
+        use std::sync::Arc;
+
+        let pr = test_pr_ref();
+        let initial =
+            fetch_snapshot(&snapshot_gh(Ok(&threads_json())), &pr, &Limits::default()).unwrap();
+        assert_eq!(initial.github_threads.len(), 1);
+        let failing = Arc::new(snapshot_gh(Ok(
+            r#"{"errors":[{"message":"Resource not accessible by integration"}],"data":{"repository":null}}"#,
+        )));
+        let session = Session::new(
+            initial,
+            Store::open_in_memory().unwrap(),
+            Some(failing),
+            Some(pr),
+        )
+        .unwrap();
+        let before = session
+            .store
+            .lock()
+            .unwrap()
+            .list_threads(&session.pr_id)
+            .unwrap();
+        assert_eq!(before.len(), 1);
+        let refreshed = session.refresh().await.unwrap();
+        let snapshot = session.snapshot.read().unwrap();
+        assert_eq!(
+            snapshot.github_threads_completeness,
+            crate::model::Completeness::Failed
+        );
+        assert!(snapshot.github_threads.is_empty());
+        assert!(
+            snapshot
+                .github_threads_problems
+                .iter()
+                .any(|p| p.contains("Resource not accessible"))
+        );
+        assert!(
+            refreshed
+                .warnings
+                .iter()
+                .any(|w| w.contains("review threads incomplete"))
+        );
+        assert_eq!(refreshed.threads.len(), 1);
+        assert_eq!(refreshed.threads[0].id, before[0].id);
+        drop(snapshot);
+        let after = session
+            .store
+            .lock()
+            .unwrap()
+            .list_threads(&session.pr_id)
+            .unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].id, before[0].id);
+    }
+
+    #[test]
+    fn graphql_command_failure_marks_threads_failed() {
+        let snapshot = fetch_snapshot(
+            &snapshot_gh(Err("GraphQL: forbidden")),
+            &test_pr_ref(),
+            &Limits::default(),
+        )
+        .unwrap();
+        assert!(snapshot.complete);
+        assert_eq!(snapshot.files.len(), 1);
+        assert!(snapshot.github_threads.is_empty());
+        assert_eq!(
+            snapshot.github_threads_completeness,
+            crate::model::Completeness::Failed
+        );
+        assert!(
+            snapshot
+                .github_threads_problems
+                .iter()
+                .any(|p| p.contains("forbidden"))
+        );
+        assert!(
+            snapshot
+                .warnings
+                .iter()
+                .any(|w| w.contains("review threads incomplete"))
+        );
     }
 
     #[test]
@@ -483,7 +591,7 @@ mod tests {
             &["api", "--paginate"],
             Ok(r#"[[{"filename":"a.rs","status":"modified","patch":"@@ -1 +1 @@\n-x\n+y","sha":"s1","additions":1,"deletions":1}]]"#),
         );
-        gh.on(&["api", "graphql"], Err("boom"));
+        gh.on(&["api", "graphql"], Ok(&threads_json()));
         let pr = PrRef {
             owner: "o".into(),
             repo: "r".into(),
@@ -495,10 +603,13 @@ mod tests {
             !snap.complete,
             "1 of 2 files must mark the snapshot incomplete"
         );
-        assert!(snap.warnings.iter().any(|w| w.contains("review threads")));
+        assert!(snap.warnings.iter().any(|w| w.contains("changed files")));
+        assert_eq!(snap.github_threads.len(), 1);
+        assert_eq!(snap.github_threads[0].node_id, "T1");
         assert_eq!(
             snap.github_threads_completeness,
-            crate::model::Completeness::Failed
+            crate::model::Completeness::Complete
         );
+        assert!(!snap.warnings.iter().any(|w| w.contains("review threads")));
     }
 }

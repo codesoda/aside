@@ -9,7 +9,7 @@
 //! [`Completeness::Partial`] or [`Completeness::Failed`] with a reason, never
 //! as a successful complete import.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 
@@ -53,6 +53,7 @@ fn replies_query() -> String {
         "query($id: ID!, $cursor: String) {{
   node(id: $id) {{
     ... on PullRequestReviewThread {{
+      id
       comments(first: 100, after: $cursor) {{ {COMMENT_FIELDS} }}
     }}
   }}
@@ -72,7 +73,8 @@ pub(super) struct ThreadImport {
 
 pub(super) fn fetch_threads(gh: &dyn GhRunner, pr_ref: &PrRef) -> ThreadImport {
     let mut threads: Vec<GithubThread> = Vec::new();
-    let mut seen_threads = HashSet::new();
+    let mut seen_threads: HashMap<String, Value> = HashMap::new();
+    let mut seen_cursors = HashSet::new();
     let mut problems = Vec::new();
     let mut fetched_any_page = false;
     let query = format!("query={}", threads_query());
@@ -98,18 +100,33 @@ pub(super) fn fetch_threads(gh: &dyn GhRunner, pr_ref: &PrRef) -> ThreadImport {
             problems.push("review threads page had no reviewThreads connection".into());
             break;
         }
+        let Some(nodes) = page["nodes"].as_array() else {
+            problems.push("review threads: missing nodes array".into());
+            break;
+        };
         fetched_any_page = true;
-        for node in page["nodes"].as_array().into_iter().flatten() {
-            if node.is_null() {
-                problems.push("a review thread could not be read (null node)".into());
+        for (index, node) in nodes.iter().enumerate() {
+            let Some(id) = valid_id(node) else {
+                problems.push("a review thread could not be read (missing ID)".into());
+                continue;
+            };
+            if let Some(previous) = seen_threads.get(id) {
+                if previous != node {
+                    problems.push(format!("conflicting duplicate thread ID {id}"));
+                }
                 continue;
             }
             let mut thread = parse_thread(node);
-            if !seen_threads.insert(thread.node_id.clone()) {
-                continue;
-            }
-            let mut seen = HashSet::new();
+            seen_threads.insert(id.to_owned(), node.clone());
+            let mut seen = HashMap::new();
             let first = collect_comments(&node["comments"], &mut thread.comments, &mut seen);
+            mark_errors(
+                &v,
+                &["repository", "pullRequest", "reviewThreads", "nodes"],
+                index,
+                &node["comments"],
+                &mut thread,
+            );
             match first {
                 Err(reason) => problems.push(format!("thread {}: {reason}", thread.node_id)),
                 Ok(Some(next)) => {
@@ -125,7 +142,11 @@ pub(super) fn fetch_threads(gh: &dyn GhRunner, pr_ref: &PrRef) -> ThreadImport {
                 finished = true;
                 break;
             }
-            Ok(Some(next)) => cursor = Some(next),
+            Ok(Some(next)) if seen_cursors.insert(next.clone()) => cursor = Some(next),
+            Ok(Some(_)) => {
+                problems.push("review threads: cyclic cursor".into());
+                break;
+            }
             Err(reason) => {
                 problems.push(format!("review threads: {reason}"));
                 break;
@@ -155,27 +176,34 @@ pub(super) fn fetch_threads(gh: &dyn GhRunner, pr_ref: &PrRef) -> ThreadImport {
 fn fetch_remaining_replies(
     gh: &dyn GhRunner,
     thread: &mut GithubThread,
-    seen: &mut HashSet<String>,
+    seen: &mut HashMap<String, Value>,
     mut cursor: String,
     problems: &mut Vec<String>,
 ) {
     let query = format!("query={}", replies_query());
     let id = format!("id={}", thread.node_id);
-    for _ in 0..MAX_PAGES {
+    let mut seen_cursors = HashSet::from([cursor.clone()]);
+    for _ in 1..MAX_PAGES {
         let cursor_arg = format!("cursor={cursor}");
         let args = ["api", "graphql", "-f", &query, "-f", &id, "-f", &cursor_arg];
         let what = format!("replies of thread {}", thread.node_id);
         let Some(v) = fetch_page(gh, &args, problems, &what) else {
             return;
         };
+        if valid_id(&v["data"]["node"]) != Some(thread.node_id.as_str()) {
+            problems.push(format!("{what}: comments returned wrong thread ID"));
+            return;
+        }
         let conn = &v["data"]["node"]["comments"];
         if !conn.is_object() {
             problems.push(format!("{what}: page had no comments connection"));
             return;
         }
-        match collect_comments(conn, &mut thread.comments, seen) {
+        let collected = collect_comments(conn, &mut thread.comments, seen);
+        mark_reply_errors(&v, conn, thread);
+        match collected {
             Ok(None) => return,
-            Ok(Some(next)) if next == cursor => {
+            Ok(Some(next)) if !seen_cursors.insert(next.clone()) => {
                 problems.push(format!("{what}: cursor did not advance"));
                 return;
             }
@@ -226,27 +254,124 @@ fn fetch_page(
 fn collect_comments(
     conn: &Value,
     out: &mut Vec<GithubComment>,
-    seen: &mut HashSet<String>,
+    seen: &mut HashMap<String, Value>,
 ) -> Result<Option<String>, String> {
-    for c in conn["nodes"].as_array().into_iter().flatten() {
-        let comment = parse_comment(c);
-        if comment.node_id.is_empty() {
-            return Err("a reply could not be read (missing ID)".into());
+    let nodes = conn["nodes"]
+        .as_array()
+        .ok_or("missing replies nodes array")?;
+    for c in nodes {
+        let id = valid_id(c).ok_or("a reply could not be read (missing ID)")?;
+        if let Some(previous) = seen.get(id) {
+            if previous != c {
+                return Err(format!("conflicting duplicate comment ID {id}"));
+            }
+            continue;
         }
-        if seen.insert(comment.node_id.clone()) {
-            out.push(comment);
-        }
+        out.push(parse_comment(c));
+        seen.insert(id.to_owned(), c.clone());
     }
     next_cursor(&conn["pageInfo"], None).map_err(|r| format!("replies: {r}"))
+}
+
+/// Attach only errors targeting this record. A missing error path is treated
+/// conservatively as unavailable metadata on every returned record.
+fn retained_comment<'a>(
+    thread: &'a mut GithubThread,
+    conn: &Value,
+    node_index: usize,
+) -> Option<&'a mut GithubComment> {
+    let id = valid_id(&conn["nodes"][node_index])?;
+    thread
+        .comments
+        .iter_mut()
+        .find(|comment| comment.node_id == id)
+}
+
+fn mark_errors(v: &Value, prefix: &[&str], index: usize, conn: &Value, thread: &mut GithubThread) {
+    for error in v["errors"].as_array().into_iter().flatten() {
+        let Some(path) = error["path"].as_array() else {
+            thread.unavailable_fields.push("*".into());
+            for comment in &mut thread.comments {
+                comment.unavailable_fields.push("*".into());
+            }
+            continue;
+        };
+        if !prefix
+            .iter()
+            .enumerate()
+            .all(|(i, part)| path.get(i).and_then(Value::as_str) == Some(*part))
+            || path.get(prefix.len()).and_then(Value::as_u64) != Some(index as u64)
+        {
+            continue;
+        }
+        let rest = &path[prefix.len() + 1..];
+        if rest.first().and_then(Value::as_str) == Some("comments") {
+            if let Some(comment_index) = rest.get(2).and_then(Value::as_u64)
+                && rest.get(1).and_then(Value::as_str) == Some("nodes")
+                && let Some(comment) = retained_comment(thread, conn, comment_index as usize)
+            {
+                comment
+                    .unavailable_fields
+                    .push(rest.get(3).and_then(Value::as_str).unwrap_or("*").into());
+            }
+        } else {
+            thread
+                .unavailable_fields
+                .push(rest.first().and_then(Value::as_str).unwrap_or("*").into());
+        }
+    }
+}
+
+fn mark_reply_errors(v: &Value, conn: &Value, thread: &mut GithubThread) {
+    for error in v["errors"].as_array().into_iter().flatten() {
+        let path = error["path"].as_array();
+        let index = path.and_then(|p| {
+            if p.first().and_then(Value::as_str) == Some("node")
+                && p.get(1).and_then(Value::as_str) == Some("comments")
+                && p.get(2).and_then(Value::as_str) == Some("nodes")
+            {
+                p.get(3).and_then(Value::as_u64)
+            } else {
+                None
+            }
+        });
+        if let Some(index) = index {
+            if let Some(comment) = retained_comment(thread, conn, index as usize) {
+                comment.unavailable_fields.push(
+                    path.and_then(|p| p.get(4))
+                        .and_then(Value::as_str)
+                        .unwrap_or("*")
+                        .into(),
+                );
+            }
+        } else if path.is_none()
+            && let Some(nodes) = conn["nodes"].as_array()
+        {
+            for index in 0..nodes.len() {
+                if let Some(comment) = retained_comment(thread, conn, index) {
+                    comment.unavailable_fields.push("*".into());
+                }
+            }
+        }
+    }
+}
+
+fn valid_id(node: &Value) -> Option<&str> {
+    node["id"].as_str().filter(|id| !id.is_empty())
 }
 
 /// `Ok(None)` when there are no more pages. Missing `pageInfo` is an error:
 /// without it we cannot claim to have every item.
 fn next_cursor(page_info: &Value, previous: Option<&str>) -> Result<Option<String>, String> {
+    if page_info.get("endCursor").is_none()
+        || (!page_info["endCursor"].is_null() && !page_info["endCursor"].is_string())
+    {
+        return Err("missing or invalid endCursor field".into());
+    }
     match page_info["hasNextPage"].as_bool() {
         Some(false) => Ok(None),
         Some(true) => match page_info["endCursor"].as_str() {
-            Some(c) if Some(c) == previous => Err("cursor did not advance".into()),
+            Some(c) if c.is_empty() || Some(c) == previous => Err("cursor did not advance".into()),
             Some(c) => Ok(Some(c.to_string())),
             None => Err("next page reported without a cursor".into()),
         },
@@ -281,6 +406,7 @@ fn parse_thread(node: &Value) -> GithubThread {
         viewer_can_reply: node["viewerCanReply"].as_bool(),
         viewer_can_resolve: node["viewerCanResolve"].as_bool(),
         viewer_can_unresolve: node["viewerCanUnresolve"].as_bool(),
+        unavailable_fields: Vec::new(),
     }
 }
 
@@ -300,6 +426,7 @@ fn parse_comment(c: &Value) -> GithubComment {
         commit_oid: string(&c["commit"]["oid"]),
         original_commit_oid: string(&c["originalCommit"]["oid"]),
         outdated: c["outdated"].as_bool(),
+        unavailable_fields: Vec::new(),
     }
 }
 

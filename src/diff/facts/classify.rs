@@ -148,8 +148,7 @@ pub fn config_kind(path: &str) -> Option<ConfigKind> {
     let name = file_name(&lower);
     let ext = extension(&lower);
     let yaml = matches!(ext.as_deref(), Some("yml" | "yaml"));
-    if (lower.starts_with(".github/workflows/") && yaml)
-        || (lower.starts_with(".github/actions/") && yaml)
+    if (lower.starts_with(".github/workflows/") || lower.starts_with(".github/actions/")) && yaml
         || name == ".gitlab-ci.yml"
         || lower.starts_with(".circleci/")
         || name == "jenkinsfile"

@@ -199,6 +199,10 @@ pub struct GithubThread {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub viewer_can_unresolve: Option<bool>,
+    /// GraphQL fields unavailable because of field-level errors, not legitimate nulls.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(skip)]
+    pub unavailable_fields: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -213,7 +217,11 @@ pub struct GithubComment {
     pub created_at: String,
     // Optional so older snapshots and fixtures still decode.
     /// GitHub node ID of the author (absent for deleted "ghost" users).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        alias = "authorNodeId",
+        skip_serializing_if = "Option::is_none"
+    )]
     #[ts(optional)]
     pub author_id: Option<String>,
     /// Raw GraphQL `__typename` of the author (`User`, `Bot`, `Mannequin`, ...).
@@ -243,6 +251,9 @@ pub struct GithubComment {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub outdated: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(skip)]
+    pub unavailable_fields: Vec<String>,
 }
 
 /// Everything fetched for one PR revision.
