@@ -335,6 +335,8 @@ pub struct PrSnapshot {
     pub issue_comments_completeness: super::Completeness,
     #[serde(default)]
     pub issue_comments_problems: Vec<String>,
+    #[serde(default)]
+    pub checks: crate::github::checks::CheckImport,
     pub warnings: Vec<String>,
     /// False when ingestion could not fetch every patch. Publishing is blocked.
     pub complete: bool,
