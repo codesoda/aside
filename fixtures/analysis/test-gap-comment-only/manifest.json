@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "name": "test-gap-comment-only",
+  "synthetic": true,
+  "description": "Synthetic boundary fixture (#36). Comment-only change to a Rust source file.",
+  "repositoryId": "synthetic/boundary",
+  "prNumber": 9008,
+  "baseSha": "9290556cf978bc6567bcafe09e8bceaf6bffeb7c",
+  "headSha": "31ee5bae47ec37eaf3aefb7abfc76a56db3c8638",
+  "snapshotComplete": true,
+  "observedAt": "2026-01-01T00:00:00Z",
+  "scenarios": [
+    "19.2.cosmetic-only",
+    "19.2.false-test-gap"
+  ],
+  "unsupportedPaths": [],
+  "expectedCompleteness": "complete"
+}

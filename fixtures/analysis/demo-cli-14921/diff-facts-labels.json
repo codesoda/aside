@@ -1,0 +1,514 @@
+[
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "api/identity_gateway_test.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "api/identity_test.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "git/client.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "internal/config/config.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "internal/gh/gh.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "internal/identity/account_status.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "internal/identity/account_test.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "internal/identity/credentials.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "internal/identity/credentials_test.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "internal/identity/delete.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "internal/identity/hardening_test.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "internal/identity/ssh.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "internal/identity/ssh_command.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "internal/identity/ssh_test.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "internal/identity/store.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "internal/identity/store_test.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "internal/identity/worktree_transport_test.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "pkg/cmd/auth/auth.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "pkg/cmd/auth/gitcredential/gist_identity_test.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "pkg/cmd/auth/gitcredential/gist_production_test.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "pkg/cmd/auth/gitcredential/identity_test.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "pkg/cmd/auth/identity/delete.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "pkg/cmd/auth/identity/delete_test.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "pkg/cmd/auth/identity/identity.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "pkg/cmd/auth/identity/identity_test.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "pkg/cmd/auth/identity/ssh.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "pkg/cmd/auth/use/use.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "pkg/cmd/auth/use/use_test.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "pkg/cmd/auth/use/worktrees_test.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "pkg/cmd/root/account.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "pkg/cmd/root/account_git_test.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "pkg/cmd/root/reset_experiment_test.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "script/multiaccount-review/02-repository.sh",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.large_change",
+    "path": "internal/identity/store.go",
+    "assertionKind": "attention_hint",
+    "attention": "info",
+    "verdict": "appropriate",
+    "note": "Size-only, info-level and labelled low-certainty."
+  },
+  {
+    "ruleId": "aside.diff.pr_summary",
+    "path": null,
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "Totals for the bundled public capture."
+  },
+  {
+    "ruleId": "aside.diff.schema_contract",
+    "path": "internal/config/config.go",
+    "assertionKind": "attention_hint",
+    "attention": "info",
+    "verdict": "appropriate",
+    "note": "Exported Go declarations added or changed; info-level prompt. Counts additions of brand-new API as 'changed', which is acceptable wording for a hint."
+  },
+  {
+    "ruleId": "aside.diff.schema_contract",
+    "path": "internal/identity/account_status.go",
+    "assertionKind": "attention_hint",
+    "attention": "info",
+    "verdict": "appropriate",
+    "note": "Exported Go declarations added or changed; info-level prompt. Counts additions of brand-new API as 'changed', which is acceptable wording for a hint."
+  },
+  {
+    "ruleId": "aside.diff.schema_contract",
+    "path": "internal/identity/credentials.go",
+    "assertionKind": "attention_hint",
+    "attention": "info",
+    "verdict": "appropriate",
+    "note": "Exported Go declarations added or changed; info-level prompt. Counts additions of brand-new API as 'changed', which is acceptable wording for a hint."
+  },
+  {
+    "ruleId": "aside.diff.schema_contract",
+    "path": "internal/identity/delete.go",
+    "assertionKind": "attention_hint",
+    "attention": "info",
+    "verdict": "appropriate",
+    "note": "Exported Go declarations added or changed; info-level prompt. Counts additions of brand-new API as 'changed', which is acceptable wording for a hint."
+  },
+  {
+    "ruleId": "aside.diff.schema_contract",
+    "path": "internal/identity/ssh.go",
+    "assertionKind": "attention_hint",
+    "attention": "info",
+    "verdict": "appropriate",
+    "note": "Exported Go declarations added or changed; info-level prompt. Counts additions of brand-new API as 'changed', which is acceptable wording for a hint."
+  },
+  {
+    "ruleId": "aside.diff.schema_contract",
+    "path": "internal/identity/ssh_command.go",
+    "assertionKind": "attention_hint",
+    "attention": "info",
+    "verdict": "appropriate",
+    "note": "Exported Go declarations added or changed; info-level prompt. Counts additions of brand-new API as 'changed', which is acceptable wording for a hint."
+  },
+  {
+    "ruleId": "aside.diff.schema_contract",
+    "path": "internal/identity/store.go",
+    "assertionKind": "attention_hint",
+    "attention": "info",
+    "verdict": "appropriate",
+    "note": "Exported Go declarations added or changed; info-level prompt. Counts additions of brand-new API as 'changed', which is acceptable wording for a hint."
+  },
+  {
+    "ruleId": "aside.diff.schema_contract",
+    "path": "pkg/cmd/auth/identity/delete.go",
+    "assertionKind": "attention_hint",
+    "attention": "info",
+    "verdict": "appropriate",
+    "note": "Exported Go declarations added or changed; info-level prompt. Counts additions of brand-new API as 'changed', which is acceptable wording for a hint."
+  },
+  {
+    "ruleId": "aside.diff.schema_contract",
+    "path": "pkg/cmd/auth/identity/identity.go",
+    "assertionKind": "attention_hint",
+    "attention": "info",
+    "verdict": "appropriate",
+    "note": "Exported Go declarations added or changed; info-level prompt. Counts additions of brand-new API as 'changed', which is acceptable wording for a hint."
+  },
+  {
+    "ruleId": "aside.diff.schema_contract",
+    "path": "pkg/cmd/auth/use/use.go",
+    "assertionKind": "attention_hint",
+    "attention": "info",
+    "verdict": "appropriate",
+    "note": "Exported Go declarations added or changed; info-level prompt. Counts additions of brand-new API as 'changed', which is acceptable wording for a hint."
+  },
+  {
+    "ruleId": "aside.diff.test_assertions_added",
+    "path": "api/identity_gateway_test.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "Assertions genuinely added in a test file."
+  },
+  {
+    "ruleId": "aside.diff.test_assertions_added",
+    "path": "api/identity_test.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "Assertions genuinely added in a test file."
+  },
+  {
+    "ruleId": "aside.diff.test_assertions_added",
+    "path": "internal/identity/account_test.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "Assertions genuinely added in a test file."
+  },
+  {
+    "ruleId": "aside.diff.test_assertions_added",
+    "path": "internal/identity/credentials_test.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "Assertions genuinely added in a test file."
+  },
+  {
+    "ruleId": "aside.diff.test_assertions_added",
+    "path": "internal/identity/hardening_test.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "Assertions genuinely added in a test file."
+  },
+  {
+    "ruleId": "aside.diff.test_assertions_added",
+    "path": "internal/identity/ssh_test.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "Assertions genuinely added in a test file."
+  },
+  {
+    "ruleId": "aside.diff.test_assertions_added",
+    "path": "internal/identity/store_test.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "Assertions genuinely added in a test file."
+  },
+  {
+    "ruleId": "aside.diff.test_assertions_added",
+    "path": "internal/identity/worktree_transport_test.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "Assertions genuinely added in a test file."
+  },
+  {
+    "ruleId": "aside.diff.test_assertions_added",
+    "path": "pkg/cmd/auth/gitcredential/gist_identity_test.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "Assertions genuinely added in a test file."
+  },
+  {
+    "ruleId": "aside.diff.test_assertions_added",
+    "path": "pkg/cmd/auth/gitcredential/gist_production_test.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "Assertions genuinely added in a test file."
+  },
+  {
+    "ruleId": "aside.diff.test_assertions_added",
+    "path": "pkg/cmd/auth/gitcredential/identity_test.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "Assertions genuinely added in a test file."
+  },
+  {
+    "ruleId": "aside.diff.test_assertions_added",
+    "path": "pkg/cmd/auth/identity/delete_test.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "Assertions genuinely added in a test file."
+  },
+  {
+    "ruleId": "aside.diff.test_assertions_added",
+    "path": "pkg/cmd/auth/identity/identity_test.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "Assertions genuinely added in a test file."
+  },
+  {
+    "ruleId": "aside.diff.test_assertions_added",
+    "path": "pkg/cmd/auth/use/use_test.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "Assertions genuinely added in a test file."
+  },
+  {
+    "ruleId": "aside.diff.test_assertions_added",
+    "path": "pkg/cmd/auth/use/worktrees_test.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "Assertions genuinely added in a test file."
+  },
+  {
+    "ruleId": "aside.diff.test_assertions_added",
+    "path": "pkg/cmd/root/account_git_test.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "Assertions genuinely added in a test file."
+  },
+  {
+    "ruleId": "aside.diff.test_assertions_added",
+    "path": "pkg/cmd/root/reset_experiment_test.go",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "Assertions genuinely added in a test file."
+  },
+  {
+    "ruleId": "aside.diff.tests_removed",
+    "path": "pkg/cmd/root/account_git_test.go",
+    "assertionKind": "attention_hint",
+    "attention": "investigate",
+    "verdict": "appropriate",
+    "note": "A whole test (TestAccountSSHRefusesUndeclaredRouting) was deleted because the behaviour changed; worth checking, and phrased as a hint, not lost coverage."
+  },
+  {
+    "ruleId": "aside.diff.tests_touched",
+    "path": null,
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "Measured count of test files by path convention."
+  }
+]

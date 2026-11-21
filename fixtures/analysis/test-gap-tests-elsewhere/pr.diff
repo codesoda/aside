@@ -1,0 +1,9 @@
+diff --git a/src/math.rs b/src/math.rs
+index 1212121..3434343 100644
+--- a/src/math.rs
++++ b/src/math.rs
+@@ -1,3 +1,3 @@
+ pub fn add(a: u32, b: u32) -> u32 {
+-    a + b
++    a.saturating_add(b)
+ }

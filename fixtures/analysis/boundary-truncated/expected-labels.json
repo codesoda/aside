@@ -1,0 +1,26 @@
+[
+  {
+    "ruleId": "aside.diff.pr_summary",
+    "path": null,
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "PR totals; null (unknown) whenever a binary, truncated or unlisted file makes them unmeasurable."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "src/client.rs",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  },
+  {
+    "ruleId": "aside.diff.file_change",
+    "path": "src/server.rs",
+    "assertionKind": "measured_fact",
+    "attention": "none",
+    "verdict": "appropriate",
+    "note": "File-level metadata with the right operation; no line anchor."
+  }
+]

@@ -22,6 +22,8 @@
 //!   files, oversized files and unsupported languages each get an explicit
 //!   coverage outcome instead of a silent skip or a guessed fact.
 
+#[cfg(test)]
+mod boundary_tests;
 mod classify;
 #[cfg(test)]
 mod tests;
@@ -47,7 +49,7 @@ use crate::util::sha256_hex;
 /// Provider ID for runs of this scan.
 pub const PROVIDER_ID: &str = "aside.diff";
 /// Engine version. Bump when any rule version or the output shape changes.
-pub const ENGINE_VERSION: &str = "aside.diff-facts/1";
+pub const ENGINE_VERSION: &str = "aside.diff-facts/2";
 
 /// One deterministic rule and its immutable version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,8 +151,14 @@ impl Default for DiffFactsConfig {
 impl DiffFactsConfig {
     /// Digest of the canonical config JSON, for `AnalysisRun.configuration_digest`.
     pub fn digest(&self) -> String {
+        self.digest_for_engine(ENGINE_VERSION)
+    }
+
+    /// Digest under an explicit engine version, so tests can prove a version
+    /// bump changes the digest (and thus forces the scheduler to re-run).
+    fn digest_for_engine(&self, engine_version: &str) -> String {
         let json = serde_json::to_string(self).expect("config serialises");
-        sha256_hex(format!("{ENGINE_VERSION}\n{json}").as_bytes())
+        sha256_hex(format!("{engine_version}\n{json}").as_bytes())
     }
 }
 
@@ -515,6 +523,12 @@ fn content_gate(
     } else if !file.patch_complete {
         Some(ScopeOutcome::Unknown {
             reason: "patch_incomplete".into(),
+        })
+    } else if operation(file) == "mode-only" {
+        // No content changed: line rules have nothing to read, which is not
+        // the same as "read it and found nothing" (#36).
+        Some(ScopeOutcome::NotApplicable {
+            reason: "mode_only".into(),
         })
     } else if generated && !config.scan_generated_files {
         Some(ScopeOutcome::NotRun {

@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "name": "boundary-renames",
+  "synthetic": true,
+  "description": "Synthetic boundary fixture (#36). Pure rename, rename with a public signature edit, and a renamed test file whose assertion was edited in place.",
+  "repositoryId": "synthetic/boundary",
+  "prNumber": 9001,
+  "baseSha": "ba8e67bfb488266de4f6ebde33a5a75da12e357d",
+  "headSha": "6578f555e941f102540ba0b55d59ea4edcce8d97",
+  "snapshotComplete": true,
+  "observedAt": "2026-01-01T00:00:00Z",
+  "scenarios": [
+    "19.2.rename",
+    "19.2.false-test-gap"
+  ],
+  "unsupportedPaths": [],
+  "expectedCompleteness": "complete"
+}
