@@ -81,9 +81,13 @@ export class ResultsChangedError extends Error {
 }
 
 /**
- * Reads every page of a list. Cursors are pinned to the result set (#33), so a
- * live run can invalidate one mid-walk with a recoverable 409 `cursor_stale`:
- * restart from the first page rather than splice pages from different states.
+ * Reads every page of a list. Cursors are keyset cursors (#64): they survive
+ * findings arriving mid-walk, so a live run no longer forces restarts. A 409
+ * `cursor_stale` now means a genuine change — the snapshot moved, or something
+ * in the already-paged region changed — and the recovery is the server's
+ * documented contract: restart from the first page rather than splice pages
+ * from different states. (This was #38's bounded-restart workaround; the
+ * server-side design it papered over is fixed.)
  */
 export async function fetchAllPages<T>(path: string, attempts = 3): Promise<{ items: T[]; last: Page<T> }> {
   for (let attempt = 0; attempt < attempts; attempt++) {
