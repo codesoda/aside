@@ -245,7 +245,13 @@ async fn start_session(
         .pr
         .url
         .clone();
-    let (path, _guard) = descriptor::write(&session.id, &url, &agent_token, &pr)?;
+    let (path, _guard) = descriptor::write(
+        &session.id,
+        &url,
+        &agent_token,
+        &pr,
+        session.pr_ref.is_some(),
+    )?;
     println!(
         "{}",
         json!({

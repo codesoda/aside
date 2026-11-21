@@ -22,6 +22,10 @@ pub struct Descriptor {
     pub api_base: String,
     pub agent_token: String,
     pub pr: String,
+    /// Demo captures use a real PR URL but must never be attached as live reviews.
+    /// Older descriptors lack this field and are not safe to attach.
+    #[serde(default)]
+    pub live_pr: bool,
     pub started_at: String,
 }
 
@@ -88,7 +92,13 @@ pub fn is_live(descriptor: &Descriptor) -> bool {
 }
 
 pub fn find_live(pr: &str) -> Result<Option<(PathBuf, Descriptor)>> {
-    Ok(list()?.into_iter().find(|(_, d)| d.pr == pr && is_live(d)))
+    Ok(list()?
+        .into_iter()
+        .find(|(_, d)| matches_live_pr(d, pr) && is_live(d)))
+}
+
+fn matches_live_pr(descriptor: &Descriptor, pr: &str) -> bool {
+    descriptor.live_pr && descriptor.pr == pr
 }
 
 pub fn write(
@@ -96,6 +106,7 @@ pub fn write(
     url: &str,
     agent_token: &str,
     pr: &str,
+    live_pr: bool,
 ) -> Result<(PathBuf, DescriptorGuard)> {
     let dir = directory()?;
     let path = dir.join(format!("{session_id}.json"));
@@ -107,6 +118,7 @@ pub fn write(
         api_base: format!("{url}api/v1"),
         agent_token: agent_token.into(),
         pr: pr.into(),
+        live_pr,
         started_at: now_rfc3339(),
     };
     let mut options = OpenOptions::new();
@@ -164,6 +176,20 @@ mod tests {
     }
 
     #[test]
+    fn demo_and_legacy_descriptors_cannot_match_live_pr() {
+        let json = r#"{"schemaVersion":1,"sessionId":"demo","pid":1,"url":"http://127.0.0.1:1234/","apiBase":"http://127.0.0.1:1234/api/v1","agentToken":"secret","pr":"https://github.com/cli/cli/pull/14921","startedAt":"now"}"#;
+        let mut descriptor: Descriptor = serde_json::from_str(json).unwrap();
+        let pr = descriptor.pr.clone();
+        assert!(!matches_live_pr(&descriptor, &pr));
+        descriptor.live_pr = true;
+        assert!(matches_live_pr(&descriptor, &pr));
+        assert!(!matches_live_pr(
+            &descriptor,
+            "https://github.com/cli/cli/pull/1"
+        ));
+    }
+
+    #[test]
     fn liveness_does_not_contact_non_loopback_urls() {
         let descriptor = Descriptor {
             schema_version: SCHEMA_VERSION,
@@ -173,6 +199,7 @@ mod tests {
             api_base: String::new(),
             agent_token: String::new(),
             pr: String::new(),
+            live_pr: false,
             started_at: String::new(),
         };
         assert!(!is_live(&descriptor));
