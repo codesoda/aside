@@ -159,7 +159,19 @@ async fn refresh_reruns_the_diff_engine_and_labels_old_findings_historical() {
         h.clone().wait().await;
     }
 
-    for (id, _, label) in stored(&session) {
+    assert!(
+        !second.is_empty(),
+        "refresh fixture should yield diff facts"
+    );
+    assert!(
+        first.difference(&second).next().is_some(),
+        "refresh fixture should retire an old finding"
+    );
+    let rows = stored(&session);
+    let got: BTreeSet<String> = rows.iter().map(|(id, _, _)| id.clone()).collect();
+    assert_eq!(got, first.union(&second).cloned().collect());
+
+    for (id, _, label) in rows {
         let want = if second.contains(&id) {
             ObservationLabel::Current
         } else {
