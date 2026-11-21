@@ -49,7 +49,7 @@ use crate::util::sha256_hex;
 /// Provider ID for runs of this scan.
 pub const PROVIDER_ID: &str = "aside.diff";
 /// Engine version. Bump when any rule version or the output shape changes.
-pub const ENGINE_VERSION: &str = "aside.diff-facts/1";
+pub const ENGINE_VERSION: &str = "aside.diff-facts/2";
 
 /// One deterministic rule and its immutable version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,8 +151,14 @@ impl Default for DiffFactsConfig {
 impl DiffFactsConfig {
     /// Digest of the canonical config JSON, for `AnalysisRun.configuration_digest`.
     pub fn digest(&self) -> String {
+        self.digest_for_engine(ENGINE_VERSION)
+    }
+
+    /// Digest under an explicit engine version, so tests can prove a version
+    /// bump changes the digest (and thus forces the scheduler to re-run).
+    fn digest_for_engine(&self, engine_version: &str) -> String {
         let json = serde_json::to_string(self).expect("config serialises");
-        sha256_hex(format!("{ENGINE_VERSION}\n{json}").as_bytes())
+        sha256_hex(format!("{engine_version}\n{json}").as_bytes())
     }
 }
 
