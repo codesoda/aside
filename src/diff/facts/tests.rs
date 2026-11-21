@@ -343,6 +343,15 @@ fn edge_cases_have_defined_outcomes() {
             reason: "generated_file".into()
         }
     );
+    // The skip reaches the run level: a scan that deliberately did not read a
+    // generated file is partial with a reason (#65), never complete.
+    assert!(
+        facts
+            .coverage
+            .reason_codes
+            .contains(&"generated_file".to_string())
+    );
+    assert_eq!(facts.coverage.completeness, Completeness::Partial);
     let scanned = run(
         &snapshot,
         &DiffFactsConfig {
@@ -428,6 +437,41 @@ fn incomplete_patches_get_no_invented_facts() {
 }
 
 #[test]
+fn oversized_only_pr_is_partial_with_a_file_too_large_reason() {
+    // A PR whose only file is oversized: the run must say why it did not read
+    // the content instead of presenting as complete (#65).
+    let mut diff = String::from(
+        "diff --git a/src/big.rs b/src/big.rs\nnew file mode 100644\n--- /dev/null\n+++ b/src/big.rs\n@@ -0,0 +1,12 @@\n",
+    );
+    for i in 0..12 {
+        diff.push_str(&format!("+    let value_{i} = {i};\n"));
+    }
+    let snapshot = synthetic(&diff);
+    let facts = run(
+        &snapshot,
+        &DiffFactsConfig {
+            max_scan_lines_per_file: 10,
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        outcome(&facts, "src/big.rs", rules::TEST_ASSERTIONS_ADDED),
+        ScopeOutcome::NotRun {
+            reason: "file_too_large".into()
+        }
+    );
+    assert_eq!(
+        facts.coverage.reason_codes,
+        vec!["file_too_large".to_string()]
+    );
+    assert_eq!(facts.coverage.completeness, Completeness::Partial);
+    assert_eq!(
+        facts.coverage.analyzed_files,
+        KnownCount::Known { value: 0 }
+    );
+}
+
+#[test]
 fn large_files_are_bounded_not_dropped() {
     let mut diff = String::from(
         "diff --git a/src/big.rs b/src/big.rs\nnew file mode 100644\n--- /dev/null\n+++ b/src/big.rs\n@@ -0,0 +1,50 @@\n",
@@ -450,6 +494,14 @@ fn large_files_are_bounded_not_dropped() {
             reason: "file_too_large".into()
         }
     );
+    // The skip reaches the run level (#65).
+    assert!(
+        facts
+            .coverage
+            .reason_codes
+            .contains(&"file_too_large".to_string())
+    );
+    assert_eq!(facts.coverage.completeness, Completeness::Partial);
 
     let capped = run(
         &snapshot,

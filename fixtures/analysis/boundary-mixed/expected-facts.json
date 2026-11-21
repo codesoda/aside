@@ -1,7 +1,7 @@
 {
   "providerId": "aside.diff",
-  "engineVersion": "aside.diff-facts/2",
-  "configurationDigest": "2e9f791ed0f0406075dfac59e8abc1a6b218fe708d5db8048d0fa7def654e37a",
+  "engineVersion": "aside.diff-facts/3",
+  "configurationDigest": "716078a1e4f12ab42f86c2c517b54933d956e9b364c866c0de27ae6279c800cd",
   "inputDigest": "ee11112d705ecbf3487d5e5df9dab4093b6ebd2a36b3da2c56ae53cfd81cc7c4",
   "coverage": {
     "completeness": "partial",
@@ -423,7 +423,7 @@
       "parentFindingId": null,
       "correlationGroupId": null,
       "extensions": {
-        "engineVersion": "aside.diff-facts/2",
+        "engineVersion": "aside.diff-facts/3",
         "limitations": [
           "binary or incomplete files: line totals are unknown"
         ],
@@ -521,7 +521,7 @@
       "parentFindingId": null,
       "correlationGroupId": null,
       "extensions": {
-        "engineVersion": "aside.diff-facts/2",
+        "engineVersion": "aside.diff-facts/3",
         "limitations": [
           "language not supported by line-level rules"
         ],
@@ -617,7 +617,7 @@
       "parentFindingId": null,
       "correlationGroupId": null,
       "extensions": {
-        "engineVersion": "aside.diff-facts/2",
+        "engineVersion": "aside.diff-facts/3",
         "limitations": [
           "binary file: line counts and content are not available",
           "language not supported by line-level rules"
@@ -714,7 +714,7 @@
       "parentFindingId": null,
       "correlationGroupId": null,
       "extensions": {
-        "engineVersion": "aside.diff-facts/2",
+        "engineVersion": "aside.diff-facts/3",
         "limitations": [
           "language not supported by line-level rules"
         ],
@@ -810,7 +810,7 @@
       "parentFindingId": null,
       "correlationGroupId": null,
       "extensions": {
-        "engineVersion": "aside.diff-facts/2",
+        "engineVersion": "aside.diff-facts/3",
         "limitations": [],
         "measurement": {
           "additions": 1,
@@ -904,7 +904,7 @@
       "parentFindingId": null,
       "correlationGroupId": null,
       "extensions": {
-        "engineVersion": "aside.diff-facts/2",
+        "engineVersion": "aside.diff-facts/3",
         "limitations": [],
         "measurement": {
           "additions": 1,
@@ -998,7 +998,7 @@
       "parentFindingId": null,
       "correlationGroupId": null,
       "extensions": {
-        "engineVersion": "aside.diff-facts/2",
+        "engineVersion": "aside.diff-facts/3",
         "limitations": [
           "language not supported by line-level rules"
         ],
@@ -1094,7 +1094,7 @@
       "parentFindingId": null,
       "correlationGroupId": null,
       "extensions": {
-        "engineVersion": "aside.diff-facts/2",
+        "engineVersion": "aside.diff-facts/3",
         "limitations": [],
         "measurement": {
           "additions": 1,
@@ -1188,7 +1188,7 @@
       "parentFindingId": null,
       "correlationGroupId": null,
       "extensions": {
-        "engineVersion": "aside.diff-facts/2",
+        "engineVersion": "aside.diff-facts/3",
         "limitations": [
           "patch incomplete: line counts are not verified and content was not scanned"
         ],
@@ -1284,7 +1284,7 @@
       "parentFindingId": null,
       "correlationGroupId": null,
       "extensions": {
-        "engineVersion": "aside.diff-facts/2",
+        "engineVersion": "aside.diff-facts/3",
         "limitations": [
           "path-convention detection only"
         ],
@@ -1372,7 +1372,7 @@
       "parentFindingId": null,
       "correlationGroupId": null,
       "extensions": {
-        "engineVersion": "aside.diff-facts/2",
+        "engineVersion": "aside.diff-facts/3",
         "limitations": [
           "syntactic go matching: cannot tell crate/package-private exports or pure moves"
         ],
@@ -1460,7 +1460,7 @@
       "parentFindingId": null,
       "correlationGroupId": null,
       "extensions": {
-        "engineVersion": "aside.diff-facts/2",
+        "engineVersion": "aside.diff-facts/3",
         "limitations": [
           "syntactic rust matching: cannot tell crate/package-private exports or pure moves"
         ],
