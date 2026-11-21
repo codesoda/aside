@@ -110,9 +110,10 @@ pub fn fetch_snapshot(gh: &dyn GhRunner, pr_ref: &PrRef, limits: &Limits) -> Res
         complete = false;
     }
 
-    let github_threads = fetch_threads(gh, pr_ref)
+    let (github_threads, thread_warnings, github_threads_complete) = fetch_threads(gh, pr_ref)
         .inspect_err(|e| warnings.push(format!("could not load review threads: {e}")))
         .unwrap_or_default();
+    warnings.extend(thread_warnings);
 
     // The diff and paginated files API target a mutable PR number. A force push
     // or base update during ingestion must never yield a complete mixed revision.
@@ -155,6 +156,7 @@ pub fn fetch_snapshot(gh: &dyn GhRunner, pr_ref: &PrRef, limits: &Limits) -> Res
         provider_repository_id,
         files,
         github_threads,
+        github_threads_complete,
         reviews: meta
             .reviews
             .iter()

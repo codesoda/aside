@@ -166,6 +166,12 @@ pub struct GithubThread {
     pub is_outdated: bool,
     pub is_resolved: bool,
     pub comments: Vec<GithubComment>,
+    /// REST-only threads have no verified GraphQL anchor or resolution.
+    #[serde(default)]
+    pub rest_only: bool,
+    /// Both sources and every page were enumerated successfully.
+    #[serde(default)]
+    pub enumeration_complete: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -176,6 +182,10 @@ pub struct GithubComment {
     pub author: String,
     pub body: String,
     pub created_at: String,
+    #[serde(default)]
+    pub updated_at: Option<String>,
+    #[serde(default)]
+    pub in_reply_to_id: Option<i64>,
 }
 
 /// Everything fetched for one PR revision.
@@ -188,6 +198,9 @@ pub struct PrSnapshot {
     pub provider_repository_id: Option<String>,
     pub files: Vec<ChangedFile>,
     pub github_threads: Vec<GithubThread>,
+    /// True only when both review-comment APIs were fully enumerated.
+    #[serde(default)]
+    pub github_threads_complete: bool,
     pub reviews: Vec<ImportedReview>,
     pub issue_comments: Vec<IssueComment>,
     pub warnings: Vec<String>,

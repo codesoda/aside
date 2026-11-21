@@ -136,4 +136,14 @@ pub(super) const MIGRATIONS: &[&str] = &[
         attempt_id TEXT NOT NULL REFERENCES publication_attempts(id)
     );
     ",
+    // v3: preserve GitHub reply identity and index database aliases per thread.
+    "
+    ALTER TABLE review_comments ADD COLUMN in_reply_to_id INTEGER;
+    CREATE INDEX idx_comments_github_database_id ON review_comments(github_comment_id);
+    ",
+    // v4: retain historical imported comments when their remote source disappears.
+    "
+    ALTER TABLE review_comments ADD COLUMN source_status TEXT NOT NULL DEFAULT 'available'
+        CHECK (source_status IN ('available', 'source_deleted_or_unavailable'));
+    ",
 ];

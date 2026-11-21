@@ -38,6 +38,7 @@ pub fn snapshot(version: usize) -> PrSnapshot {
         provider_repository_id: Some("212613049".into()),
         files: parsed.files,
         github_threads: Vec::new(),
+        github_threads_complete: false,
         reviews: Vec::new(),
         issue_comments: Vec::new(),
         warnings: parsed.warnings,

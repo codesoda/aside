@@ -69,7 +69,12 @@ impl Session {
             &snapshot.pr.url,
         )?;
         store.save_snapshot(&pr_id, &snapshot)?;
-        store.sync_github_threads(&pr_id, &snapshot.pr.head_sha, &snapshot.github_threads)?;
+        store.sync_github_threads(
+            &pr_id,
+            &snapshot.pr.head_sha,
+            &snapshot.github_threads,
+            snapshot.github_threads_complete,
+        )?;
         revalidate_anchors(&mut store, &pr_id, &snapshot)?;
         let demo_version =
             if pr_ref.is_none() && snapshot.pr.head_sha == demo::snapshot(1).pr.head_sha {
@@ -200,6 +205,7 @@ impl Session {
                 &self.pr_id,
                 &snapshot.pr.head_sha,
                 &snapshot.github_threads,
+                snapshot.github_threads_complete,
             )?;
             revalidate_anchors(&mut store, &self.pr_id, &snapshot)?;
             if previous_head != snapshot.pr.head_sha {
