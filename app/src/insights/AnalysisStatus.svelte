@@ -14,7 +14,7 @@
     <span aria-hidden="true">{tone === 'complete' ? '●' : tone === 'pending' ? '◌' : '◐'}</span>
     Analysis {toneText[tone]}: {coverageHeadline(summary)}
   </p>
-  {#if loadError}<p class="text-amber-800" role="alert">Insights unavailable: {loadError}</p>{/if}
+  {#if loadError}<p class="text-warning" role="alert">Insights unavailable: {loadError}</p>{/if}
   <details class="mt-1">
     <summary class="cursor-pointer text-accent focus-visible:outline-2 focus-visible:outline-accent">Source coverage</summary>
     <ul class="mt-1 space-y-1">
@@ -24,7 +24,7 @@
           <span class:font-semibold={!sourceComplete(source)}>{sourceStateText(source.state)}</span>
           {#if source.items.state === 'known'} · {source.items.value} {source.itemKind}{:else} · {source.itemKind} count unknown{/if}
           {#if source.reasonCodes.length} · {source.reasonCodes.join(', ')}{/if}
-          {#each source.limitations as limitation}<span class="block pl-4 text-amber-800">{limitation}</span>{/each}
+          {#each source.limitations as limitation}<span class="block pl-4 text-warning">{limitation}</span>{/each}
         </li>
       {/each}
     </ul>

@@ -242,7 +242,7 @@
 <div class="workspace">
   {#if !session}
     <header class="workspace-toolbar"><p class="font-semibold">Aside</p></header>
-    {#if error}<p class="p-6 text-red-700" role="alert">{error}</p>
+    {#if error}<p class="p-6 text-danger" role="alert">{error}</p>
     {:else}<p class="p-6 text-muted" role="status">Loading review…</p>{/if}
   {:else}
     <header class="workspace-toolbar">
@@ -275,9 +275,9 @@
 
     {#if error || actionError || session.warnings.length}
       <div class="workspace-notices">
-        {#if error}<p class="text-red-700" role="alert">Refresh failed: {error}</p>{/if}
-        {#if actionError}<p class="text-red-700" role="alert">{actionError}</p>{/if}
-        {#each session.warnings as warning}<p class="text-amber-800">{warning}</p>{/each}
+        {#if error}<p class="text-danger" role="alert">Refresh failed: {error}</p>{/if}
+        {#if actionError}<p class="text-danger" role="alert">{actionError}</p>{/if}
+        {#each session.warnings as warning}<p class="text-warning">{warning}</p>{/each}
       </div>
     {/if}
 
@@ -454,7 +454,7 @@
                             <span class="px-2" data-code-line={lineSide(line) ? (lineSide(line) === 'LEFT' ? line.oldLine : line.newLine) : undefined} data-side={lineSide(line) ?? undefined}>{line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}{line.text}</span>
                           </div>
                           {#if !fileState?.scope.ignored && anchor?.fileId === file.id && anchor.digest === file.diffDigest && anchor.side === lineSide(line) && anchor.line === (anchor.side === 'LEFT' ? line.oldLine : line.newLine)}
-                            <div class="min-w-0 border-y border-line bg-white p-3 font-sans whitespace-normal">
+                            <div class="min-w-0 border-y border-line bg-canvas p-3 font-sans whitespace-normal">
                               <label for="draft" class="block text-sm font-semibold">Draft on {anchor.side === 'LEFT' ? 'old' : 'new'} {anchor.startLine ? `lines ${anchor.startLine}–${anchor.line}` : `line ${anchor.line}`}</label>
                               <textarea id="draft" bind:value={draft} rows="3" class="workspace-input mt-2 w-full" placeholder="Write a review comment"></textarea>
                               <div class="mt-2 flex gap-2">

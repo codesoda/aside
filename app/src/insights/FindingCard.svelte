@@ -25,7 +25,7 @@
   // Border style and glyph carry the class as well as colour.
   const styles = {
     measured: 'border-solid border-accent bg-surface',
-    suggestion: 'border-dashed border-[#9a6700] bg-amber-50',
+    suggestion: 'border-dashed border-warning bg-warning-soft',
     external: 'border-double border-4 border-accent bg-accent-soft',
   } as const;
 </script>
@@ -47,7 +47,7 @@
   {/if}
   <button type="button" onclick={() => void toggleEvidence()} aria-expanded={open} aria-controls={`evidence-${finding.id}`}
     aria-label={`${open ? 'Hide' : 'Show'} evidence for ${finding.title}`}
-    class="mt-2 rounded-md border border-line bg-white px-2 py-1 text-xs font-semibold hover:bg-surface focus-visible:outline-2 focus-visible:outline-accent">
+    class="mt-2 rounded-md border border-line bg-canvas px-2 py-1 text-xs font-semibold hover:bg-surface focus-visible:outline-2 focus-visible:outline-accent">
     {open ? 'Hide evidence' : 'Show evidence'}
   </button>
   {#if open}
@@ -62,7 +62,7 @@
         {#if finding.externalUrl}<dt class="font-semibold">Source</dt><dd><a class="text-accent underline" href={finding.externalUrl} rel="noreferrer noopener" target="_blank">Open original</a></dd>{/if}
       </dl>
       {#if evidenceError}
-        <p role="alert" class="mt-2 text-red-700">{evidenceError}</p>
+        <p role="alert" class="mt-2 text-danger">{evidenceError}</p>
       {:else if !evidence}
         <p class="mt-2 text-muted">Loading evidence…</p>
       {:else if evidence.length === 0}
@@ -70,11 +70,11 @@
       {:else}
         <ul class="mt-2 space-y-2" aria-label={`Evidence for ${finding.title}`}>
           {#each evidence as record (record.id)}
-            <li class="rounded border border-line bg-white p-2">
+            <li class="rounded border border-line bg-canvas p-2">
               <p class="font-semibold">{record.label}</p>
               {#if evidenceValue(record)}<p>{evidenceValue(record)}</p>{/if}
               <p class="text-muted">{record.kind}{#if record.method} · method {record.method}{/if}{#if record.anchor} · {citedLines({ anchor: record.anchor })}{/if}</p>
-              {#each record.limitations as limitation}<p class="text-amber-800">Limitation: {limitation}</p>{/each}
+              {#each record.limitations as limitation}<p class="text-warning">Limitation: {limitation}</p>{/each}
             </li>
           {/each}
         </ul>

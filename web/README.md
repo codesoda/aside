@@ -27,5 +27,6 @@ One-time repository setup is required before the first deployment: in **Settings
 - Quiet cream background, dense dark-ink typography and restrained purple accents.
 - Product example shown up front, followed by three essential differentiators and a simple explanation of the local-first CLI architecture.
 - Mobile responsive, keyboard focus styles and reduced-motion support.
+- Light and dark colour schemes follow the visitor's `prefers-color-scheme` setting (no toggle). Colours come from semantic tokens in the `:root` block; the names match the app's tokens in `app/src/app.css` so the two can be kept in step.
 
 The built app's Svelte/Tailwind/shadcn-svelte technology requirement remains unchanged. This HTML is a dependency-free landing-page prototype and can be ported into the Svelte project.
