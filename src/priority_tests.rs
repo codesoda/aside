@@ -434,6 +434,21 @@ fn empty_queue_is_only_all_clear_with_complete_coverage() {
 }
 
 #[test]
+fn no_sources_at_all_is_not_all_clear() {
+    // A session with zero sources must not present an empty queue as
+    // "all clear" (lifecycle #66): nothing was examined.
+    let mut fixture = Fixture::load();
+    let paths: Vec<String> = fixture.files.iter().map(|f| f.path.clone()).collect();
+    for path in &paths {
+        fixture.set_review(path, FileStatus::ReviewedCurrent);
+    }
+    fixture.coverage = vec![];
+    assert_eq!(fixture.queue().verdict, QueueVerdict::EmptyIncomplete);
+    assert_eq!(fixture.counts().coverage, OverallCoverage::Incomplete);
+    assert!(!fixture.counts().authoritative());
+}
+
+#[test]
 fn correlated_sources_group_without_losing_provenance() {
     let fixture = Fixture::load();
     let original = fixture.findings.clone();

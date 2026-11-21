@@ -1,7 +1,7 @@
 {
   "providerId": "aside.diff",
-  "engineVersion": "aside.diff-facts/2",
-  "configurationDigest": "2e9f791ed0f0406075dfac59e8abc1a6b218fe708d5db8048d0fa7def654e37a",
+  "engineVersion": "aside.diff-facts/3",
+  "configurationDigest": "716078a1e4f12ab42f86c2c517b54933d956e9b364c866c0de27ae6279c800cd",
   "inputDigest": "b44eab51d6d8e12db9f15762506a4bed68f8ab2fe7b9368c37eb8457a609a948",
   "coverage": {
     "completeness": "complete",
@@ -216,7 +216,7 @@
       "parentFindingId": null,
       "correlationGroupId": null,
       "extensions": {
-        "engineVersion": "aside.diff-facts/2",
+        "engineVersion": "aside.diff-facts/3",
         "limitations": [],
         "measurement": {
           "additions": 2,
@@ -308,7 +308,7 @@
       "parentFindingId": null,
       "correlationGroupId": null,
       "extensions": {
-        "engineVersion": "aside.diff-facts/2",
+        "engineVersion": "aside.diff-facts/3",
         "limitations": [],
         "measurement": {
           "additions": 0,
@@ -402,7 +402,7 @@
       "parentFindingId": null,
       "correlationGroupId": null,
       "extensions": {
-        "engineVersion": "aside.diff-facts/2",
+        "engineVersion": "aside.diff-facts/3",
         "limitations": [],
         "measurement": {
           "additions": 1,
@@ -496,7 +496,7 @@
       "parentFindingId": null,
       "correlationGroupId": null,
       "extensions": {
-        "engineVersion": "aside.diff-facts/2",
+        "engineVersion": "aside.diff-facts/3",
         "limitations": [],
         "measurement": {
           "additions": 1,
@@ -590,7 +590,7 @@
       "parentFindingId": null,
       "correlationGroupId": null,
       "extensions": {
-        "engineVersion": "aside.diff-facts/2",
+        "engineVersion": "aside.diff-facts/3",
         "limitations": [
           "path-convention detection only"
         ],
@@ -677,7 +677,7 @@
       "parentFindingId": null,
       "correlationGroupId": null,
       "extensions": {
-        "engineVersion": "aside.diff-facts/2",
+        "engineVersion": "aside.diff-facts/3",
         "limitations": [
           "syntactic rust matching, not an AST; replacements are not tracked"
         ],
@@ -766,7 +766,7 @@
       "parentFindingId": null,
       "correlationGroupId": null,
       "extensions": {
-        "engineVersion": "aside.diff-facts/2",
+        "engineVersion": "aside.diff-facts/3",
         "limitations": [
           "syntactic rust matching, not an AST; replacements are not tracked"
         ],
@@ -856,7 +856,7 @@
       "parentFindingId": null,
       "correlationGroupId": null,
       "extensions": {
-        "engineVersion": "aside.diff-facts/2",
+        "engineVersion": "aside.diff-facts/3",
         "limitations": [
           "syntactic rust matching: cannot tell crate/package-private exports or pure moves"
         ],

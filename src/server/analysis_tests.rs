@@ -18,10 +18,13 @@ use crate::{
         test_doubles::{Behaviour, DIFF, Double, fixture_output},
     },
     demo,
-    model::{Actor, AnalysisCoverage, AnalysisMode, Completeness, RuleAction, RuleKind, RunStatus},
+    model::{
+        Actor, AnalysisCoverage, AnalysisMode, Completeness, FindingId, RuleAction, RuleKind,
+        RunStatus,
+    },
     server::{AppState, router},
     session::Session,
-    store::Store,
+    store::{AnalysisBatch, Raw, Store},
 };
 
 const AGENT: &str = "Bearer agent-secret";
@@ -374,6 +377,161 @@ async fn cursors_are_bound_to_their_query_and_tamper_is_rejected() {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{path}");
         assert_eq!(body["error"], "invalid_cursor", "{path}");
     }
+}
+
+/// Appends one finding through the store — the same write path a provider's
+/// scheduler commit uses — to simulate a live run landing mid-walk (#64).
+fn append_finding(session: &Arc<Session>, suffix: &str) {
+    let mut store = session.store.lock().unwrap();
+    let run = store.list_analysis_runs(&session.pr_id).unwrap().remove(0);
+    let mut all = store.list_findings(&session.pr_id, true).unwrap();
+    let mut clone = all.remove(0).finding.value().clone();
+    clone.id = FindingId::new(format!("append_{suffix}"));
+    // Later than every fixture finding, so the append lands at the tail.
+    clone.first_seen_at = "2999-01-01T00:00:00Z".into();
+    clone.last_seen_at = clone.first_seen_at.clone();
+    clone.source.run_id = Some(run.value().id.clone());
+    let raw = Raw::new(clone).unwrap();
+    store
+        .commit_analysis_batch(&AnalysisBatch {
+            run,
+            findings: vec![raw],
+            evidence: Vec::new(),
+            relations: Vec::new(),
+        })
+        .unwrap();
+}
+
+#[tokio::test]
+async fn appended_findings_do_not_invalidate_cursors_and_are_served_later() {
+    let session = fixture_session().await;
+    let app = app(&session);
+    let before = ok(&app, "/api/v1/analysis/findings?limit=200").await;
+    let total_before = before["total"].as_u64().unwrap();
+    let first = ok(&app, "/api/v1/analysis/findings?limit=1").await;
+    let cursor = first["nextCursor"].as_str().unwrap().to_string();
+    let first_id = first["items"][0]["finding"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // A live run commits one finding between the two pages.
+    append_finding(&session, "mid_walk");
+
+    // The outstanding cursor survives the append: no 409, and the page
+    // continues in stable order instead of restarting or shifting.
+    let second = ok(
+        &app,
+        &format!("/api/v1/analysis/findings?limit=1&cursor={cursor}"),
+    )
+    .await;
+    let second_id = second["items"][0]["finding"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(second_id, first_id, "page two must not repeat page one");
+    let ids_before: Vec<&str> = before["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["finding"]["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids_before.iter().position(|id| *id == second_id),
+        Some(1),
+        "the second page continues the pre-append order"
+    );
+
+    // Walking to the end picks up the appended finding exactly once: no
+    // duplicates, no drops, under concurrent insertion.
+    let mut seen = vec![first_id, second_id];
+    let mut cursor = second["nextCursor"].as_str().unwrap().to_string();
+    loop {
+        let page = ok(
+            &app,
+            &format!("/api/v1/analysis/findings?limit=1&cursor={cursor}"),
+        )
+        .await;
+        for item in page["items"].as_array().unwrap() {
+            seen.push(item["finding"]["id"].as_str().unwrap().to_string());
+        }
+        match page["nextCursor"].as_str() {
+            Some(next) => cursor = next.to_string(),
+            None => break,
+        }
+    }
+    let after = ok(&app, "/api/v1/analysis/findings?limit=200").await;
+    assert_eq!(after["total"].as_u64().unwrap(), total_before + 1);
+    let expected: Vec<String> = after["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["finding"]["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(seen, expected, "the walk returned every item exactly once");
+}
+
+#[tokio::test]
+async fn cursor_issued_before_an_append_picks_up_the_new_items() {
+    let session = fixture_session().await;
+    let app = app(&session);
+    let before = ok(&app, "/api/v1/analysis/findings?limit=200").await;
+    let total = before["total"].as_u64().unwrap();
+    // A cursor is only issued when a page stops short of the end, so the
+    // deepest cursor resumes at the one pre-append item it had not served.
+    // The append must land after that, not invalidate anything.
+    let page = ok(
+        &app,
+        &format!("/api/v1/analysis/findings?limit={}", total - 1),
+    )
+    .await;
+    assert!(page["hasMore"].as_bool().unwrap());
+    let unserved = before["items"].as_array().unwrap().last().unwrap()["finding"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let cursor = page["nextCursor"].as_str().unwrap().to_string();
+
+    append_finding(&session, "tail");
+
+    let next = ok(
+        &app,
+        &format!("/api/v1/analysis/findings?limit=50&cursor={cursor}"),
+    )
+    .await;
+    assert!(!next["hasMore"].as_bool().unwrap());
+    let served: Vec<&str> = next["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["finding"]["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        served,
+        vec![unserved.as_str(), "append_tail"],
+        "the deep cursor serves the one item it owed and then the append"
+    );
+}
+
+#[tokio::test]
+async fn a_cursor_whose_key_vanished_is_a_recoverable_conflict() {
+    let session = fixture_session().await;
+    let app = app(&session);
+    let first = ok(&app, "/api/v1/analysis/findings?limit=1").await;
+    let cursor = first["nextCursor"].as_str().unwrap().to_string();
+    // A structurally valid cursor (right version, query and snapshot) whose
+    // key is not in the list: the paged region itself changed.
+    let mut decoded: serde_json::Value =
+        serde_json::from_slice(&hex::decode(cursor).unwrap()).unwrap();
+    decoded["last"] = "not-a-key-anywhere".into();
+    let forged = hex::encode(serde_json::to_vec(&decoded).unwrap());
+    let (status, body) = get(
+        &app,
+        &format!("/api/v1/analysis/findings?limit=1&cursor={forged}"),
+        Some(AGENT),
+    )
+    .await;
+    assert_recoverable_conflict(status, &body, "results_changed");
 }
 
 #[tokio::test]
