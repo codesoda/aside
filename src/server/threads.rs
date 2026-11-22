@@ -187,6 +187,62 @@ pub(super) async fn update_thread(
     ))
 }
 
+fn editable_comment(state: &AppState, id: &str, actor: Actor) -> ApiResult<Comment> {
+    let store = state
+        .session
+        .store
+        .lock()
+        .map_err(|_| ApiError::internal())?;
+    let comment = store.get_comment(id).map_err(db_error)?;
+    store
+        .get_thread(&state.session.pr_id, &comment.thread_id)
+        .map_err(db_error)?;
+    if comment.publish_state != PublishState::Draft || comment.author_kind != actor {
+        return Err(ApiError::forbidden());
+    }
+    Ok(comment)
+}
+pub(super) async fn update_comment(
+    State(state): State<AppState>,
+    axum::Extension(actor): axum::Extension<Actor>,
+    Path(id): Path<String>,
+    Json(input): Json<ReplyInput>,
+) -> ApiResult<Json<Value>> {
+    body_text(&input.body)?;
+    editable_comment(&state, &id, actor)?;
+    state
+        .session
+        .store
+        .lock()
+        .map_err(|_| ApiError::internal())?
+        .update_comment_body(&id, input.body.trim())
+        .map_err(db_error)?;
+    let event = state
+        .session
+        .notify("comment.changed", json!({"commentId":id}));
+    Ok(Json(
+        json!({"comment":state.session.store.lock().map_err(|_| ApiError::internal())?.get_comment(&id).map_err(db_error)?,"sequence":event.sequence}),
+    ))
+}
+pub(super) async fn delete_comment(
+    State(state): State<AppState>,
+    axum::Extension(actor): axum::Extension<Actor>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    editable_comment(&state, &id, actor)?;
+    state
+        .session
+        .store
+        .lock()
+        .map_err(|_| ApiError::internal())?
+        .delete_comment(&id)
+        .map_err(db_error)?;
+    let event = state
+        .session
+        .notify("comment.deleted", json!({"commentId":id}));
+    Ok(Json(json!({"sequence":event.sequence})))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,60 +320,4 @@ mod tests {
             "agent drafts do not request a reply"
         );
     }
-}
-
-fn editable_comment(state: &AppState, id: &str, actor: Actor) -> ApiResult<Comment> {
-    let store = state
-        .session
-        .store
-        .lock()
-        .map_err(|_| ApiError::internal())?;
-    let comment = store.get_comment(id).map_err(db_error)?;
-    store
-        .get_thread(&state.session.pr_id, &comment.thread_id)
-        .map_err(db_error)?;
-    if comment.publish_state != PublishState::Draft || comment.author_kind != actor {
-        return Err(ApiError::forbidden());
-    }
-    Ok(comment)
-}
-pub(super) async fn update_comment(
-    State(state): State<AppState>,
-    axum::Extension(actor): axum::Extension<Actor>,
-    Path(id): Path<String>,
-    Json(input): Json<ReplyInput>,
-) -> ApiResult<Json<Value>> {
-    body_text(&input.body)?;
-    editable_comment(&state, &id, actor)?;
-    state
-        .session
-        .store
-        .lock()
-        .map_err(|_| ApiError::internal())?
-        .update_comment_body(&id, input.body.trim())
-        .map_err(db_error)?;
-    let event = state
-        .session
-        .notify("comment.changed", json!({"commentId":id}));
-    Ok(Json(
-        json!({"comment":state.session.store.lock().map_err(|_| ApiError::internal())?.get_comment(&id).map_err(db_error)?,"sequence":event.sequence}),
-    ))
-}
-pub(super) async fn delete_comment(
-    State(state): State<AppState>,
-    axum::Extension(actor): axum::Extension<Actor>,
-    Path(id): Path<String>,
-) -> ApiResult<Json<Value>> {
-    editable_comment(&state, &id, actor)?;
-    state
-        .session
-        .store
-        .lock()
-        .map_err(|_| ApiError::internal())?
-        .delete_comment(&id)
-        .map_err(db_error)?;
-    let event = state
-        .session
-        .notify("comment.deleted", json!({"commentId":id}));
-    Ok(Json(json!({"sequence":event.sequence})))
 }

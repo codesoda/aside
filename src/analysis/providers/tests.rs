@@ -7,8 +7,7 @@ use super::DiffFactsProvider;
 use crate::{
     analysis::{
         AnalysisInput, AnalysisProvider, ProviderKind, RunHandle, Scheduler, SchedulerConfig,
-        SystemClock, default_providers,
-        test_doubles::{Double, HISTORY},
+        SystemClock, default_providers, test_doubles::Double,
     },
     demo,
     diff::facts::{self, DiffFactsConfig, DiffFactsInput},
@@ -272,7 +271,8 @@ async fn generated_skip_makes_the_run_partial_with_a_reason() {
 async fn review_stays_usable_with_the_real_diff_engine_registered() {
     let session = session();
     let before = session.view(Actor::Human).unwrap();
-    let (slow, gate, started) = Double::gated(HISTORY, ProviderKind::History);
+    let slow_id = "aside.slow-history-test";
+    let (slow, gate, started) = Double::gated(slow_id, ProviderKind::History);
     let mut providers: Vec<Arc<dyn AnalysisProvider>> = default_providers();
     providers.push(slow);
     let analysis = Scheduler::new(
@@ -291,7 +291,7 @@ async fn review_stays_usable_with_the_real_diff_engine_registered() {
         status_for(&expected(&session_input(&session)))
     );
 
-    let slow_handle = handles.iter().find(|h| h.provider_id == HISTORY).unwrap();
+    let slow_handle = handles.iter().find(|h| h.provider_id == slow_id).unwrap();
     assert!(
         slow_handle.report().is_none(),
         "slow provider still running"

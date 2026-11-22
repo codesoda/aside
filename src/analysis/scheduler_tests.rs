@@ -14,6 +14,7 @@ use crate::{
         test_doubles::{Behaviour, DIFF, Double, FEEDBACK, HISTORY},
     },
     demo,
+    github::context::{AnalysisContext, HistoryObjects},
     model::Actor,
     session::Session,
     store::ObservationLabel,
@@ -119,6 +120,177 @@ fn demo_input_pins_the_fixture_snapshot() {
     let bundle = demo::intelligence::load(false);
     assert_eq!(input(&session, 0).snapshot_id, bundle.manifest.snapshot_id);
     assert_ne!(input(&session, 1).snapshot_id, bundle.manifest.snapshot_id);
+}
+
+fn history_input(session: &Session, version: usize, count: usize, objects: bool) -> AnalysisInput {
+    let mut input = input(session, version);
+    input.history_context = Some(AnalysisContext {
+        source: "fixture".into(),
+        base_sha: input.base_sha.clone(),
+        head_sha: input.head_sha.clone(),
+        comparison_base: Some(input.base_sha.clone()),
+        history_count: count,
+        shallow: false,
+        complete: true,
+        reason: None,
+    });
+    if objects {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().to_owned();
+        input.history_objects = Some(HistoryObjects::fixture(temp, dir));
+    }
+    input
+}
+
+#[test]
+fn history_input_identity_distinguishes_availability_with_same_count() {
+    let session = session();
+    let unavailable = history_input(&session, 0, 12, false);
+    let available = history_input(&session, 0, 12, true);
+    assert_eq!(unavailable.input_digest(), available.input_digest());
+    assert_ne!(
+        unavailable.provider_digest(ProviderKind::History),
+        available.provider_digest(ProviderKind::History)
+    );
+    assert_eq!(
+        unavailable.provider_digest(ProviderKind::Diff),
+        available.provider_digest(ProviderKind::Diff)
+    );
+    assert_ne!(
+        available.provider_digest(ProviderKind::History),
+        history_input(&session, 0, 13, true).provider_digest(ProviderKind::History)
+    );
+    let mut replaced_objects = available.clone();
+    replaced_objects.history_generation += 1;
+    assert_ne!(
+        available.provider_digest(ProviderKind::History),
+        replaced_objects.provider_digest(ProviderKind::History)
+    );
+    assert_eq!(
+        available.provider_digest(ProviderKind::Diff),
+        replaced_objects.provider_digest(ProviderKind::Diff)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn changed_history_input_replaces_active_without_rerunning_diff() {
+    let session = session();
+    let (slow, gate, started) = Double::gated(HISTORY, ProviderKind::History);
+    let diff = Double::new(DIFF, ProviderKind::Diff, Behaviour::Fixture);
+    let analysis = scheduler(&session, vec![slow, diff], config(4));
+    let first = analysis
+        .begin_snapshot(history_input(&session, 0, 12, false))
+        .unwrap();
+    started.notified().await;
+    let old = handle_for(&first, HISTORY).clone();
+    handle_for(&first, DIFF).clone().wait().await;
+    let replacement = analysis
+        .begin_snapshot(history_input(&session, 0, 12, true))
+        .unwrap();
+    assert_eq!(
+        replacement.len(),
+        1,
+        "context-only changes must not rerun diff"
+    );
+    let new = handle_for(&replacement, HISTORY).clone();
+    assert_ne!(old.run_id, new.run_id);
+    assert_eq!(old.wait().await.stored_status, RunStatus::Cancelled);
+    gate.add_permits(1);
+    assert_eq!(new.clone().wait().await.stored_status, RunStatus::Succeeded);
+    assert_eq!(run_count(&session), 3);
+    assert_eq!(
+        stored(&session, &new.run_id).input_digest,
+        history_input(&session, 0, 12, true).provider_digest(ProviderKind::History)
+    );
+}
+
+#[tokio::test]
+async fn terminal_history_recovery_retries_only_history_and_retires_old_evidence() {
+    let session = session();
+    let history = Double::new(HISTORY, ProviderKind::History, Behaviour::Fixture);
+    let diff = Double::new(DIFF, ProviderKind::Diff, Behaviour::Fixture);
+    let analysis = scheduler(&session, vec![history, diff], config(2));
+    let first = analysis
+        .begin_snapshot(history_input(&session, 0, 12, false))
+        .unwrap();
+    for handle in &first {
+        handle.clone().wait().await;
+    }
+    let old = handle_for(&first, HISTORY);
+    let diff = handle_for(&first, DIFF);
+    let replacement = analysis
+        .begin_snapshot(history_input(&session, 0, 12, true))
+        .unwrap();
+    assert_eq!(replacement.len(), 1);
+    let new = handle_for(&replacement, HISTORY);
+    assert_ne!(old.run_id, new.run_id);
+    assert_eq!(stored(&session, &old.run_id).status, RunStatus::Stale);
+    assert_eq!(new.clone().wait().await.stored_status, RunStatus::Succeeded);
+    assert_eq!(stored(&session, &diff.run_id).status, RunStatus::Succeeded);
+    assert_eq!(run_count(&session), 3);
+}
+
+#[tokio::test]
+async fn restored_context_does_not_reuse_stale_terminal_run() {
+    let session = session();
+    let history = Double::new(HISTORY, ProviderKind::History, Behaviour::Fixture);
+    let diff = Double::new(DIFF, ProviderKind::Diff, Behaviour::Fixture);
+    let analysis = scheduler(&session, vec![history, diff], config(2));
+    let first = analysis
+        .begin_snapshot(history_input(&session, 0, 12, false))
+        .unwrap();
+    for handle in &first {
+        handle.clone().wait().await;
+    }
+    let first_id = handle_for(&first, HISTORY).run_id.clone();
+    let second = analysis
+        .begin_snapshot(history_input(&session, 0, 13, false))
+        .unwrap();
+    assert_eq!(second.len(), 1);
+    second[0].clone().wait().await;
+    let restored = analysis
+        .begin_snapshot(history_input(&session, 0, 12, false))
+        .unwrap();
+    assert_eq!(restored.len(), 1);
+    assert_ne!(restored[0].run_id, first_id);
+    assert_eq!(
+        restored[0].clone().wait().await.stored_status,
+        RunStatus::Succeeded
+    );
+    assert_eq!(run_count(&session), 4); // one diff and three history attempts
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn changed_revision_rejects_late_history_completion_and_reruns_diff() {
+    let session = session();
+    let (history, gate, started) = Double::gated(HISTORY, ProviderKind::History);
+    let diff = Double::new(DIFF, ProviderKind::Diff, Behaviour::Fixture);
+    let analysis = scheduler(&session, vec![history, diff], config(4));
+    let first = analysis
+        .begin_snapshot(history_input(&session, 0, 12, true))
+        .unwrap();
+    started.notified().await;
+    let old = handle_for(&first, HISTORY).clone();
+    handle_for(&first, DIFF).clone().wait().await;
+    let second = analysis
+        .begin_snapshot(history_input(&session, 1, 12, true))
+        .unwrap();
+    assert_eq!(
+        second.len(),
+        2,
+        "revision change must rerun snapshot-dependent diff"
+    );
+    handle_for(&second, DIFF).clone().wait().await;
+    gate.add_permits(2);
+    assert_eq!(old.wait().await.stored_status, RunStatus::Stale);
+    assert_eq!(
+        handle_for(&second, HISTORY)
+            .clone()
+            .wait()
+            .await
+            .stored_status,
+        RunStatus::Succeeded
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -261,7 +261,7 @@ impl Scheduler {
     pub fn begin_snapshot(&self, input: AnalysisInput) -> Result<Vec<RunHandle>> {
         let input = Arc::new(input);
         let mut active = lock(&self.inner.active)?;
-        let existing = {
+        let mut existing = {
             let mut store = lock(&self.inner.store)?;
             store.register_analysis_snapshot(
                 &input.pr_id,
@@ -296,14 +296,54 @@ impl Scheduler {
             inputs.retain(|id, _| active.keys().any(|(s, _)| s == id));
             inputs.insert(input.snapshot_id.clone(), Arc::clone(&input));
         }
-        let digest = input.input_digest();
         let mut handles = Vec::new();
         for provider in &self.inner.providers {
             let d = provider.descriptor();
             let key = (input.snapshot_id.clone(), d.id.clone());
-            if let Some(run) = active.get(&key) {
+            let digest = input.provider_digest(d.kind);
+            if let Some(run) = active.get(&key)
+                && existing.iter().any(|raw| {
+                    let stored = raw.value();
+                    stored.id == run.handle.run_id
+                        && !stored.status.is_terminal()
+                        && stored.engine_version == d.engine_version
+                        && stored.configuration_digest == d.configuration_digest
+                        && stored.input_digest == digest
+                })
+            {
                 handles.push(run.handle.clone());
                 continue;
+            }
+            // A context-only change keeps the snapshot ID. Invalidate old
+            // occurrences and cancel a mismatched active attempt before the
+            // replacement is queued; the store rejects its late batch.
+            if let Some(mut old) = active.remove(&key)
+                && let Some(tx) = old.cancel.take()
+            {
+                let _ = tx.send(());
+            }
+            for raw in &mut existing {
+                let old = raw.value();
+                if old.snapshot_id != input.snapshot_id
+                    || old.provider_id != d.id
+                    || (old.input_digest == digest
+                        && old.engine_version == d.engine_version
+                        && old.configuration_digest == d.configuration_digest)
+                {
+                    continue;
+                }
+                let mut revised = old.clone();
+                revised.status = if old.status.is_terminal() {
+                    RunStatus::Stale
+                } else {
+                    RunStatus::Cancelled
+                };
+                if revised.status == old.status {
+                    continue;
+                }
+                let revised = Raw::new(revised)?;
+                lock(&self.inner.store)?.record_analysis_run(&input.pr_id, &revised)?;
+                *raw = revised;
             }
             let already_ran = existing.iter().any(|raw| {
                 let r = raw.value();
@@ -312,8 +352,13 @@ impl Scheduler {
                     && r.engine_version == d.engine_version
                     && r.configuration_digest == d.configuration_digest
                     && r.input_digest == digest
-                    // Unfinished rows were just closed as interrupted; retry them.
                     && r.status.is_terminal()
+                    && !matches!(r.status, RunStatus::Stale | RunStatus::Cancelled)
+                    && !r
+                        .coverage
+                        .reason_codes
+                        .iter()
+                        .any(|c| c == reason::INTERRUPTED)
             });
             if already_ran {
                 continue;
@@ -402,7 +447,7 @@ impl Scheduler {
     ) -> Result<RunHandle> {
         let d = provider.descriptor();
         let limits = self.limits_for(provider.as_ref());
-        let digest = input.input_digest();
+        let digest = input.provider_digest(d.kind);
         let queued = AnalysisRun::queued(
             &RunKeyInput {
                 snapshot_id: &input.snapshot_id,
@@ -566,7 +611,30 @@ impl Inner {
         let mut running = queued.clone();
         running.status = RunStatus::Running;
         running.started_at = Some(self.clock.now_rfc3339());
-        let report = self.write(pr_id, running.clone(), "");
+        let report = {
+            let active = match lock(&self.active) {
+                Ok(active) => active,
+                Err(error) => {
+                    return self.fail(
+                        pr_id,
+                        &queued,
+                        reason::PROVIDER_ERROR,
+                        &error.to_string(),
+                        None,
+                    );
+                }
+            };
+            let key = (queued.snapshot_id.clone(), queued.provider_id.clone());
+            if active
+                .get(&key)
+                .is_none_or(|run| run.handle.run_id != queued.id)
+            {
+                return self.cancelled(pr_id, &queued, None);
+            }
+            let report = self.write(pr_id, running.clone(), "");
+            drop(active);
+            report
+        };
         if report.write_error.is_some() {
             return report;
         }
@@ -603,7 +671,28 @@ impl Inner {
 
         match outcome {
             Outcome::Cancelled => self.cancelled(pr_id, &running, elapsed),
-            Outcome::Failed(code, message) => self.fail(pr_id, &running, code, &message, elapsed),
+            Outcome::Failed(code, message) => {
+                let active = match lock(&self.active) {
+                    Ok(active) => active,
+                    Err(error) => {
+                        return self.fail(
+                            pr_id,
+                            &running,
+                            reason::PROVIDER_ERROR,
+                            &error.to_string(),
+                            elapsed,
+                        );
+                    }
+                };
+                let key = (running.snapshot_id.clone(), running.provider_id.clone());
+                if active
+                    .get(&key)
+                    .is_none_or(|run| run.handle.run_id != running.id)
+                {
+                    return self.cancelled(pr_id, &running, elapsed);
+                }
+                self.fail(pr_id, &running, code, &message, elapsed)
+            }
             Outcome::Output(output) => self.commit(pr_id, &running, limits, output, elapsed),
         }
     }
@@ -616,6 +705,41 @@ impl Inner {
         output: ProviderOutput,
         elapsed: Option<u64>,
     ) -> RunReport {
+        // Serialize a same-snapshot input replacement against the batch
+        // write. Once a newer attempt owns the key, this run may not publish.
+        let active = match lock(&self.active) {
+            Ok(active) => active,
+            Err(error) => {
+                return self.fail(
+                    pr_id,
+                    running,
+                    reason::PROVIDER_ERROR,
+                    &error.to_string(),
+                    elapsed,
+                );
+            }
+        };
+        let key = (running.snapshot_id.clone(), running.provider_id.clone());
+        if active
+            .get(&key)
+            .is_none_or(|a| a.handle.run_id != running.id)
+        {
+            let stored = lock(&self.store).and_then(|s| s.get_analysis_run(&running.id));
+            if let Ok(stored) = stored
+                && stored.value().status == RunStatus::Cancelled
+            {
+                return RunReport {
+                    run_id: running.id.clone(),
+                    provider_id: running.provider_id.clone(),
+                    snapshot_id: running.snapshot_id.clone(),
+                    stored_status: RunStatus::Cancelled,
+                    reported_status: RunStatus::Cancelled,
+                    reason: Some(reason::CANCELLED.into()),
+                    write_error: None,
+                };
+            }
+            return self.cancelled(pr_id, running, elapsed);
+        }
         if !matches!(output.status, RunStatus::Succeeded | RunStatus::Partial) {
             let message = format!(
                 "provider reported {:?}; expected succeeded or partial",
