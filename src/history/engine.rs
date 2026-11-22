@@ -136,6 +136,8 @@ mod tests {
             walked: 20,
             counted: 20,
             merges_skipped: 0,
+            broad_skipped: 0,
+            transactions: Vec::new(),
             files,
             touches,
             ambiguous: BTreeSet::new(),
