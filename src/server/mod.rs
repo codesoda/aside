@@ -2,7 +2,14 @@
 mod analysis;
 mod assets;
 mod auth;
+#[cfg(test)]
+mod auth_tests;
 mod exclusions;
+mod explain;
+#[cfg(test)]
+mod explain_live_tests;
+#[cfg(test)]
+mod explain_tests;
 mod files;
 mod review;
 mod threads;
@@ -51,6 +58,7 @@ use crate::{
 #[derive(Clone)]
 pub struct AppState {
     pub session: Arc<Session>,
+    pub explanations: Arc<crate::explain::Explanations>,
     ui_token: Arc<str>,
     agent_token: Arc<str>,
     presence: Arc<Mutex<PresenceTracker>>,
@@ -116,6 +124,7 @@ impl AppState {
     pub fn new(session: Arc<Session>, ui_token: String, agent_token: String) -> Self {
         Self {
             session,
+            explanations: Arc::new(crate::explain::Explanations::default()),
             ui_token: ui_token.into(),
             agent_token: agent_token.into(),
             presence: Arc::new(Mutex::new(PresenceTracker::default())),
@@ -230,6 +239,9 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/session", get(session_view))
         .route("/events", get(events))
+        .route("/explain/providers", get(explain::options))
+        .route("/explain/questions", post(explain::ask))
+        .route("/explain/questions/{id}/cancel", post(explain::cancel))
         .route("/analysis/summary", get(analysis::summary))
         .route("/analysis/runs", get(analysis::runs))
         .route("/analysis/queue", get(analysis::queue))

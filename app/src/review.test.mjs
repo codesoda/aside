@@ -47,6 +47,7 @@ beforeEach(() => {
     return handler(url, init);
   };
   document.body.innerHTML = '';
+  document.title = 'Aside'; // Match the static shell, including its existing title element.
   app = null;
 });
 
@@ -79,6 +80,95 @@ function workspaceRoutes(view = sessionView) {
   routes['GET /api/v1/analysis/queue'] = () => json(queueView());
   routes['GET /api/v1/analysis/findings'] = () => json(page(findings));
 }
+
+test('page title resets while loading and identifies the loaded review', async () => {
+  const pending = deferred();
+  workspaceRoutes();
+  routes['GET /api/v1/session'] = () => pending.promise;
+  document.title = '#99: Previous review · old/repo · Aside';
+  await start();
+  assert.equal(document.title, 'Loading review… · Aside');
+
+  pending.resolve(json(sessionView()));
+  await settle();
+  assert.equal(document.title, '#7: Tidy auth · o/n · Aside');
+  assert.equal(document.querySelectorAll('title').length, 1);
+});
+
+test('page title follows review changes and renamed PRs from session events', async () => {
+  let view = sessionView();
+  workspaceRoutes(() => view);
+  await start();
+  assert.equal(document.title, '#7: Tidy auth · o/n · Aside');
+
+  view = { ...view, sessionId: 's2', pr: { ...view.pr, owner: 'acme', repo: 'widgets', number: 12, title: 'Improve search' } };
+  sources[0].emit('resync');
+  await settle();
+  assert.equal(document.title, '#12: Improve search · acme/widgets · Aside');
+
+  view.pr.title = 'Improve search and filtering';
+  sources[0].emit('pr.refreshed');
+  await settle();
+  assert.equal(document.title, '#12: Improve search and filtering · acme/widgets · Aside');
+  assert.deepEqual(mutations(), []);
+});
+
+test('late session responses cannot restore a previous review title', async () => {
+  const stale = deferred();
+  workspaceRoutes();
+  routes['GET /api/v1/session'] = () => stale.promise;
+  await start();
+
+  const latest = sessionView();
+  latest.pr = { ...latest.pr, number: 8, title: 'New review' };
+  routes['GET /api/v1/session'] = () => json(latest);
+  sources[0].emit('pr.refreshed');
+  await settle();
+  assert.equal(document.title, '#8: New review · o/n · Aside');
+
+  stale.resolve(json(sessionView()));
+  await settle();
+  assert.equal(document.title, '#8: New review · o/n · Aside');
+});
+
+test('initial and refresh failures clear the title until the session recovers', async () => {
+  workspaceRoutes();
+  routes['GET /api/v1/session'] = () => json({}, 503);
+  await start();
+  assert.equal(document.title, 'Review unavailable · Aside');
+
+  workspaceRoutes();
+  sources[0].emit('resync');
+  await settle();
+  assert.equal(document.title, '#7: Tidy auth · o/n · Aside');
+
+  routes['GET /api/v1/session'] = () => json({}, 503);
+  sources[0].emit('pr.refreshed');
+  await settle();
+  assert.equal(document.title, 'Review unavailable · Aside');
+  assert.match(text(), /Refresh failed/);
+
+  workspaceRoutes();
+  sources[0].emit('resync');
+  await settle();
+  assert.equal(document.title, '#7: Tidy auth · o/n · Aside');
+});
+
+test('page title handles incomplete metadata and treats long Unicode titles as text', async () => {
+  const view = sessionView();
+  view.pr.title = '';
+  delete view.pr.number;
+  workspaceRoutes(() => view);
+  await start();
+  assert.equal(document.title, 'Review · o/n · Aside');
+
+  view.pr.title = '修正 👩🏽‍💻 café & "quotes" </title><script>window.injected = true</script> '.repeat(20).trim();
+  sources[0].emit('pr.refreshed');
+  await settle();
+  assert.equal(document.title, `${view.pr.title} · o/n · Aside`);
+  assert.equal(document.querySelector('script'), null);
+  assert.equal(window.injected, undefined);
+});
 
 test('review prep is the initial view while analysis is pending, then updates in place', async () => {
   const queue = deferred();
@@ -397,6 +487,7 @@ test('workspace navigation keeps drafts and opens the actual file thread without
   assert.equal(diff.hidden, false);
   assert.equal(document.activeElement.id, 'thread-t1');
   assert.equal(draft.value, 'Still working on this draft');
+  assert.equal(document.title, '#7: Tidy auth · o/n · Aside');
   assert.equal(diff.querySelector('.diff-row .thread-marker').getAttribute('aria-pressed'), 'true');
   assert.deepEqual(mutations(), []);
 });

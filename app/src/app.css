@@ -70,6 +70,23 @@
 }
 
 @layer components {
+  .explain-panel {
+    position: fixed;
+    z-index: 50;
+    right: 1rem;
+    bottom: 1rem;
+    width: min(28rem, calc(100vw - 2rem));
+    max-height: 85dvh;
+    overflow-y: auto;
+    background: var(--color-canvas);
+    box-shadow: 0 8px 32px rgb(0 0 0 / 0.2);
+  }
+  .explain-panel > .workspace-panel-heading {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--color-canvas);
+  }
   .workspace {
     @apply flex min-h-dvh flex-col;
   }

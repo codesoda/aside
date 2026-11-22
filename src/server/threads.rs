@@ -394,7 +394,6 @@ mod tests {
         );
     }
 }
-
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct ReviewCommentInput {
@@ -581,7 +580,10 @@ fn editable_comment(state: &AppState, id: &str, actor: Actor) -> ApiResult<Comme
     store
         .get_thread(&state.session.pr_id, &comment.thread_id)
         .map_err(db_error)?;
-    if comment.publish_state != PublishState::Private || comment.author_kind != actor {
+    if actor != Actor::Human
+        || comment.publish_state != PublishState::Private
+        || comment.author_kind != actor
+    {
         return Err(ApiError::forbidden());
     }
     Ok(comment)

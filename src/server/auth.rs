@@ -33,6 +33,21 @@ fn same_origin(headers: &HeaderMap) -> bool {
         || std::env::var("ASIDE_DEV_ORIGIN").is_ok_and(|dev| origin == dev)
 }
 
+/// Only these exact API mutations are available to the agent. Keep this
+/// independent of router registration so new routes fail closed.
+pub(super) fn agent_mutation_allowed(method: &Method, path: &str) -> bool {
+    let Some(route) = path.strip_prefix("/api/v1/") else {
+        return false;
+    };
+    let segments: Vec<_> = route.split('/').collect();
+    match (method, segments.as_slice()) {
+        (&Method::POST, ["threads" | "refresh"]) => true,
+        (&Method::POST, ["threads", id, "replies" | "agent-response"]) if !id.is_empty() => true,
+        (&Method::PATCH | &Method::DELETE, ["comments", id]) if !id.is_empty() => true,
+        _ => false,
+    }
+}
+
 pub(super) async fn guard(
     State(state): State<AppState>,
     mut request: Request,
@@ -79,6 +94,15 @@ pub(super) async fn guard(
         )
         .into_response();
     };
+    if actor == Actor::Agent
+        && !matches!(
+            *request.method(),
+            Method::GET | Method::HEAD | Method::OPTIONS
+        )
+        && !agent_mutation_allowed(request.method(), path)
+    {
+        return ApiError::forbidden().into_response();
+    }
     if actor == Actor::Human
         && !matches!(
             *request.method(),
