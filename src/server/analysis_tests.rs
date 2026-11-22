@@ -160,13 +160,34 @@ async fn some_finding(app: &Router) -> (String, String) {
 async fn routes(app: &Router) -> Vec<String> {
     let (id, _) = some_finding(app).await;
     vec![
+        "/api/v1/session".into(),
         "/api/v1/analysis/summary".into(),
         "/api/v1/analysis/queue".into(),
         "/api/v1/analysis/runs".into(),
         "/api/v1/analysis/findings".into(),
         format!("/api/v1/analysis/findings/{id}/evidence"),
         "/api/v1/github-feedback/threads".into(),
+        "/api/v1/github-feedback/checks".into(),
     ]
+}
+
+/// Compare complete JSON bodies; session alone identifies the requesting actor.
+async fn parity(app: &Router, path: &str) -> Value {
+    let (agent_status, mut agent) = get(app, path, Some(AGENT)).await;
+    let (browser_status, mut browser) = get(app, path, Some(BROWSER)).await;
+    assert_eq!(
+        (agent_status, browser_status),
+        (StatusCode::OK, StatusCode::OK),
+        "{path}"
+    );
+    if path == "/api/v1/session" {
+        assert_eq!(agent["actor"], "agent");
+        assert_eq!(browser["actor"], "human");
+        agent.as_object_mut().unwrap().remove("actor");
+        browser.as_object_mut().unwrap().remove("actor");
+    }
+    assert_eq!(agent, browser, "{path}");
+    agent
 }
 
 #[tokio::test]
@@ -194,12 +215,20 @@ async fn agent_and_browser_get_identical_responses() {
     let session = fixture_session().await;
     let app = app(&session);
     for path in routes(&app).await {
-        for path in [path.clone(), format!("{path}?limit=1")] {
-            let (a, agent) = get(&app, &path, Some(AGENT)).await;
-            let (b, browser) = get(&app, &path, Some(BROWSER)).await;
-            assert_eq!((a, b), (StatusCode::OK, StatusCode::OK), "{path}");
-            assert_eq!(agent, browser, "{path}");
-        }
+        parity(&app, &path).await;
+    }
+    let (id, _) = some_finding(&app).await;
+    // Browser fetchFindings/fetchEvidence use these exact query flags and
+    // fetchAllPages adds limit=200. Historical findings are diagnostic opt-in.
+    for path in [
+        "/api/v1/analysis/findings?includeIgnored=true&limit=200".to_string(),
+        format!("/api/v1/analysis/findings/{id}/evidence?includeIgnored=true&limit=200"),
+        "/api/v1/analysis/findings?includeHistorical=true&limit=1".to_string(),
+        "/api/v1/analysis/runs?limit=1".to_string(),
+        "/api/v1/github-feedback/threads?limit=1".to_string(),
+        "/api/v1/github-feedback/checks?limit=1".to_string(),
+    ] {
+        parity(&app, &path).await;
     }
 }
 
@@ -210,7 +239,7 @@ async fn walk(app: &Router, path: &str, limit: usize) -> (Vec<Value>, usize) {
     let mut items = Vec::new();
     let mut pages = 0;
     loop {
-        let page = ok(app, &url).await;
+        let page = parity(app, &url).await;
         pages += 1;
         let batch = page["items"].as_array().unwrap();
         assert!(batch.len() <= limit);
@@ -233,8 +262,22 @@ async fn walk(app: &Router, path: &str, limit: usize) -> (Vec<Value>, usize) {
 async fn pagination_returns_every_item_exactly_once() {
     let session = fixture_session().await;
     let app = app(&session);
+    let (finding_id, _) = some_finding(&app).await;
+    // Evidence and checks may contain only one item in this fixture, but
+    // their page envelope and cursor-bearing requests still have JSON parity.
+    walk(
+        &app,
+        &format!("/api/v1/analysis/findings/{finding_id}/evidence?includeIgnored=true"),
+        1,
+    )
+    .await;
+    walk(&app, "/api/v1/github-feedback/checks", 1).await;
     for (path, id) in [
         ("/api/v1/analysis/findings", "/finding/id"),
+        (
+            "/api/v1/analysis/findings?includeIgnored=true",
+            "/finding/id",
+        ),
         (
             "/api/v1/analysis/findings?includeHistorical=true",
             "/finding/id",
@@ -319,6 +362,13 @@ async fn stale_cursor_after_snapshot_change_is_a_recoverable_conflict() {
     assert_recoverable_conflict(status, &body, "snapshot_changed");
     assert_eq!(body["details"]["expectedSnapshotId"], pinned);
     assert_ne!(body["details"]["snapshotId"], pinned);
+    let (browser_status, browser_body) = get(
+        &app,
+        &format!("/api/v1/analysis/findings?limit=1&cursor={cursor}"),
+        Some(BROWSER),
+    )
+    .await;
+    assert_eq!((browser_status, browser_body), (status, body));
     // An explicit snapshot pin behaves the same.
     let (status, body) = get(
         &app,
@@ -327,8 +377,68 @@ async fn stale_cursor_after_snapshot_change_is_a_recoverable_conflict() {
     )
     .await;
     assert_recoverable_conflict(status, &body, "snapshot_changed");
-    // Resync recovery: restarting without a cursor succeeds.
-    ok(&app, "/api/v1/analysis/findings?limit=1").await;
+    // Resync restarts without a cursor.
+    parity(&app, "/api/v1/session").await;
+    parity(&app, "/api/v1/analysis/findings?limit=1").await;
+}
+
+#[tokio::test]
+async fn refreshed_findings_keep_historical_diagnostics_separate_from_current_browser_reads() {
+    let session = fixture_session().await;
+    let app = app(&session);
+    // The fixture repeats its normal findings. Add one that the refreshed run
+    // will not reproduce, so the historical branch has a deterministic item.
+    append_finding(&session, "history_only");
+    let before = parity(
+        &app,
+        "/api/v1/analysis/findings?includeIgnored=true&limit=200",
+    )
+    .await;
+    assert!(before["items"].as_array().unwrap().iter().any(|item| {
+        item["finding"]["id"] == "append_history_only" && item["label"] == "current"
+    }));
+    let old_snapshot = before["snapshotId"].clone();
+    session.refresh().await.unwrap();
+    for handle in session.analysis.in_flight() {
+        handle.wait().await;
+    }
+    let current = parity(
+        &app,
+        "/api/v1/analysis/findings?includeIgnored=true&limit=200",
+    )
+    .await;
+    let historical = parity(
+        &app,
+        "/api/v1/analysis/findings?includeIgnored=true&includeHistorical=true&limit=200",
+    )
+    .await;
+    assert_ne!(current["snapshotId"], old_snapshot);
+    assert_eq!(current["snapshotId"], historical["snapshotId"]);
+    let current_items = current["items"].as_array().unwrap();
+    assert!(
+        !current_items.is_empty(),
+        "fixture must produce current findings"
+    );
+    assert!(current_items.iter().all(|item| item["label"] == "current"));
+    let historical_items = historical["items"].as_array().unwrap();
+    assert!(historical_items.iter().any(|item| {
+        item["finding"]["id"] == "append_history_only" && item["label"] == "historical"
+    }));
+    assert!(
+        current_items
+            .iter()
+            .all(|item| item["finding"]["id"] != "append_history_only")
+    );
+    assert!(
+        historical_items
+            .iter()
+            .all(|item| { item["label"] == "current" || item["label"] == "historical" })
+    );
+    assert!(historical["total"].as_u64().unwrap() > current["total"].as_u64().unwrap());
+    parity(&app, "/api/v1/session").await;
+    parity(&app, "/api/v1/analysis/summary").await;
+    parity(&app, "/api/v1/analysis/runs?limit=1").await;
+    parity(&app, "/api/v1/github-feedback/threads?limit=1").await;
 }
 
 #[tokio::test]
@@ -359,6 +469,15 @@ async fn cursor_over_a_changed_result_set_is_a_recoverable_conflict() {
     )
     .await;
     assert_recoverable_conflict(status, &body, "results_changed");
+    let (browser_status, browser_body) = get(
+        &app,
+        &format!("/api/v1/analysis/findings?limit=1&cursor={cursor}"),
+        Some(BROWSER),
+    )
+    .await;
+    assert_eq!((browser_status, browser_body), (status, body));
+    parity(&app, "/api/v1/session").await;
+    parity(&app, "/api/v1/analysis/findings?limit=1").await;
 }
 
 #[tokio::test]
@@ -590,9 +709,18 @@ async fn out_of_scope_findings_are_filtered_on_the_server() {
     .await;
     assert_eq!(all["includeIgnored"], true);
     assert_eq!(all["total"], before["total"]);
-    ok(
+    parity(&app, "/api/v1/session").await;
+    parity(&app, "/api/v1/analysis/summary").await;
+    parity(&app, "/api/v1/analysis/queue").await;
+    let ignored = parity(
         &app,
-        &format!("/api/v1/analysis/findings/{id}/evidence?includeIgnored=true"),
+        "/api/v1/analysis/findings?includeIgnored=true&limit=200",
+    )
+    .await;
+    assert_eq!(ignored["total"], before["total"]);
+    parity(
+        &app,
+        &format!("/api/v1/analysis/findings/{id}/evidence?includeIgnored=true&limit=200"),
     )
     .await;
 }
@@ -619,6 +747,17 @@ async fn empty_page_from_a_partial_run_is_distinguishable_from_a_clean_one() {
         Completeness::Complete,
     )])
     .await;
+    for state in [&partial, &clean] {
+        let app = app(state);
+        parity(&app, "/api/v1/session").await;
+        parity(&app, "/api/v1/analysis/summary").await;
+        parity(&app, "/api/v1/analysis/queue").await;
+        parity(
+            &app,
+            "/api/v1/analysis/findings?includeIgnored=true&limit=200",
+        )
+        .await;
+    }
     let partial = ok(&app(&partial), "/api/v1/analysis/findings").await;
     let clean = ok(&app(&clean), "/api/v1/analysis/findings").await;
     for page in [&partial, &clean] {
@@ -657,7 +796,7 @@ async fn checks_are_persisted_and_served_separately_from_review_threads() {
     let session = Session::new(snapshot, Store::open_in_memory().unwrap(), None, None).unwrap();
     session.start_analysis().unwrap();
     let app = app(&session);
-    let checks = ok(&app, "/api/v1/github-feedback/checks").await;
+    let checks = parity(&app, "/api/v1/github-feedback/checks?limit=1").await;
     assert_eq!(checks["items"].as_array().unwrap().len(), 1);
     assert_eq!(checks["items"][0]["githubCheckRunId"], 42);
     assert_eq!(checks["items"][0]["currentHead"], true);
@@ -693,7 +832,7 @@ async fn feedback_reports_thread_import_coverage() {
     let mut snapshot = demo::snapshot(0);
     snapshot.github_threads_completeness = Completeness::Partial;
     let session = Session::new(snapshot, Store::open_in_memory().unwrap(), None, None).unwrap();
-    let page = ok(&app(&session), "/api/v1/github-feedback/threads").await;
+    let page = parity(&app(&session), "/api/v1/github-feedback/threads?limit=200").await;
     assert_eq!(page["coverage"]["complete"], false);
     let sources = page["coverage"]["sources"].as_array().unwrap();
     assert_eq!(sources.len(), 1);
@@ -763,6 +902,14 @@ async fn feedback_coverage_survives_refresh_and_api_reload() {
     );
     assert_eq!(feedback(&refreshed)["completeness"], "complete");
     assert_eq!(feedback(&refreshed)["status"], "succeeded");
+    for path in [
+        "/api/v1/session",
+        "/api/v1/analysis/summary",
+        "/api/v1/analysis/queue",
+        "/api/v1/github-feedback/threads?limit=1",
+    ] {
+        parity(&app, path).await;
+    }
 }
 
 #[test]
