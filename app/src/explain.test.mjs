@@ -99,8 +99,9 @@ test('revision change clears answers and cancels outstanding questions even if f
 });
 
 test('different file closes Q&A and a new selection does not inherit answers',async()=>{
+  view.fileStates[1].scope.ignored = false;
   await start();await open();await explain();
-  const fileButton=[...document.querySelectorAll('button')].find(b=>b.getAttribute('aria-label')?.startsWith('Review gen/out.rs'));
+  const fileButton=[...document.querySelectorAll('button')].find(b=>b.getAttribute('aria-label')?.startsWith('Open gen/out.rs'));
   fileButton.click();await settle();assert.equal(panel(),null);
   button('Explain added new line 1').click();await settle();await explain();
   assert.equal(asks()[1].body.selection.fileId,'f-gen');assert.deepEqual(asks()[1].body.history,[]);

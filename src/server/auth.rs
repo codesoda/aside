@@ -42,7 +42,7 @@ pub(super) fn agent_mutation_allowed(method: &Method, path: &str) -> bool {
     let segments: Vec<_> = route.split('/').collect();
     match (method, segments.as_slice()) {
         (&Method::POST, ["threads" | "refresh"]) => true,
-        (&Method::POST, ["threads", id, "replies"]) if !id.is_empty() => true,
+        (&Method::POST, ["threads", id, "replies" | "agent-response"]) if !id.is_empty() => true,
         (&Method::PATCH | &Method::DELETE, ["comments", id]) if !id.is_empty() => true,
         _ => false,
     }
@@ -116,6 +116,9 @@ pub(super) async fn guard(
             "a matching Origin is required",
         )
         .into_response();
+    }
+    if actor == Actor::Agent {
+        state.seen_agent();
     }
     request.extensions_mut().insert(actor);
     let response = next.run(request).await;

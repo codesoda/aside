@@ -2,12 +2,20 @@
   import { fetchEvidence, type Evidence, type FindingItem } from '../api';
   import { citedLines, evidenceValue, presentAssertion, providerText, ruleText } from '../insights';
 
-  let { item }: { item: FindingItem } = $props();
+  let { item, scopeLabel, note, selected = false, collapsed = false, onDraft }: {
+    item: FindingItem;
+    scopeLabel?: string;
+    note?: string;
+    selected?: boolean;
+    collapsed?: boolean;
+    onDraft?: (item: FindingItem) => void;
+  } = $props();
 
   const finding = $derived(item.finding);
   const kind = $derived(presentAssertion(finding.assertionKind, finding.validation.status));
   const rule = $derived(ruleText(finding));
   let open = $state(false);
+  let detailsOpen = $state(false);
   let evidence = $state<Evidence[] | null>(null);
   let evidenceError = $state<string | null>(null);
 
@@ -30,7 +38,8 @@
   } as const;
 </script>
 
-<article class={`mb-3 rounded-md border p-3 text-sm last:mb-0 ${styles[kind.cls]}`}
+<article id={`callout-${finding.id}`} tabindex="-1" data-callout-scope={scopeLabel ?? 'unplaced'}
+  class={`mb-3 rounded-md border p-3 text-sm last:mb-0 ${styles[kind.cls]} ${selected ? 'ring-2 ring-accent' : ''}`}
   aria-label={`${kind.label}: ${finding.title}`} data-insight-class={kind.cls}>
   <p class="flex flex-wrap items-center gap-2 text-xs">
     <span class="rounded-full border border-current px-2 font-semibold" data-testid="assertion-label">
@@ -40,11 +49,20 @@
     {#if item.label === 'historical'}<span class="text-muted">· historical (from snapshot {item.latestSnapshotId})</span>{/if}
   </p>
   <h4 class="mt-2 font-semibold">{finding.title}</h4>
-  <p class="mt-1 text-xs text-muted">Cites {citedLines(finding)}{#if rule} · rule {rule}{/if}</p>
-  {#if finding.body}<p class="mt-2 whitespace-pre-wrap break-words">{finding.body}</p>{/if}
+  <p class="mt-1 text-xs text-muted">{scopeLabel ?? citedLines(finding)} · {item.latestApplicability.replaceAll('_', ' ')}{#if rule} · rule {rule}{/if}</p>
+  {#if note}<p class="mt-1 text-xs text-muted">{note}</p>{/if}
+  {#if collapsed && finding.attention.level === 'none'}
+    <button type="button" class="mt-2 text-xs font-semibold underline" onclick={() => detailsOpen = !detailsOpen} aria-expanded={detailsOpen}>Details</button>
+  {/if}
+  {#if !collapsed || finding.attention.level !== 'none' || detailsOpen}
+    {#if finding.body}<p class="mt-2 whitespace-pre-wrap break-words">{finding.body}</p>{/if}
+    {#if finding.rationale}<p class="mt-2 whitespace-pre-wrap break-words"><strong>Why:</strong> {finding.rationale}</p>{/if}
+    {#if finding.suggestedAction}<p class="mt-2 whitespace-pre-wrap break-words"><strong>Suggested action:</strong> {finding.suggestedAction}</p>{/if}
+  {/if}
   {#if finding.assertionKind === 'defect_hypothesis'}
     <p class="mt-1 text-xs">Validation: {finding.validation.status.replaceAll('_', ' ')}</p>
   {/if}
+  {#if onDraft}<button type="button" class="mt-2 mr-2 rounded-md border border-line px-2 py-1 text-xs font-semibold" onclick={() => onDraft?.(item)}>Draft comment</button>{/if}
   <button type="button" onclick={() => void toggleEvidence()} aria-expanded={open} aria-controls={`evidence-${finding.id}`}
     aria-label={`${open ? 'Hide' : 'Show'} evidence for ${finding.title}`}
     class="mt-2 rounded-md border border-line bg-canvas px-2 py-1 text-xs font-semibold hover:bg-surface focus-visible:outline-2 focus-visible:outline-accent">

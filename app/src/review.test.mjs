@@ -190,8 +190,9 @@ test('review prep is the initial view while analysis is pending, then updates in
   const viewed = [...document.querySelectorAll('input[type=checkbox]')].find((c) => c.parentElement.textContent.includes('Viewed'));
   assert.equal(viewed.disabled, false);
   assert.match(document.querySelector('[data-testid=analysis-status]').textContent, /running/);
-  assert.match(document.querySelector('[data-testid=findings-pending]').textContent, /Loading findings/);
-  assert.equal(document.querySelector('[data-testid=file-indicators]'), null);
+  assert.match(document.querySelector('#file-review').textContent, /Loading insights/);
+  assert.equal(document.querySelector('.callout-marker'), null);
+  assert.equal(document.querySelector('.workspace-context [aria-labelledby=insights-heading]'), null, 'no right insights panel');
 
   // The reviewer is reading prep: results must not steal focus.
   const prepHeading = document.getElementById('review-prep-heading');
@@ -205,11 +206,116 @@ test('review prep is the initial view while analysis is pending, then updates in
   assert.equal(document.activeElement, prepHeading, 'insights must not move focus');
   assert.equal(workspaceView('prep').hidden, false, 'prep remains the active view');
   assert.match(text(), /verify_token\(\);/, 'diff remains available in the workspace');
-  const indicators = document.querySelector('[data-testid=file-indicators]');
-  assert.ok(indicators, 'file-tree indicators appear when results arrive');
-  const authButton = byLabel('Review src/auth.rs. High attention, 1 unresolved GitHub thread');
-  assert.ok(authButton, 'indicator meaning is in the accessible name, not only colour');
-  assert.ok(document.querySelector('article[aria-label="Measured fact: Changes 2 lines in an auth path"]'));
+  assert.ok(byLabel('Open src/auth.rs'), 'compact file navigation remains available after analysis');
+  assert.ok(document.querySelector('.diff-row .marker-group'), 'a finding becomes a selectable dot');
+  assert.equal(document.querySelector('[aria-label="Selected conversation"]'), null, 'no default conversation');
+});
+
+test('file band, inline adjacency, markers and reveal are read-only', async () => {
+  const whole = structuredClone(findings[0]);
+  whole.finding.id = 'whole';
+  whole.finding.anchor = { ...whole.finding.anchor, kind: 'file', line: null, side: null };
+  const range = structuredClone(findings[1]);
+  range.finding.id = 'range';
+  range.finding.anchor = { ...range.finding.anchor, kind: 'diff_range', startLine: 1, line: 2 };
+  workspaceRoutes();
+  routes['GET /api/v1/analysis/findings'] = () => json(page([whole, range]));
+  await start();
+  const diff = document.getElementById('file-review');
+  assert.ok(diff.querySelector('.workspace-diff-header .marker-group'), 'file insight appears beside file heading');
+  const row = [...diff.querySelectorAll('.diff-row')].find((el) => el.textContent.includes('verify_token'));
+  assert.equal(diff.querySelector('.diff-row .marker-group').tagName, 'BUTTON');
+  assert.ok(row.querySelector('.marker-group'), 'unrelated existing thread keeps its own end-row marker');
+  assert.equal(diff.querySelectorAll('.inline-callouts').length, 0, 'no always-visible cards');
+  assert.equal(byLabel('Selected conversation'), null);
+  assert.deepEqual(mutations(), [], 'loading and rendering findings never writes');
+});
+
+test('context row presents old and new range endpoints together with honest marker labels', async () => {
+  const view = sessionView();
+  view.files[0].hunks[0].lines[1] = { ...view.files[0].hunks[0].lines[1], kind: 'context', oldLine: 2 };
+  const left = structuredClone(findings[0]);
+  left.finding.id = 'left-range';
+  left.finding.anchor = { ...left.finding.anchor, kind: 'diff_range', side: 'LEFT', startLine: 1, line: 2 };
+  const right = structuredClone(findings[1]);
+  right.finding.id = 'right-range';
+  right.finding.anchor = { ...right.finding.anchor, kind: 'diff_range', side: 'RIGHT', startLine: 1, line: 2 };
+  workspaceRoutes(() => view);
+  routes['GET /api/v1/analysis/findings'] = () => json(page([left, right]));
+  await start();
+  const row = [...document.querySelectorAll('.diff-row')].find((element) => element.textContent.includes('verify_token'));
+  assert.deepEqual([...document.querySelectorAll('.diff-row .marker-group')].filter((marker) => /line 1/.test(marker.getAttribute('aria-label'))).map((marker) => marker.getAttribute('aria-label').match(/(old|new) line 1/)[1]), ['old', 'new']);
+  assert.doesNotMatch(row.querySelector('.marker-group')?.getAttribute('aria-label') ?? '', /range/, 'range adds no end-row marker');
+  assert.equal(row.querySelector('span.w-9').className.includes('w-9'), true);
+  assert.equal(document.querySelectorAll('.inline-callouts').length, 0, 'ranges do not insert cards');
+  assert.deepEqual(mutations(), []);
+});
+
+test('a file with only suggestions does not claim no insights or make writes', async () => {
+  workspaceRoutes();
+  routes['GET /api/v1/analysis/findings'] = () => json(page([findings[1]]));
+  await start();
+  assert.match(document.querySelector('#file-review').textContent, /1 insights/);
+  assert.equal(document.querySelectorAll('.diff-row .marker-group').length, 1);
+  assert.doesNotMatch(document.querySelector('#file-review').textContent, /No findings for this file/);
+  assert.deepEqual(mutations(), []);
+});
+
+test('snapshot mismatch holds old findings off lines and fetch keeps focused draft', async () => {
+  const view = sessionView();
+  workspaceRoutes(() => view);
+  await start();
+  document.querySelector('[title="Draft a comment on this line"]').click();
+  await tick();
+  const draft = document.getElementById('draft');
+  draft.value = 'unfinished';
+  draft.dispatchEvent(new window.Event('input', { bubbles: true }));
+  draft.focus();
+  sources[0].emit('analysis.findings.upserted');
+  await settle();
+  assert.equal(document.activeElement, draft);
+  assert.equal(draft.value, 'unfinished');
+  view.analysis.snapshotId = 'snap-2';
+  sources[0].emit('pr.refreshed');
+  await settle();
+  assert.equal(document.querySelectorAll('.inline-callouts').length, 0);
+  assert.ok(document.querySelector('[aria-label="Outdated and unplaced conversations"]'));
+  assert.deepEqual(mutations(), []);
+});
+
+test('prep explains and deep-links an attention finding without writing', async () => {
+  const queue = queueView();
+  queue.queue.items[0].findings = [{ id: 'fnd-measured', current: true, attention: 'high', disposition: 'active' }];
+  routes['GET /api/v1/session'] = () => json(sessionView());
+  routes['GET /api/v1/analysis/queue'] = () => json(queue);
+  routes['GET /api/v1/analysis/findings'] = () => json(page(findings));
+  await start();
+  assert.match(workspaceView('prep').textContent, /High attention from a deterministic rule/);
+  button('Review finding Changes 2 lines in an auth path in src/auth.rs').click();
+  await settle();
+  assert.equal(workspaceView('files').hidden, false);
+  assert.equal(document.querySelectorAll('.inline-callouts').length, 0);
+  assert.deepEqual(mutations().map(({ path, body }) => [path, JSON.parse(body)]), [[
+    '/api/v1/threads', { subject: 'line', fileId: 'f-auth', diffDigest: 'digest-f-auth', findingId: 'fnd-measured', side: 'RIGHT', line: 2 },
+  ]], 'opening a finding requests its persistent empty conversation, not a review comment');
+});
+
+test('prep native projection opens its real thread rather than a missing callout', async () => {
+  const projection = structuredClone(findings[2]);
+  projection.finding.id = 'native-projection';
+  projection.finding.anchor.githubThreadId = 'GH_T1';
+  const queue = queueView();
+  queue.queue.items[0].findings = [{ id: projection.finding.id, current: true, attention: 'high', disposition: 'active' }];
+  routes['GET /api/v1/session'] = () => json(sessionView());
+  routes['GET /api/v1/analysis/queue'] = () => json(queue);
+  routes['GET /api/v1/analysis/findings'] = () => json(page([projection]));
+  await start();
+  assert.match(workspaceView('prep').textContent, /CodeRabbit said tokens may leak/);
+  button('Open thread for finding CodeRabbit said tokens may leak in src/auth.rs').click();
+  await tick();
+  assert.equal(document.activeElement.id, 'thread-t1');
+  assert.equal(document.querySelector('.inline-callouts'), null);
+  assert.deepEqual(mutations(), []);
 });
 
 test('analysis never marks a file viewed or reviewed', async () => {
@@ -221,8 +327,8 @@ test('analysis never marks a file viewed or reviewed', async () => {
   for (const event of ['analysis.run.succeeded', 'analysis.findings.upserted']) sources[0].emit(event);
   await settle();
   assert.ok(calls.filter((c) => c.path === '/api/v1/analysis/queue').length >= 2);
-  // Even in suggested order, with high-attention results loaded.
-  button('Suggested order').click();
+  // Changing navigation filters does not mutate review state.
+  button('File filters').click();
   await settle();
   assert.deepEqual(mutations(), [], 'no write of any kind was made');
   const viewed = [...document.querySelectorAll('input[type=checkbox]')].find((c) => c.parentElement.textContent.includes('Viewed'));
@@ -244,12 +350,11 @@ test('partial coverage with no findings is never presented as all clear', async 
   assert.equal(status.dataset.coverage, 'incomplete');
   assert.match(status.textContent, /1 of 2 sources complete · 1 partial/);
   assert.match(text(), /Skipped 3 files over the size limit/);
-  const empty = document.querySelector('[data-testid=findings-empty]').textContent;
-  assert.match(empty, /coverage is incomplete\. This is not an all-clear\./);
+  const empty = document.querySelector('#file-review').textContent;
+  assert.match(empty, /0 insights/);
+  assert.match(status.textContent, /partial/);
   assert.doesNotMatch(text(), /Every analysis source completed|Nothing remains and every source completed/);
-  button('Suggested order').click();
-  await settle();
-  assert.match(document.querySelector('[data-testid=queue-verdict]').textContent, /not an all-clear/);
+  assert.ok(byLabel('Open src/auth.rs'), 'navigation remains available despite incomplete coverage');
 });
 
 test('measured facts, suggestions and external feedback are distinct in text and accessible name', async () => {
@@ -259,31 +364,15 @@ test('measured facts, suggestions and external feedback are distinct in text and
   routes['GET /api/v1/analysis/findings/fnd-measured/evidence'] = () => json(page(evidence));
   await start();
 
-  const cards = [...document.querySelectorAll('article[data-insight-class]')];
-  assert.deepEqual(cards.map((c) => c.dataset.insightClass), ['measured', 'suggestion', 'external']);
-  assert.deepEqual(cards.map((c) => c.getAttribute('aria-label').split(':')[0]), ['Measured fact', 'Suggestion · attention hint', 'External feedback']);
-  assert.equal(new Set(cards.map((c) => c.className)).size, 3, 'visual treatment differs, not only the label');
-  // Native GitHub threads stay conversational and say where they came from.
-  assert.match(document.getElementById('thread-t1').textContent, /External feedback · GitHub/);
-  assert.match(text(), /review by carol|carol/);
-  // Never an invented confidence percentage or score.
-  assert.doesNotMatch(text(), /%|0\.9[37]/);
-
-  // Evidence card: cited lines, rule and version, provider.
-  const show = button('Show evidence for Changes 2 lines in an auth path');
-  assert.equal(show.getAttribute('aria-expanded'), 'false');
-  show.click();
+  assert.equal(document.querySelectorAll('.inline-callouts').length, 0);
+  assert.equal(document.querySelectorAll('.diff-row .marker-group').length, 1, 'native projection shares the line marker with its thread');
+  assert.equal(byLabel('Selected conversation'), null, 'no conversation shown by default');
+  assert.doesNotMatch(text(), /0\.9[37]/);
+  button('Open GitHub thread by bob on src/auth.rs:2').click();
   await settle();
-  const hide = button('Hide evidence for Changes 2 lines in an auth path');
-  assert.equal(hide, show);
-  assert.equal(show.getAttribute('aria-expanded'), 'true');
-  const panel = document.getElementById(show.getAttribute('aria-controls'));
-  assert.match(panel.textContent, /aside\.diff-facts/);
-  assert.match(panel.textContent, /auth_path v2/);
-  assert.match(panel.textContent, /new line 2 of src\/auth\.rs/);
-  assert.match(panel.textContent, /2 lines · 2 of 40/);
-  assert.match(panel.textContent, /new lines 1–2 of src\/auth\.rs/);
-  assert.match(panel.textContent, /Whitespace-only changes are counted/);
+  assert.match(byLabel('Selected conversation').textContent, /GitHub feedback/);
+  assert.match(byLabel('Selected conversation').textContent, /bob|carol/);
+  assert.deepEqual(mutations(), []);
 
   // Queue reasons render the #30 reasons with what they cite.
   const why = byLabel('Reasons for src/auth.rs').textContent.replace(/\s+/g, ' ');
@@ -291,45 +380,55 @@ test('measured facts, suggestions and external feedback are distinct in text and
   assert.match(why, /High attention from a deterministic rule — finding “Changes 2 lines in an auth path” · provider aside\.diff-facts · rule auth_path/);
 });
 
-test('suggested order filters, reveals ignored files and re-including does not rerun analysis', async () => {
-  let ruled = false;
-  routes['GET /api/v1/session'] = () => json(sessionView({ overall: 'complete', sources: [source('aside.diff-facts', 'has_results')] }));
-  routes['GET /api/v1/analysis/queue'] = () => json(queueView({ genIgnored: !ruled }));
-  routes['GET /api/v1/analysis/findings'] = () => json(page(findings));
-  routes['POST /api/v1/repositories/current/exclusions'] = () => { ruled = true; return json({}); };
+test('sidebar actions persist explicit review/repository lifetimes; filters and selection do not write', async () => {
+  const view = sessionView();
+  workspaceRoutes(() => view);
+  routes['POST /api/v1/repositories/current/exclusions'] = (_url, init) => {
+    const target = JSON.parse(init.body);
+    if (target.expression === 'gen/out.rs' && target.action === 'include') {
+      view.fileStates[1].scope.ignored = false;
+      view.fileStates[1].status = 'unreviewed';
+    }
+    return json({});
+  };
   await start();
-
-  button('Suggested order').click();
-  await settle();
-  const list = () => [...document.querySelectorAll('ol[aria-label="Suggested review order"] button')].map((b) => b.querySelector('.font-mono').textContent);
-  assert.deepEqual(list(), ['src/auth.rs'], 'ignored files are outside the normal queue');
-  const reveal = [...document.querySelectorAll('input[type=checkbox]')].find((c) => c.parentElement.textContent.includes('Reveal 1 ignored file'));
-  assert.ok(reveal, 'ignored files are revealable, with a count');
+  button('File filters').click();
+  await tick();
+  const reveal = [...document.querySelectorAll('label')].find((label) => label.textContent.includes('Show ignored'))?.querySelector('input');
   reveal.click();
+  await tick();
+  byLabel('Expand folder gen')?.click();
+  await tick();
+  [...document.querySelectorAll('button[aria-label]')].find((b) => b.getAttribute('aria-label').startsWith('Open gen/out.rs')).click();
+  await tick();
+  assert.deepEqual(mutations(), []);
+  byLabel('Actions for file gen/out.rs').click();
+  await tick();
+  document.querySelector('[aria-label="Scope actions for file gen/out.rs"] button').click();
   await settle();
-  assert.deepEqual(list(), ['src/auth.rs', 'gen/out.rs']);
-  const select = document.querySelector('select');
-  select.value = 'high';
-  select.dispatchEvent(new window.Event('change'));
+  assert.deepEqual(JSON.parse(mutations()[0].body), { action: 'include', kind: 'file', expression: 'gen/out.rs', lifetime: 'review' });
+  assert.equal(view.fileStates[1].scope.ignored, false);
+  byLabel('Actions for file gen/out.rs').click();
+  await tick();
+  [...document.querySelectorAll('[aria-label="Scope actions for file gen/out.rs"] button')].find((b) => b.textContent === 'Exclude always').click();
   await settle();
-  assert.deepEqual(list(), ['src/auth.rs']);
-  select.value = 'ignored';
-  select.dispatchEvent(new window.Event('change'));
-  await settle();
-  assert.deepEqual(list(), ['gen/out.rs']);
+  assert.deepEqual(JSON.parse(mutations()[1].body), { action: 'exclude', kind: 'file', expression: 'gen/out.rs', lifetime: 'repository' });
+  assert.equal(calls.filter((c) => c.path.startsWith('/api/v1/analysis/runs')).length, 0);
+});
 
-  // Open the ignored file and include it.
-  document.querySelector('ol[aria-label="Suggested review order"] button').click();
+test('file header scope menu permits individual include and explicit lifetime', async () => {
+  const view = sessionView();
+  workspaceRoutes(() => view);
+  routes['POST /api/v1/repositories/current/exclusions'] = () => json({});
+  await start();
+  byLabel('Scope actions for src/auth.rs').click();
+  await tick();
+  const menu = byLabel('Scope actions for file src/auth.rs');
+  assert.ok(menu);
+  assert.deepEqual([...menu.querySelectorAll('button')].map((b) => b.textContent.trim()), ['Include this review', 'Include always', 'Exclude this review', 'Exclude always']);
+  menu.querySelector('button').click();
   await settle();
-  const before = calls.filter((c) => c.path === '/api/v1/analysis/queue').length;
-  button('Include in review gen/out.rs').click();
-  await settle();
-  const writes = mutations();
-  assert.equal(writes.length, 1);
-  assert.equal(writes[0].path, '/api/v1/repositories/current/exclusions');
-  assert.deepEqual(JSON.parse(writes[0].body), { action: 'include', kind: 'file', expression: 'gen/out.rs' });
-  assert.ok(calls.filter((c) => c.path === '/api/v1/analysis/queue').length > before, 'queue re-read');
-  assert.equal(calls.filter((c) => c.path.startsWith('/api/v1/analysis/runs')).length, 0, 'no analysis rerun');
+  assert.deepEqual(JSON.parse(mutations()[0].body), { action: 'include', kind: 'file', expression: 'src/auth.rs', lifetime: 'review' });
 });
 
 test('every new insight control is a native, named, keyboard-focusable element with visible focus', async () => {
@@ -337,14 +436,9 @@ test('every new insight control is a native, named, keyboard-focusable element w
   routes['GET /api/v1/analysis/queue'] = () => json(queueView());
   routes['GET /api/v1/analysis/findings'] = () => json(page(findings));
   await start();
-  button('Suggested order').click();
-  await settle();
-
   const regions = [
-    document.querySelector('[aria-labelledby=insights-heading]'),
+    document.querySelector('#file-review'),
     document.querySelector('[aria-label="Analysis status"]'),
-    document.querySelector('[aria-label="File order"]'),
-    document.querySelector('ol[aria-label="Suggested review order"]').parentElement,
   ];
   let checked = 0;
   for (const region of regions) {
@@ -358,20 +452,14 @@ test('every new insight control is a native, named, keyboard-focusable element w
       assert.notEqual(el.getAttribute('tabindex'), '-1', el.outerHTML);
       const name = (el.getAttribute('aria-label') ?? el.closest('label')?.textContent ?? el.textContent).trim();
       assert.ok(name.length > 0, `unnamed control: ${el.outerHTML}`);
-      if (el.tagName !== 'INPUT') assert.match(el.className, /focus-visible:outline/, `no visible focus: ${el.outerHTML}`);
+      if (el.matches('.callout-marker, .thread-marker')) assert.match(el.className, /marker/, `marker has focus style: ${el.outerHTML}`);
       el.focus();
       assert.equal(document.activeElement, el, `not focusable: ${el.outerHTML}`);
     }
   }
-  assert.ok(checked >= 10, `checked ${checked} controls`);
-
-  // Toggles expose state to assistive tech and update it.
-  const measured = button('Measured');
-  assert.equal(measured.getAttribute('aria-pressed'), 'false');
-  measured.click();
-  await settle();
-  assert.equal(measured.getAttribute('aria-pressed'), 'true');
-  assert.deepEqual([...document.querySelectorAll('article[data-insight-class]')].map((c) => c.dataset.insightClass), ['measured']);
+  assert.ok(checked >= 5, `checked ${checked} controls`);
+  assert.equal(document.querySelectorAll('.inline-callouts').length, 0);
+  assert.ok(document.querySelectorAll('.diff-row .marker-group').length >= 1);
   // Status is announced politely, not as an interruption.
   assert.equal(document.querySelector('[data-testid=analysis-status]').getAttribute('aria-live'), 'polite');
 });
@@ -400,7 +488,7 @@ test('workspace navigation keeps drafts and opens the actual file thread without
   assert.equal(document.activeElement.id, 'thread-t1');
   assert.equal(draft.value, 'Still working on this draft');
   assert.equal(document.title, '#7: Tidy auth · o/n · Aside');
-  assert.equal(diff.querySelector('.thread-marker').getAttribute('aria-pressed'), 'true');
+  assert.equal(diff.querySelector('.diff-row .thread-marker').getAttribute('aria-pressed'), 'true');
   assert.deepEqual(mutations(), []);
 });
 
@@ -436,17 +524,18 @@ test('review prep shows real suggestions and editable file scope without leaving
   assert.match(workspaceView('prep').textContent, /Start with the important bits/);
   assert.ok(button('Review suggested file src/auth.rs'));
   assert.equal(button('Review suggested file gen/out.rs'), undefined);
-  button('Hide ignored').click();
+  button('File filters').click();
   await tick();
-  assert.equal(button('Hide ignored').getAttribute('aria-pressed'), 'true');
-  assert.equal(button('Include file gen/out.rs'), undefined);
-  button('Hide ignored').click();
+  const reveal = [...document.querySelectorAll('label')].find((label) => label.textContent.includes('Show ignored'))?.querySelector('input');
+  reveal.click();
   await tick();
-  button('Include file gen/out.rs').click();
+  byLabel('Actions for file gen/out.rs').click();
+  await tick();
+  document.querySelector('[aria-label="Scope actions for file gen/out.rs"] button').click();
   await settle();
   assert.equal(workspaceView('prep').hidden, false);
   assert.deepEqual([...workspaceView('prep').querySelectorAll('dd')].map((el) => el.textContent), ['2', '0', '0']);
-  assert.deepEqual(mutations().map((write) => JSON.parse(write.body)), [{ action: 'include', kind: 'file', expression: 'gen/out.rs' }]);
+  assert.deepEqual(mutations().map((write) => JSON.parse(write.body)), [{ action: 'include', kind: 'file', expression: 'gen/out.rs', lifetime: 'review' }]);
   button('Review suggested file src/auth.rs').click();
   await tick();
   assert.equal(workspaceView('files').hidden, false);
@@ -478,9 +567,11 @@ test('the diff still submits a line draft, replies locally and advances after Vi
   await tick();
   button('Save draft').click();
   await settle();
-  fill('reply-t1', 'My local reply');
+  diff.querySelector('.diff-row .thread-marker').click();
   await tick();
-  button('Save reply').click();
+  fill('reply-desktop-t1', 'My local reply');
+  await tick();
+  button('Send private reply').click();
   await settle();
   diff.querySelector('input[type=checkbox]').click();
   await settle();
@@ -533,7 +624,10 @@ for (const modifier of ['metaKey', 'ctrlKey']) {
     const pending = deferred();
     routes['POST /api/v1/threads/t1/replies'] = () => pending.promise;
     await start();
-    const input = document.getElementById('reply-t1');
+    document.querySelector('.diff-row .thread-marker').click();
+    await tick();
+    const input = document.getElementById('reply-desktop-t1');
+    assert.ok(input, 'reply editor is present only after selecting a thread');
     const press = (options = {}) => {
       const event = new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...options });
       input.dispatchEvent(event);
@@ -555,7 +649,7 @@ for (const modifier of ['metaKey', 'ctrlKey']) {
     assert.deepEqual(JSON.parse(mutations()[0].body), { body: 'My keyboard reply' });
     pending.resolve(json({}));
     await settle();
-    assert.equal(document.getElementById('reply-t1').value, '');
+    assert.equal(document.getElementById('reply-desktop-t1').value, '');
   });
 }
 
@@ -582,6 +676,395 @@ test('selecting adjacent code lines creates a contextual thread anchored to the 
     fileId: 'f-auth', diffDigest: 'digest-f-auth', side: 'RIGHT', line: 2,
     body: 'Why is this check added?', startLine: 1,
   });
+});
+
+test('native feedback loads all pages, searches a later reply and preserves ignored state on reveal/navigation', async () => {
+  workspaceRoutes();
+  const view = sessionView();
+  view.fileStates[0].scope.ignored = true;
+  routes['GET /api/v1/session'] = () => json(view);
+  const thread = { ...view.threads[0], id: 'native-1', source: 'github', path: view.files[0].path,
+    resolved: false, resolutionKnown: true, github: { nodeId: 'native-1', isResolved: false, isOutdated: false, comments: [] },
+    comments: [{ ...view.threads[0].comments[0], id: 'reply-late', body: 'Unique later page reply' }] };
+  routes['GET /api/v1/github-feedback/threads'] = (url) => json(url.searchParams.has('cursor')
+    ? page([thread]) : { ...page(Array.from({ length: 200 }, (_, i) => ({ ...thread, id: `resolved-${i}`, resolved: true, github: { ...thread.github, isResolved: true } }))), hasMore: true, nextCursor: 'later' });
+  routes['GET /api/v1/github-feedback/records'] = (url) => json(url.searchParams.has('cursor')
+    ? page([{ resourceKind: 'github_check_annotation', native: { key: 'annotation-1' }, raw: { message: 'Later annotation', path: 'src/a.rs', endLine: 3, checkRunId: 42, annotationLevel: 'warning' } }])
+    : { ...page(Array.from({ length: 200 }, (_, i) => ({ resourceKind: 'github_check_run', native: { key: `run-${i}` }, raw: { name: `Run ${i}`, conclusion: 'success' } }))), hasMore: true, nextCursor: 'later' });
+  await start();
+  viewButton('feedback').click();
+  await tick();
+  assert.match(workspaceView('feedback').textContent, /1 confirmed unresolved thread on ignored files/);
+  assert.doesNotMatch(workspaceView('feedback').textContent, /Unique later page reply/);
+  button('Reveal ignored feedback').click();
+  await tick();
+  const search = document.getElementById('feedback-search');
+  search.value = 'Unique later page reply';
+  search.dispatchEvent(new window.Event('input', { bubbles: true }));
+  await tick();
+  assert.match(workspaceView('feedback').textContent, /Unique later page reply/);
+  assert.ok(button(`Open ${thread.path} in review`));
+  button(`Open ${thread.path} in review`).click();
+  await tick();
+  assert.equal(workspaceView('files').hidden, false);
+  assert.deepEqual(mutations(), []);
+  assert.equal(view.fileStates[0].scope.ignored, true);
+  assert.equal(calls.filter((call) => call.path === '/api/v1/github-feedback/threads').length, 2);
+  assert.equal(calls.filter((call) => call.path === '/api/v1/github-feedback/records').length, 2);
+});
+
+test('native feedback distinguishes missing metadata and partial source coverage', async () => {
+  workspaceRoutes();
+  routes['GET /api/v1/github-feedback/threads'] = () => json(page([]));
+  routes['GET /api/v1/github-feedback/records'] = () => json(page([{ resourceKind: 'github_status', native: { key: 's1' }, raw: { description: 'Queued' } }], {
+    complete: false, sources: [source('github.commit_statuses', 'incomplete', { completeness: 'partial', limitations: ['page limit reached'] })],
+  }));
+  await start();
+  viewButton('feedback').click();
+  await tick();
+  assert.match(workspaceView('feedback').textContent, /Source link unavailable/);
+  assert.match(workspaceView('feedback').textContent, /freshness: unknown/);
+  assert.match(workspaceView('feedback').textContent, /page limit reached/);
+  assert.match(workspaceView('feedback').textContent, /Native metadata/);
+  assert.deepEqual(mutations(), []);
+});
+
+test('native cards show supported links, anchors, freshness and unmappable navigation without writes', async () => {
+  workspaceRoutes();
+  const view = sessionView();
+  view.fileStates[0].scope.ignored = true;
+  routes['GET /api/v1/session'] = () => json(view);
+  const original = view.threads[0];
+  const thread = { ...original, source: 'github', id: 'linked-thread', path: view.files[0].path,
+    resolved: false, resolutionKnown: true, headSha: 'stale-persisted-head', anchorState: 'outdated', anchorReason: 'head changed', startLine: 2, line: 5,
+    github: { nodeId: 'linked-thread', url: 'https://github.com/example/thread', isOutdated: true, isResolved: false,
+      subjectType: 'LINE', originalLine: 4, comments: [{ nodeId: 'native-comment', databaseId: null,
+        url: 'https://github.com/example/comment', authorType: 'Bot', outdated: true, line: null, originalLine: 4, commitOid: view.pr.headSha }] },
+    comments: [{ ...original.comments[0], id: 'linked-comment', githubCommentId: null, githubNodeId: 'native-comment', body: 'Linked reply' }] };
+  routes['GET /api/v1/github-feedback/threads'] = () => json(page([thread, { ...thread, id: 'orphan', path: 'missing/file.rs', github: null, resolutionKnown: false }]));
+  routes['GET /api/v1/github-feedback/records'] = () => json(page([
+    { resourceKind: 'check_runs:oldsha', native: { key: 'old' }, currentHead: false, appSlug: 'checks-app', name: 'Old run', status: 'completed', annotationCoverage: { state: 'partial' }, headSha: 'oldsha', detailsUrl: 'https://github.com/example/run' },
+    { resourceKind: 'check_runs:newsha', native: { key: 'new' }, currentHead: true, appSlug: 'checks-app', name: 'New run', headSha: 'newsha' },
+    { resourceKind: 'check_annotations:oldsha', native: { key: 'annotation' }, path: 'src/file.rs', startLine: 3, endLine: 7, checkRunId: 4, annotationLevel: 'warning', message: 'Check range' },
+  ]));
+  await start();
+  viewButton('feedback').click();
+  button('Reveal ignored feedback').focus();
+  assert.equal(document.activeElement, button('Reveal ignored feedback'));
+  button('Reveal ignored feedback').click();
+  await tick();
+  const feedback = workspaceView('feedback');
+  assert.match(feedback.textContent, /anchor outdated · head changed/);
+  assert.match(feedback.textContent, /lines 2–5/);
+  assert.match(feedback.textContent, /Native anchor: outdated · LINE · original line 4/);
+  assert.match(feedback.textContent, /native commit matches current head \(not necessarily refreshed\)/);
+  assert.doesNotMatch(feedback.textContent, /native commit stale-persisted-head/);
+  assert.match(feedback.textContent, /Resolution unknown/);
+  assert.match(feedback.textContent, /Native comment anchor: outdated · line unknown · original line 4/);
+  assert.match(feedback.textContent, /\(Bot\)/);
+  assert.match(feedback.textContent, /src\/file.rs:3–7/);
+  assert.match(feedback.textContent, /historical head/);
+  assert.match(feedback.textContent, /current head \(not necessarily refreshed\)/);
+  assert.match(feedback.textContent, /historical head/);
+  assert.match(feedback.textContent, /checks-app/);
+  assert.match(feedback.textContent, /Annotation coverage/);
+  assert.equal(feedback.querySelectorAll('section[aria-label="Check runs"]').length, 1);
+  assert.equal(feedback.querySelector('a[href="https://github.com/example/thread"]').textContent, 'Open thread on GitHub');
+  assert.equal(feedback.querySelector('a[href="https://github.com/example/comment"]').textContent, 'Open comment on GitHub');
+  assert.match(feedback.textContent, /No matching current file/);
+  assert.match(feedback.textContent, /Thread source link unavailable/);
+  assert.equal(button('Open missing/file.rs in review'), undefined);
+  assert.deepEqual(mutations(), []);
+  assert.equal(view.fileStates[0].scope.ignored, true);
+  button('Hide ignored feedback').click();
+  await tick();
+  assert.equal(feedback.querySelector('[data-feedback-thread="linked-thread"]'), null);
+  assert.deepEqual(mutations(), []);
+});
+
+test('REST-only and missing resolution never inflate ignored unresolved counts; persisted head is not freshness', async () => {
+  workspaceRoutes();
+  const view = sessionView();
+  view.fileStates[0].scope.ignored = true;
+  routes['GET /api/v1/session'] = () => json(view);
+  const base = { ...view.threads[0], source: 'github', path: view.files[0].path, resolved: false,
+    headSha: view.pr.headSha, anchorState: 'outdated', comments: [] };
+  let threads = [
+    { ...base, id: 'rest-only', resolutionKnown: false, github: { nodeId: 'rest', restOnly: true, isResolved: false, isOutdated: true, comments: [] } },
+    { ...base, id: 'missing-resolution', resolutionKnown: false, github: { nodeId: 'missing', isResolved: false, isOutdated: true, comments: [] } },
+    { ...base, id: 'confirmed', resolutionKnown: true, github: { nodeId: 'confirmed', isResolved: false, isOutdated: true, comments: [] } },
+  ];
+  routes['GET /api/v1/github-feedback/threads'] = () => json(page(threads));
+  routes['GET /api/v1/github-feedback/records'] = () => json(page([]));
+  await start();
+  viewButton('feedback').click();
+  await tick();
+  let feedback = workspaceView('feedback');
+  assert.match(feedback.textContent, /1 confirmed unresolved thread on ignored files · 2 with resolution unknown/);
+  button('Reveal ignored feedback').click();
+  await tick();
+  assert.match(feedback.textContent, /Resolution unknown \(REST-only\)/);
+  assert.match(feedback.textContent, /Native anchor: outdated/);
+  assert.match(feedback.textContent, /freshness unknown/);
+  assert.doesNotMatch(feedback.textContent, /native commit matches current head/);
+  // Refresh can change the PR head without rewriting the imported thread's
+  // persisted head. Native commit evidence, not that field, controls freshness.
+  view.pr.headSha = 'new-head';
+  threads = threads.map((thread) => ({ ...thread, github: { ...thread.github, comments: [
+    { nodeId: 'evidence', databaseId: 7, commitOid: 'old-head', body: '', author: '', createdAt: '' },
+  ] } }));
+  sources[0].emit('pr.refreshed');
+  await settle();
+  feedback = workspaceView('feedback');
+  assert.match(feedback.textContent, /native commit differs from current head/);
+  assert.equal(view.fileStates[0].scope.ignored, true);
+  assert.deepEqual(mutations(), []);
+});
+
+test('native records restart bounded stale pagination and reject later-page failures', async () => {
+  const { fetchFeedbackRecords, ResultsChangedError } = await import('./api.ts');
+  let attempts = 0;
+  routes['GET /api/v1/github-feedback/records'] = (url) => {
+    attempts++;
+    if (url.searchParams.has('cursor') && attempts === 2) return json({ error: 'cursor_stale' }, 409);
+    return url.searchParams.has('cursor') ? json(page([{ resourceKind: 'github_status', native: { key: 'last' } }]))
+      : json({ ...page([{ resourceKind: 'github_review', native: { key: 'first' } }]), hasMore: true, nextCursor: 'next' });
+  };
+  assert.deepEqual((await fetchFeedbackRecords()).items.map((record) => record.resourceKind), ['github_review', 'github_status']);
+  assert.equal(attempts, 4);
+  routes['GET /api/v1/github-feedback/records'] = (url) => url.searchParams.has('cursor')
+    ? json({ error: 'cursor_stale' }, 409) : json({ ...page([]), hasMore: true, nextCursor: 'next' });
+  await assert.rejects(fetchFeedbackRecords(), ResultsChangedError);
+  routes['GET /api/v1/github-feedback/records'] = (url) => url.searchParams.has('cursor')
+    ? json({ error: 'server_unavailable' }, 503) : json({ ...page([]), hasMore: true, nextCursor: 'next' });
+  await assert.rejects(fetchFeedbackRecords(), /503/);
+});
+
+test('later-page native error is explicit and does not imply complete-empty', async () => {
+  workspaceRoutes();
+  routes['GET /api/v1/github-feedback/threads'] = () => json(page([]));
+  routes['GET /api/v1/github-feedback/records'] = (url) => url.searchParams.has('cursor')
+    ? json({ error: 'backend_failure', message: 'second page failed' }, 500)
+    : json({ ...page([{ resourceKind: 'github_review', native: {} }]), hasMore: true, nextCursor: 'next' });
+  await start();
+  viewButton('feedback').click();
+  await tick();
+  assert.match(workspaceView('feedback').textContent, /Feedback load failed: second page failed/);
+  assert.match(workspaceView('feedback').textContent, /Search results are incomplete/);
+  assert.doesNotMatch(workspaceView('feedback').textContent, /No other imported feedback \(complete sources\)/);
+});
+
+test('selected conversation shows grouped unread marker, private reply and local resolution without outgoing draft', async () => {
+  const view = sessionView();
+  const thread = view.threads[0];
+  Object.assign(thread, { source: 'local', subject: 'line', unreadCount: 2, lastParticipant: 'agent',
+    agent: { state: 'idle' }, reviewComment: null, findingId: null });
+  const second = structuredClone(thread);
+  second.id = 't2'; second.comments = []; second.unreadCount = 0;
+  view.threads.push(second);
+  workspaceRoutes(() => view);
+  routes['PATCH /api/v1/threads/t1'] = (_url, init) => {
+    const update = JSON.parse(init.body);
+    if ('resolved' in update) thread.resolved = update.resolved;
+    if (update.readThrough) thread.unreadCount = 0;
+    return json({ thread });
+  };
+  routes['POST /api/v1/threads/t1/replies'] = (_url, init) => {
+    thread.comments.push({ id: 'new-reply', author: 'human', authorKind: 'human', body: JSON.parse(init.body).body, publishState: 'private' });
+    return json({});
+  };
+  await start();
+  const marker = document.querySelector('.diff-row .thread-marker');
+  assert.match(marker.className, /has-unread/);
+  assert.match(marker.style.cssText, /participant/);
+  assert.match(marker.parentElement.textContent, /[2-9]/, 'group count is visible');
+  assert.match(marker.getAttribute('aria-label'), /unread; last agent/);
+  assert.equal(byLabel('Selected conversation'), null);
+  marker.click(); await settle();
+  const panel = byLabel('Selected conversation');
+  assert.ok(panel);
+  assert.equal(document.querySelectorAll('.desktop-conversation .review-thread').length, 1);
+  assert.deepEqual(JSON.parse(mutations()[0].body), { readThrough: thread.comments.at(-1).id });
+  assert.equal(thread.unreadCount, 0);
+  const input = document.getElementById('reply-desktop-t1');
+  input.value = 'Private question'; input.dispatchEvent(new window.Event('input', { bubbles: true })); await tick();
+  button('Send private reply').click(); await settle();
+  assert.equal(thread.comments.at(-1).body, 'Private question');
+  assert.equal(thread.reviewComment, null, 'discussion never creates an outgoing review comment');
+  button('Mark handled locally').click(); await settle();
+  assert.equal(thread.resolved, true);
+  button('Reopen locally').click(); await settle();
+  assert.equal(thread.resolved, false);
+  assert.equal(mutations().filter((call) => call.path.includes('review-comment')).length, 0);
+  button('Next').click(); await tick();
+  assert.equal(document.querySelector('.desktop-conversation article').id, 'thread-t2');
+});
+
+test('both panel instances share per-thread unsaved text through resize, refresh and thread selection', async () => {
+  const view = sessionView();
+  const first = view.threads[0];
+  Object.assign(first, { source: 'local', subject: 'line', agent: { state: 'idle' }, reviewComment: null });
+  const second = structuredClone(first);
+  second.id = 't2'; second.comments = [];
+  view.threads.push(second);
+  workspaceRoutes(() => view);
+  const media = window.matchMedia;
+  let mobile = false;
+  window.matchMedia = () => ({ matches: mobile });
+  try {
+    await start();
+    document.querySelector('.diff-row .thread-marker').click(); await settle();
+    const desktop = document.getElementById('reply-desktop-t1');
+    const inline = document.getElementById('reply-mobile-t1');
+    assert.ok(desktop && inline);
+    assert.equal(document.querySelectorAll('#reply-desktop-t1').length, 1);
+    assert.equal(document.querySelectorAll('#reply-mobile-t1').length, 1);
+    const label = document.querySelector('.desktop-conversation label');
+    assert.equal(label.control, desktop, 'desktop label targets its visible editor');
+    desktop.focus();
+    assert.equal(document.activeElement, desktop);
+    const fill = (element, value) => {
+      element.value = value;
+      element.dispatchEvent(new window.Event('input', { bubbles: true }));
+    };
+    fill(desktop, 'Unsent private reply');
+    fill(document.querySelector('.desktop-conversation [aria-label="Review comment draft"]'), 'Unsent outgoing edit');
+    await tick();
+    assert.equal(inline.value, 'Unsent private reply');
+    assert.equal(document.querySelector('.mobile-conversation [aria-label="Review comment draft"]').value, 'Unsent outgoing edit');
+    mobile = true; window.dispatchEvent(new window.Event('resize'));
+    sources[0].emit('resync'); await settle();
+    assert.equal(inline.value, 'Unsent private reply');
+    assert.equal(document.querySelector('.mobile-conversation [aria-label="Review comment draft"]').value, 'Unsent outgoing edit');
+    button('Next').click(); await settle();
+    assert.equal(document.getElementById('reply-mobile-t2').value, '');
+    fill(document.getElementById('reply-mobile-t2'), 'Other thread'); await tick();
+    button('Previous').click(); await settle();
+    assert.equal(document.getElementById('reply-mobile-t1').value, 'Unsent private reply');
+    assert.equal(document.querySelector('.desktop-conversation [aria-label="Review comment draft"]').value, 'Unsent outgoing edit');
+    button('Next').click(); await settle();
+    assert.equal(document.getElementById('reply-desktop-t2').value, 'Other thread');
+    assert.deepEqual(mutations(), [], 'drafting and selecting threads never writes');
+  } finally { window.matchMedia = media; }
+});
+
+test('failed outgoing save keeps the shared edit and successful clear resets both panels', async () => {
+  const view = sessionView();
+  const thread = view.threads[0];
+  Object.assign(thread, { source: 'local', subject: 'line', agent: { state: 'idle' }, reviewComment: null });
+  workspaceRoutes(() => view);
+  routes['PUT /api/v1/threads/t1/review-comment'] = () => json({ message: 'save failed' }, 500);
+  routes['DELETE /api/v1/threads/t1/review-comment'] = () => { thread.reviewComment = null; return json({}); };
+  await start(); document.querySelector('.diff-row .thread-marker').click(); await settle();
+  const editor = document.querySelector('.desktop-conversation [aria-label="Review comment draft"]');
+  editor.value = 'Keep this text'; editor.dispatchEvent(new window.Event('input', { bubbles: true })); await tick();
+  [...document.querySelectorAll('.desktop-conversation button')].find((item) => item.textContent === 'Save review comment').click(); await settle();
+  assert.equal(editor.value, 'Keep this text');
+  assert.equal(document.querySelector('.mobile-conversation [aria-label="Review comment draft"]').value, 'Keep this text');
+  routes['PUT /api/v1/threads/t1/review-comment'] = (_url, init) => { thread.reviewComment = { id: 'saved', body: JSON.parse(init.body).body }; return json({}); };
+  [...document.querySelectorAll('.desktop-conversation button')].find((item) => item.textContent === 'Save review comment').click(); await settle();
+  [...document.querySelectorAll('.desktop-conversation button')].find((item) => item.getAttribute('aria-label') === 'Clear outgoing review comment').click(); await settle();
+  assert.equal(document.querySelector('.desktop-conversation [aria-label="Review comment draft"]').value, '');
+  assert.equal(document.querySelector('.mobile-conversation [aria-label="Review comment draft"]').value, '');
+});
+
+test('outgoing editor saves only explicitly, clears and copies agent verbatim with overwrite confirmation', async () => {
+  const view = sessionView();
+  const thread = view.threads[0];
+  Object.assign(thread, { source: 'local', subject: 'line', agent: { state: 'idle' }, reviewComment: null });
+  thread.comments.push({ id: 'agent-reply', author: 'agent', authorKind: 'agent', body: 'Exact agent text.', publishState: 'private' });
+  workspaceRoutes(() => view);
+  routes['PUT /api/v1/threads/t1/review-comment'] = (_url, init) => {
+    thread.reviewComment = { id: 'draft', body: JSON.parse(init.body).body }; return json({});
+  };
+  routes['DELETE /api/v1/threads/t1/review-comment'] = () => { thread.reviewComment = null; return json({}); };
+  await start(); document.querySelector('.diff-row .thread-marker').click(); await settle();
+  button('+ Add to review').click(); await settle();
+  assert.deepEqual(JSON.parse(mutations().at(-1).body), { body: 'Exact agent text.', sourceCommentId: 'agent-reply' });
+  button('Clear outgoing review comment').click(); await settle();
+  assert.equal(thread.reviewComment, null);
+  assert.equal(document.querySelector('.desktop-conversation [aria-label="Review comment draft"]').value, '');
+  assert.equal(document.querySelector('.desktop-conversation button.primary-button')?.disabled ?? button('Save review comment').disabled, true);
+  assert.equal(mutations().filter((call) => call.path.endsWith('/replies')).length, 0);
+});
+
+test('repository type preference reloads and failure does not falsely save', async () => {
+  workspaceRoutes();
+  let rules = [];
+  routes['GET /api/v1/repositories/current/extension-preferences'] = () => json({ rules });
+  routes['PUT /api/v1/repositories/current/extension-preferences/.rs'] = (_url, init) => {
+    const mode = JSON.parse(init.body).mode;
+    rules = mode === 'default' ? [] : [{ category: '.rs', action: mode, enabled: true }];
+    return json({ rule: rules[0] ?? null });
+  };
+  await start();
+  const search = byLabel('Search file paths');
+  search.value = 'auth'; search.dispatchEvent(new window.Event('input', { bubbles: true }));
+  button('File filters').click(); await tick();
+  document.querySelector('nav[aria-label="Changed files"] label.regex input').click(); await tick();
+  let select = byLabel('Repository preference for .rs');
+  select.value = 'exclude'; select.dispatchEvent(new window.Event('change', { bubbles: true })); await settle();
+  assert.equal(byLabel('Repository preference for .rs').value, 'exclude');
+  assert.equal(JSON.parse(mutations().at(-1).body).mode, 'exclude');
+  sources[0].emit('resync'); await settle();
+  assert.equal(byLabel('Repository preference for .rs').value, 'exclude');
+  routes['PUT /api/v1/repositories/current/extension-preferences/.rs'] = () => json({ message: 'cannot save' }, 500);
+  select = byLabel('Repository preference for .rs');
+  select.value = 'include'; select.dispatchEvent(new window.Event('change', { bubbles: true })); await settle();
+  assert.equal(byLabel('Repository preference for .rs').value, 'exclude', 'failed choice is not persisted');
+  assert.equal(byLabel('Search file paths').value, 'auth', 'preference reload preserves search');
+  assert.equal(document.querySelector('nav[aria-label="Changed files"] label.regex input').checked, true, 'preference reload preserves regex');
+  assert.match(document.querySelector('.workspace-sidebar [role="alert"]').textContent, /cannot save/);
+});
+
+test('selected range aligns desktop panel to starting row and renders mobile panel immediately beneath it', async () => {
+  const view = sessionView();
+  Object.assign(view.threads[0], { source: 'local', subject: 'line', side: 'RIGHT', startLine: 1, line: 2,
+    agent: { state: 'idle' }, unreadCount: 0 });
+  workspaceRoutes(() => view);
+  const original = HTMLElement.prototype.getBoundingClientRect;
+  const media = window.matchMedia;
+  window.matchMedia = () => ({ matches: false });
+  HTMLElement.prototype.getBoundingClientRect = function () {
+    const top = this.id === 'file-review' ? 10 : this.dataset.threadAnchor?.split(' ').includes('t1') ? 150
+      : this.matches?.('.desktop-conversation .review-thread') ? 40 + parseFloat(document.querySelector('.desktop-conversation')?.style.marginTop || '0') : 0;
+    return { top, left: 0, right: 0, bottom: 0, width: 0, height: 0 };
+  };
+  try {
+    await start();
+    viewButton('files').click(); await tick();
+    const row = document.querySelector('[data-thread-anchor="t1"]');
+    assert.equal(row.querySelector('[data-code-line]').dataset.codeLine, '1');
+    assert.equal(row.getBoundingClientRect().top, 150);
+    assert.equal(document.getElementById('file-review').getBoundingClientRect().top, 10);
+    row.querySelector('.thread-marker').click(); await settle();
+    assert.equal(document.querySelector('.desktop-conversation').style.marginTop, '110px');
+    const inline = row.nextElementSibling;
+    assert.match(inline.className, /mobile-conversation/);
+    assert.equal(inline.querySelector('article').id, 'thread-mobile-t1');
+    assert.equal(document.querySelector('.desktop-conversation article').id, 'thread-t1');
+    window.dispatchEvent(new window.Event('resize')); await settle();
+    assert.equal(document.querySelector('.desktop-conversation').style.marginTop, '110px');
+  } finally { HTMLElement.prototype.getBoundingClientRect = original; window.matchMedia = media; }
+});
+
+test('repository owner matching PR author is not proof of self review', async () => {
+  const view = sessionView();
+  view.demo = false; view.pr.owner = view.pr.author;
+  workspaceRoutes(() => view);
+  await start();
+  button('Submit review — Draft (0)').click(); await settle();
+  assert.equal(byLabel('Review verdict').querySelector('[value="APPROVE"]').disabled, false);
+  assert.deepEqual(mutations(), []);
+});
+
+test('opening Submit Review never posts a review', async () => {
+  workspaceRoutes(() => ({ ...sessionView(), demo: false }));
+  await start();
+  button('Submit review — Draft (0)').click();
+  await settle();
+  assert.ok(byLabel('Submit review'));
+  assert.equal(mutations().filter((call) => call.path.startsWith('/api/v1/review/publish')).length, 0);
 });
 
 test('stale cursors during a live run restart pagination instead of splicing pages', async () => {

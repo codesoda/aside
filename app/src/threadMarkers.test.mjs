@@ -21,6 +21,13 @@ test('deleted lines match the old side without matching unrelated new anchors', 
   assert.deepEqual(threadsForLine({ kind: 'deletion', oldLine: 10, newLine: null }, threads).map(({ id }) => id), ['old']);
 });
 
+test('range threads mark only the starting row on the correct side', () => {
+  const range = { ...thread('range', 'RIGHT', 15), startLine: 12 };
+  assert.deepEqual(threadsForLine(row, [range]).map(({ id }) => id), ['range']);
+  assert.deepEqual(threadsForLine({ ...row, newLine: 15 }, [range]), []);
+  assert.deepEqual(threadsForLine({ ...row, newLine: 13 }, [range]), []);
+});
+
 test('right-hand thread cards sort by line and keep unknown locations last', () => {
   const input = [thread('unknown', 'RIGHT', null), thread('later', 'RIGHT', 20), thread('first', 'LEFT', 2)];
   assert.deepEqual(orderThreads(input).map(({ id }) => id), ['first', 'later', 'unknown']);

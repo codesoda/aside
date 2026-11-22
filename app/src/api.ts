@@ -3,9 +3,14 @@ import type { FindingItem } from './generated/FindingItem';
 import type { Page } from './generated/Page';
 import type { QueueView } from './generated/QueueView';
 import type { RuleAction } from './generated/RuleAction';
+import type { RuleKind } from './generated/RuleKind';
 import type { SessionView } from './generated/SessionView';
+import type { ReviewThread } from './generated/ReviewThread';
+import type { GithubThread } from './generated/GithubThread';
 
 export type { Evidence, FindingItem, QueueView, SessionView };
+
+export type ConversationThread = ReviewThread;
 
 export class ApiError extends Error {
   // Keep explicit fields: node:test type stripping rejects parameter properties.
@@ -19,7 +24,7 @@ export class ApiError extends Error {
   }
 }
 
-async function mutate(path: string, method: 'POST' | 'DELETE', body: object): Promise<void> {
+async function mutate(path: string, method: 'POST' | 'DELETE' | 'PATCH' | 'PUT', body: object): Promise<void> {
   const res = await fetch(path, {
     method,
     headers: { 'Content-Type': 'application/json' },
@@ -43,15 +48,59 @@ export function createThread(fileId: string, diffDigest: string, side: 'LEFT' | 
   return mutate('/api/v1/threads', 'POST', { fileId, diffDigest, side, line, body, ...(startLine === undefined ? {} : { startLine }) });
 }
 
-export function replyToThread(threadId: string, body: string): Promise<void> {
-  return mutate(`/api/v1/threads/${encodeURIComponent(threadId)}/replies`, 'POST', { body });
+export function replyToThread(threadId: string, body: string, inReplyTo?: string): Promise<void> {
+  return mutate(`/api/v1/threads/${encodeURIComponent(threadId)}/replies`, 'POST', { body, ...(inReplyTo ? { inReplyTo } : {}) });
 }
 
-export function createFileRule(action: RuleAction, path: string): Promise<void> {
-  // Later rules win, so appending an include re-includes a file excluded by
-  // a folder or glob rule without editing that rule. Rules feed presentation
-  // only: the server re-ranks and never reruns analysis for them.
-  return mutate('/api/v1/repositories/current/exclusions', 'POST', { action, kind: 'file', expression: path });
+export function createInsightThread(fileId: string, diffDigest: string, findingId: string, side: 'LEFT' | 'RIGHT', line?: number, startLine?: number): Promise<void> {
+  return mutate('/api/v1/threads', 'POST', { subject: line === undefined ? 'file' : 'line', fileId, diffDigest, findingId, side, ...(line === undefined ? {} : { line }), ...(startLine === undefined ? {} : { startLine }) });
+}
+
+export function patchThread(threadId: string, change: { resolved?: boolean; readThrough?: string }): Promise<void> {
+  return mutate(`/api/v1/threads/${encodeURIComponent(threadId)}`, 'PATCH', change);
+}
+
+export function saveReviewComment(threadId: string, body: string, sourceCommentId?: string): Promise<void> {
+  return mutate(`/api/v1/threads/${encodeURIComponent(threadId)}/review-comment`, 'PUT', { body, ...(sourceCommentId ? { sourceCommentId } : {}) });
+}
+
+export function deleteReviewComment(threadId: string): Promise<void> {
+  return mutate(`/api/v1/threads/${encodeURIComponent(threadId)}/review-comment`, 'DELETE', {});
+}
+
+export function retryAgent(threadId: string, commentId: string): Promise<void> {
+  return mutate(`/api/v1/threads/${encodeURIComponent(threadId)}/agent-retry`, 'POST', { requestId: commentId });
+}
+
+export type ExtensionPreference = { category: string; action: 'include' | 'exclude'; enabled: boolean };
+export function fetchExtensionPreferences(): Promise<{ rules: ExtensionPreference[] }> {
+  return getJson('/api/v1/repositories/current/extension-preferences');
+}
+export function putExtensionPreference(category: string, mode: 'include' | 'exclude' | 'default'): Promise<void> {
+  return mutate(`/api/v1/repositories/current/extension-preferences/${encodeURIComponent(category)}`, 'PUT', { mode });
+}
+
+export async function previewReview(input: { verdict: string; body: string }) {
+  return postJson<{ plan: { planId: string; verdict: 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT'; summary: string; inline: Array<{ commentId: string; threadId: string; path: string; side: 'LEFT' | 'RIGHT'; line: number; startLine: number | null; body: string }>; replies: Array<{ commentId: string; threadId: string; parentCommentId: string; githubParentId: number | null; body: string }>; omitted: Array<{ commentId: string; threadId: string; reason: string }>; preparedCount: number; openCount: number; resolvedCount: number; headSha: string; baseSha: string; attemptOrdinal: number }; sequence: number }>('/api/v1/review/publish/preview', input);
+}
+export async function submitReview(input: { planId: string; verdict: string; body: string; confirm: true }) {
+  return postJson<{ outcome: { attemptId: string; status: string; githubReviewId: number | null; publishedCommentIds: string[]; remainingCommentIds: string[]; error: string | null }; sequence: number }>('/api/v1/review/publish', input);
+}
+export type ActivePublication = { attemptId: string; affectedDraftIds: string[] };
+export function fetchPublicationStatus(): Promise<{ active: ActivePublication | null }> {
+  return getJson('/api/v1/review/publish/status');
+}
+export function reconcilePublication(input: { attemptId: string; outcome: 'posted' | 'not_posted'; confirm: true }): Promise<{ sequence: number }> {
+  return postJson('/api/v1/review/publish/reconcile', input);
+}
+async function postJson<T>(path: string, body: object): Promise<T> {
+  const res = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (!res.ok) throw new ApiError(res.status, `${path} failed: ${res.status}`);
+  return res.json() as Promise<T>;
+}
+
+export function createScopeRule(action: RuleAction, kind: RuleKind, expression: string, lifetime: 'review' | 'repository'): Promise<void> {
+  return mutate('/api/v1/repositories/current/exclusions', 'POST', { action, kind, expression, lifetime });
 }
 
 async function getJson<T>(path: string): Promise<T> {
@@ -109,6 +158,29 @@ export async function fetchAllPages<T>(path: string, attempts = 3): Promise<{ it
   throw new ResultsChangedError();
 }
 
+/** Native GitHub feedback is read-only and never a finding. */
+export type NativeFeedbackRecord = {
+  resourceKind: string;
+  native?: Record<string, unknown>;
+  [field: string]: unknown;
+};
+
+export type FeedbackThread = Omit<ReviewThread, 'comments'> & {
+  /** Persisted association to native GitHub comments, independent of database ID. */
+  comments: (ReviewThread['comments'][number] & { githubNodeId?: string })[];
+  /** Joined from the current GitHub snapshot, not persisted review state. */
+  github: GithubThread | null;
+  resolutionKnown: boolean;
+};
+
+export function fetchFeedbackThreads(): Promise<{ items: FeedbackThread[]; last: Page<FeedbackThread> }> {
+  return fetchAllPages<FeedbackThread>('/api/v1/github-feedback/threads?includeIgnored=true');
+}
+
+export function fetchFeedbackRecords(): Promise<{ items: NativeFeedbackRecord[]; last: Page<NativeFeedbackRecord> }> {
+  return fetchAllPages<NativeFeedbackRecord>('/api/v1/github-feedback/records?includeIgnored=true');
+}
+
 /** Current findings, including ignored files so they can be revealed. */
 export function fetchFindings(): Promise<{ items: FindingItem[]; last: Page<FindingItem> }> {
   return fetchAllPages<FindingItem>('/api/v1/analysis/findings?includeIgnored=true');
@@ -146,7 +218,7 @@ export function watchSession(
   source.onopen = refresh; // Reconnects and missed events both require a resync.
   for (const event of [
     'resync', 'exclusions.changed', 'file.reviewed', 'thread.created',
-    'thread.replied', 'thread.changed', 'comment.changed', 'comment.deleted',
+    'thread.replied', 'thread.changed', 'comment.changed', 'comment.deleted', 'agent.presence',
     'review.finished', 'review.published', 'pr.refreshed',
     // Run lifecycle (#27): small versioned deltas; the session view carries
     // the authoritative per-source coverage.

@@ -140,6 +140,7 @@ impl AnchorState {
 pub enum PublishState {
     /// Local draft, never sent to GitHub.
     Draft,
+    Private,
     Published,
     /// Came from GitHub.
     Imported,
@@ -149,6 +150,7 @@ impl PublishState {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Draft => "draft",
+            Self::Private => "private",
             Self::Published => "published",
             Self::Imported => "imported",
         }
@@ -157,6 +159,7 @@ impl PublishState {
     pub fn parse(s: &str) -> Self {
         match s {
             "published" => Self::Published,
+            "private" => Self::Private,
             "imported" => Self::Imported,
             _ => Self::Draft,
         }
@@ -178,6 +181,107 @@ pub struct Comment {
     pub github_comment_id: Option<i64>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ThreadSubject {
+    #[default]
+    Line,
+    File,
+}
+
+impl ThreadSubject {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Line => "line",
+            Self::File => "file",
+        }
+    }
+    pub fn parse(s: &str) -> Self {
+        if s == "file" { Self::File } else { Self::Line }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum AgentState {
+    #[default]
+    Idle,
+    NoAgent,
+    Waiting,
+    Responding,
+    Failed,
+}
+impl AgentState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::NoAgent => "no_agent",
+            Self::Waiting => "waiting",
+            Self::Responding => "responding",
+            Self::Failed => "failed",
+        }
+    }
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "no_agent" => Self::NoAgent,
+            "waiting" => Self::Waiting,
+            "responding" => Self::Responding,
+            "failed" => Self::Failed,
+            _ => Self::Idle,
+        }
+    }
+}
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct AgentRequest {
+    pub state: AgentState,
+    pub request_comment_id: Option<String>,
+    pub error: Option<String>,
+    pub updated_at: Option<String>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ThreadTargetKind {
+    Inline,
+    FileFallback,
+    Reply,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ThreadTarget {
+    pub kind: ThreadTargetKind,
+    pub path: String,
+    pub side: Side,
+    pub line: Option<u32>,
+    pub start_line: Option<u32>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ReviewCommentDraft {
+    pub id: String,
+    pub body: String,
+    pub source_comment_id: Option<String>,
+    pub updated_at: String,
+    pub locked: bool,
+    pub target: Option<ThreadTarget>,
+    pub blocker: Option<String>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct PublishedComment {
+    pub id: String,
+    pub body: String,
+    pub github_comment_id: Option<i64>,
+    pub github_review_id: Option<i64>,
+    pub published_at: String,
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
@@ -199,6 +303,22 @@ pub struct ReviewThread {
     pub head_sha: String,
     pub created_at: String,
     pub comments: Vec<Comment>,
+    #[serde(default)]
+    pub subject: ThreadSubject,
+    #[serde(default)]
+    pub finding_id: Option<String>,
+    #[serde(default)]
+    pub review_comment: Option<ReviewCommentDraft>,
+    #[serde(default)]
+    pub published_comments: Vec<PublishedComment>,
+    #[serde(default)]
+    pub linked_thread_id: Option<String>,
+    #[serde(default)]
+    pub agent: AgentRequest,
+    #[serde(default)]
+    pub unread_count: u32,
+    #[serde(default)]
+    pub last_participant: Option<Actor>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -241,6 +361,17 @@ pub struct ReviewState {
     pub published_at: Option<String>,
 }
 
+/// Ephemeral connection indicator. Recent authentication is not an active stream.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct AgentPresence {
+    pub connected: bool,
+    pub active_streams: u32,
+    pub recently_seen: bool,
+    pub last_seen_at: Option<String>,
+}
+
 /// Initial snapshot for the browser and agents: PR data plus derived review state.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -254,6 +385,8 @@ pub struct SessionView {
     pub sequence: u64,
     /// Who the caller is authenticated as.
     pub actor: Actor,
+    #[serde(default)]
+    pub agent_presence: AgentPresence,
     pub repository: Repository,
     pub pr: PullRequest,
     pub files: Vec<ChangedFile>,

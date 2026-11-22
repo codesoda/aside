@@ -227,9 +227,10 @@ impl Session {
             (snapshot.clone(), context.clone())
         };
         let store = self.store.lock().expect("store lock poisoned");
-        let rules = store.list_rules(&self.repository.id)?;
+        let rules = store.effective_rules(&self.repository.id, &self.pr_id)?;
         let mut threads = store.list_threads(&self.pr_id)?;
         attach_files(&mut threads, &snapshot.files);
+        crate::publish::attach_draft_targets(&snapshot, &mut threads)?;
         let file_states = self.file_states(&store, &snapshot, &rules)?;
         let progress = progress(&file_states);
         let analysis = self.analysis_summary(&store, &snapshot, &rules)?;
@@ -239,6 +240,7 @@ impl Session {
             demo: self.demo,
             sequence: self.sequence.load(Ordering::SeqCst),
             actor,
+            agent_presence: crate::model::AgentPresence::default(),
             repository: self.repository.clone(),
             pr: snapshot.pr,
             files: snapshot.files,
@@ -302,7 +304,7 @@ impl Session {
             .clone();
         let store = self.store.lock().expect("store lock poisoned");
         let sequence = self.sequence.load(Ordering::SeqCst);
-        let rules = store.list_rules(&self.repository.id)?;
+        let rules = store.effective_rules(&self.repository.id, &self.pr_id)?;
         let summary = self.analysis_summary(&store, &snapshot, &rules)?;
         let mut threads = store.list_threads(&self.pr_id)?;
         attach_files(&mut threads, &snapshot.files);
@@ -317,6 +319,10 @@ impl Session {
             threads,
             file_states,
             github_threads: snapshot.github_threads,
+            reviews: snapshot.reviews,
+            issue_comments: snapshot.issue_comments,
+            reviews_completeness: snapshot.reviews_completeness,
+            issue_comments_completeness: snapshot.issue_comments_completeness,
             head_sha: snapshot.pr.head_sha,
             annotation_coverage: snapshot.checks.annotation_coverage,
         })
@@ -893,6 +899,10 @@ pub(crate) struct AnalysisRead<'a> {
     pub file_states: Vec<FileState>,
     /// Native imported GitHub threads of the canonical snapshot.
     pub github_threads: Vec<GithubThread>,
+    pub reviews: Vec<crate::model::ImportedReview>,
+    pub issue_comments: Vec<crate::model::IssueComment>,
+    pub reviews_completeness: crate::model::Completeness,
+    pub issue_comments_completeness: crate::model::Completeness,
     pub head_sha: String,
     pub annotation_coverage: Vec<(u64, crate::github::checks::Coverage)>,
 }
@@ -2067,6 +2077,8 @@ mod tests {
                 &session.pr_id,
                 &NewThread {
                     id: "anchor".into(),
+                    subject: crate::model::ThreadSubject::Line,
+                    finding_id: None,
                     source: ThreadSource::Local,
                     github_thread_id: None,
                     path: file.path.clone(),
@@ -2130,6 +2142,8 @@ mod tests {
                 &session.pr_id,
                 &NewThread {
                     id: "missing".into(),
+                    subject: crate::model::ThreadSubject::Line,
+                    finding_id: None,
                     source: ThreadSource::Local,
                     github_thread_id: None,
                     path: "git/client.go".into(),

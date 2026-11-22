@@ -14,7 +14,11 @@ mod files;
 mod review;
 mod threads;
 
-use std::{convert::Infallible, sync::Arc, time::Duration};
+use std::{
+    convert::Infallible,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 
 use axum::{
     Json, Router,
@@ -36,11 +40,16 @@ use self::{
         create_exclusion, delete_exclusion, exclusions, preview_exclusion, update_exclusion,
     },
     files::{clear_reviewed, file_history, mark_reviewed},
-    review::{finish, publish_confirm, publish_preview, refresh},
-    threads::{create_thread, delete_comment, reply, update_comment, update_thread},
+    review::{
+        finish, publish_confirm, publish_preview, publish_reconcile, publish_status, refresh,
+    },
+    threads::{
+        agent_response, create_thread, delete_comment, delete_review_comment, put_review_comment,
+        reply, retry_agent_request, update_comment, update_thread,
+    },
 };
 use crate::{
-    model::Actor,
+    model::{Actor, AgentPresence, AgentState},
     session::Session,
     store::{NotFound, ReservedDraft, RevisionConflict},
 };
@@ -52,6 +61,63 @@ pub struct AppState {
     pub explanations: Arc<crate::explain::Explanations>,
     ui_token: Arc<str>,
     agent_token: Arc<str>,
+    presence: Arc<Mutex<PresenceTracker>>,
+}
+
+#[derive(Default)]
+struct PresenceTracker {
+    streams: u32,
+    last_seen: Option<(Instant, String)>,
+}
+
+impl AppState {
+    fn seen_agent(&self) {
+        if let Ok(mut tracker) = self.presence.lock()
+            && tracker
+                .last_seen
+                .as_ref()
+                .is_none_or(|(at, _)| at.elapsed() >= Duration::from_secs(1))
+        {
+            tracker.last_seen = Some((Instant::now(), crate::util::now_rfc3339()));
+        }
+    }
+    fn agent_presence(&self) -> AgentPresence {
+        let Ok(tracker) = self.presence.lock() else {
+            return AgentPresence::default();
+        };
+        AgentPresence {
+            connected: tracker.streams > 0,
+            active_streams: tracker.streams,
+            recently_seen: tracker
+                .last_seen
+                .as_ref()
+                .is_some_and(|(at, _)| at.elapsed() < Duration::from_secs(45)),
+            last_seen_at: tracker.last_seen.as_ref().map(|(_, at)| at.clone()),
+        }
+    }
+    fn open_agent_stream(&self) -> AgentStreamLease {
+        if let Ok(mut tracker) = self.presence.lock() {
+            tracker.streams += 1;
+        }
+        self.session.notify(
+            "agent.presence",
+            json!({"agentPresence":self.agent_presence()}),
+        );
+        AgentStreamLease(self.clone())
+    }
+}
+
+struct AgentStreamLease(AppState);
+impl Drop for AgentStreamLease {
+    fn drop(&mut self) {
+        if let Ok(mut tracker) = self.0.presence.lock() {
+            tracker.streams = tracker.streams.saturating_sub(1);
+        }
+        self.0.session.notify(
+            "agent.presence",
+            json!({"agentPresence":self.0.agent_presence()}),
+        );
+    }
 }
 
 impl AppState {
@@ -61,6 +127,7 @@ impl AppState {
             explanations: Arc::new(crate::explain::Explanations::default()),
             ui_token: ui_token.into(),
             agent_token: agent_token.into(),
+            presence: Arc::new(Mutex::new(PresenceTracker::default())),
         }
     }
 }
@@ -182,9 +249,18 @@ pub fn router(state: AppState) -> Router {
         .route("/analysis/findings/{id}/evidence", get(analysis::evidence))
         .route("/github-feedback/threads", get(analysis::feedback))
         .route("/github-feedback/checks", get(analysis::checks))
+        .route("/github-feedback/records", get(analysis::records))
         .route(
             "/repositories/current/exclusions",
             get(exclusions).post(create_exclusion),
+        )
+        .route(
+            "/repositories/current/extension-preferences",
+            get(exclusions::extension_preferences),
+        )
+        .route(
+            "/repositories/current/extension-preferences/{category}",
+            axum::routing::put(exclusions::set_extension_preference),
         )
         .route(
             "/repositories/current/exclusions/preview",
@@ -201,6 +277,12 @@ pub fn router(state: AppState) -> Router {
         .route("/files/{id}/history", get(file_history))
         .route("/threads", post(create_thread))
         .route("/threads/{id}/replies", post(reply))
+        .route(
+            "/threads/{id}/review-comment",
+            axum::routing::put(put_review_comment).delete(delete_review_comment),
+        )
+        .route("/threads/{id}/agent-response", post(agent_response))
+        .route("/threads/{id}/agent-retry", post(retry_agent_request))
         .route("/threads/{id}", axum::routing::patch(update_thread))
         .route(
             "/comments/{id}",
@@ -210,6 +292,8 @@ pub fn router(state: AppState) -> Router {
         .route("/review/finish", post(finish))
         .route("/review/publish/preview", post(publish_preview))
         .route("/review/publish", post(publish_confirm))
+        .route("/review/publish/reconcile", post(publish_reconcile))
+        .route("/review/publish/status", get(publish_status))
         .fallback(api_not_found)
         .layer(DefaultBodyLimit::max(1_048_576));
     Router::new()
@@ -230,7 +314,16 @@ async fn session_view(
     State(state): State<AppState>,
     axum::Extension(actor): axum::Extension<Actor>,
 ) -> ApiResult<Json<crate::model::SessionView>> {
-    Ok(Json(state.session.view(actor).map_err(db_error)?))
+    let mut view = state.session.view(actor).map_err(db_error)?;
+    view.agent_presence = state.agent_presence();
+    if !view.agent_presence.connected && !view.agent_presence.recently_seen {
+        for thread in &mut view.threads {
+            if thread.agent.state == AgentState::Waiting {
+                thread.agent.state = AgentState::NoAgent;
+            }
+        }
+    }
+    Ok(Json(view))
 }
 
 /// The session's single event channel. Every event carries its sequence as
@@ -241,9 +334,11 @@ async fn session_view(
 /// `GET /session` rather than apply deltas on top of stale state.
 async fn events(
     State(state): State<AppState>,
+    axum::Extension(actor): axum::Extension<Actor>,
     headers: axum::http::HeaderMap,
 ) -> Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>> {
     // Subscribe before reading the sequence so nothing falls in between.
+    let lease = (actor == Actor::Agent).then(|| state.open_agent_stream());
     let rx = state.session.events.subscribe();
     let current = state
         .session
@@ -255,7 +350,7 @@ async fn events(
         .map(|v| v.trim().parse::<u64>().map_or(true, |seen| seen < current))
         .unwrap_or(false);
     let first = missed.then(|| Ok(resync_event(current)));
-    let live = futures_util::stream::unfold(rx, move |mut rx| async move {
+    let live = futures_util::stream::unfold((rx, lease), move |(mut rx, lease)| async move {
         match rx.recv().await {
             Ok(envelope) => {
                 let sequence = envelope.sequence;
@@ -264,10 +359,10 @@ async fn events(
                     .id(sequence.to_string())
                     .json_data(envelope)
                     .unwrap_or_else(|_| resync_event(sequence));
-                Some((Ok(event), rx))
+                Some((Ok(event), (rx, lease)))
             }
             Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                Some((Ok(resync_event(0)), rx))
+                Some((Ok(resync_event(0)), (rx, lease)))
             }
             Err(tokio::sync::broadcast::error::RecvError::Closed) => None,
         }
@@ -345,6 +440,167 @@ mod tests {
             .oneshot(builder.body(axum::body::Body::from(bytes)).unwrap())
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn publication_status_is_human_only_and_contains_no_private_plan() {
+        let path = "/api/v1/review/publish/status";
+        assert_eq!(
+            request(Method::GET, path, Some("Bearer agent-secret"), None, None)
+                .await
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+        let response = request(Method::GET, path, Some("aside_ui=ui-secret"), None, None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), 2_000_000)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body, json!({"active": null}));
+    }
+
+    #[tokio::test]
+    async fn lifetime_and_preferences_http_apply_to_file_states() {
+        use tower::ServiceExt;
+        async fn send(
+            app: Router,
+            method: Method,
+            path: &str,
+            body: Option<Value>,
+            agent: bool,
+        ) -> (StatusCode, Value) {
+            let mut request = axum::http::Request::builder()
+                .method(method)
+                .uri(path)
+                .header(header::HOST, "127.0.0.1:1234")
+                .header(header::ORIGIN, "http://127.0.0.1:1234")
+                .header(header::CONTENT_TYPE, "application/json");
+            request = if agent {
+                request.header(header::AUTHORIZATION, "Bearer agent-secret")
+            } else {
+                request.header(header::COOKIE, "aside_ui=ui-secret")
+            };
+            let response = app
+                .oneshot(
+                    request
+                        .body(axum::body::Body::from(
+                            body.map_or(String::new(), |v| v.to_string()),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), 2_000_000)
+                .await
+                .unwrap();
+            (
+                status,
+                serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+            )
+        }
+        let app = app();
+        let path = crate::demo::snapshot(0).files[0].path.clone();
+        let route = "/api/v1/repositories/current/exclusions";
+        let manual = json!({"action":"exclude","kind":"file","expression":path});
+        let (status, _) = send(app.clone(), Method::POST, route, Some(manual), true).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _) = send(
+            app.clone(),
+            Method::POST,
+            route,
+            Some(json!({"action":"exclude","kind":"glob","expression":"*"})),
+            false,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, result) = send(
+            app.clone(),
+            Method::POST,
+            route,
+            Some(json!({"action":"include","kind":"file","expression":path,"lifetime":"review"})),
+            false,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(result["rule"]["lifetime"], "review");
+        let (status, view) = send(app.clone(), Method::GET, "/api/v1/session", None, false).await;
+        assert_eq!(status, StatusCode::OK);
+        let file = view["fileStates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["path"] == path)
+            .unwrap();
+        assert_eq!(file["scope"]["ignored"], false);
+        let preference = "/api/v1/repositories/current/extension-preferences/.rs";
+        assert_eq!(
+            send(
+                app.clone(),
+                Method::PUT,
+                preference,
+                Some(json!({"mode":"exclude"})),
+                true
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            send(
+                app.clone(),
+                Method::PUT,
+                preference,
+                Some(json!({"mode":"exclude"})),
+                false
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+        let (_, result) = send(
+            app.clone(),
+            Method::GET,
+            "/api/v1/repositories/current/exclusions",
+            None,
+            false,
+        )
+        .await;
+        assert!(
+            result["rules"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v["source"] == "extension-preference")
+        );
+        assert_eq!(
+            send(
+                app.clone(),
+                Method::PUT,
+                preference,
+                Some(json!({"mode":"default"})),
+                false
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+        let (_, result) = send(app, Method::GET, route, None, false).await;
+        assert!(
+            result["rules"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v["expression"] == "*" && v["source"] == "rule")
+        );
+        assert!(
+            !result["rules"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v["source"] == "extension-preference")
+        );
     }
 
     #[tokio::test]
@@ -470,7 +726,7 @@ mod tests {
         let mut builder = axum::http::Request::builder()
             .uri("/api/v1/events")
             .header(header::HOST, "127.0.0.1:1234")
-            .header(header::AUTHORIZATION, "Bearer agent");
+            .header(header::COOKIE, "aside_ui=ui");
         if let Some(id) = last_event_id {
             builder = builder.header("last-event-id", id);
         }
@@ -528,7 +784,7 @@ mod tests {
         let request = axum::http::Request::builder()
             .uri("/api/v1/events")
             .header(header::HOST, "127.0.0.1:1234")
-            .header(header::AUTHORIZATION, "Bearer agent")
+            .header(header::COOKIE, "aside_ui=ui")
             .body(axum::body::Body::empty())
             .unwrap();
         let mut body = app

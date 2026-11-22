@@ -189,7 +189,7 @@ async fn agent_drafts_replies_and_own_edits_stay_local() {
     let thread = &created["thread"];
     assert_eq!(thread["source"], "local");
     assert_eq!(thread["comments"][0]["authorKind"], "agent");
-    assert_eq!(thread["comments"][0]["publishState"], "draft");
+    assert_eq!(thread["comments"][0]["publishState"], "private");
     let id = thread["id"].as_str().unwrap();
     let comment_id = thread["comments"][0]["id"].as_str().unwrap();
     let (status, _) = send(
@@ -200,7 +200,7 @@ async fn agent_drafts_replies_and_own_edits_stay_local() {
         json!({"body":"Updated note"}),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::FORBIDDEN);
     let (status, reply) = send(
         &app,
         Method::POST,
@@ -209,8 +209,8 @@ async fn agent_drafts_replies_and_own_edits_stay_local() {
         json!({"body":"Follow up"}),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(reply["comment"]["publishState"], "draft");
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(reply["error"], "invalid_request");
     let (status, _) = send(
         &app,
         Method::PATCH,
@@ -251,7 +251,7 @@ async fn agent_drafts_replies_and_own_edits_stay_local() {
         json!({}),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(session.view(Actor::Human).unwrap().review, before_review);
     assert!(gh.calls.lock().unwrap().is_empty());
 }
@@ -272,6 +272,8 @@ async fn imported_thread_reply_is_a_private_draft_and_credentials_are_separate()
                     id: "imported".into(),
                     source: ThreadSource::Github,
                     github_thread_id: Some("GH_1".into()),
+                    subject: crate::model::ThreadSubject::Line,
+                    finding_id: None,
                     path: file.path.clone(),
                     side: Side::Right,
                     line: Some(1),
@@ -295,9 +297,8 @@ async fn imported_thread_reply_is_a_private_draft_and_credentials_are_separate()
         json!({"body":"Private response"}),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(reply["comment"]["authorKind"], "agent");
-    assert_eq!(reply["comment"]["publishState"], "draft");
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(reply["error"], "invalid_request");
     assert!(gh.calls.lock().unwrap().is_empty());
     for (credential, status) in [
         ("Bearer ui-secret", StatusCode::UNAUTHORIZED),
@@ -327,6 +328,7 @@ fn pinned_agent_route_policy() {
     for (method, route) in [
         (Method::POST, "/api/v1/threads"),
         (Method::POST, "/api/v1/threads/abc/replies"),
+        (Method::POST, "/api/v1/threads/abc/agent-response"),
         (Method::PATCH, "/api/v1/comments/abc"),
         (Method::DELETE, "/api/v1/comments/abc"),
         (Method::POST, "/api/v1/refresh"),
