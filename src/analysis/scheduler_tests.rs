@@ -750,6 +750,218 @@ fn duplicate_provider_ids_are_rejected() {
     );
 }
 
+#[tokio::test]
+async fn disabled_provider_never_executes_even_on_rerun_and_reenables_independently() {
+    let session = session();
+    let history = Double::new(HISTORY, ProviderKind::History, Behaviour::Fixture);
+    let calls = Arc::clone(&history.calls);
+    let analysis = scheduler(
+        &session,
+        vec![
+            history,
+            Double::new(DIFF, ProviderKind::Diff, Behaviour::Fixture),
+        ],
+        config(2),
+    );
+    let original_digest = analysis.config_digest();
+    let policies = HashMap::from([(
+        HISTORY.into(),
+        ProviderPolicy {
+            enabled: false,
+            ..ProviderPolicy::default()
+        },
+    )]);
+    let handles = analysis
+        .begin_snapshot_configured(input(&session, 0), Some(policies))
+        .unwrap();
+    for handle in &handles {
+        handle.clone().wait().await;
+    }
+    let history = handle_for(&handles, HISTORY);
+    let run = stored(&session, &history.run_id);
+    assert_eq!(run.status, RunStatus::Skipped);
+    assert_eq!(
+        run.coverage.reason_codes,
+        vec![reason::DISABLED_BY_CONFIGURATION]
+    );
+    assert_eq!(run.coverage.completeness, Completeness::Skipped);
+    assert_ne!(analysis.config_digest(), original_digest);
+    let rerun = analysis
+        .rerun(&input(&session, 0).snapshot_id, HISTORY)
+        .unwrap()
+        .wait()
+        .await;
+    assert_eq!(
+        rerun.reason.as_deref(),
+        Some(reason::DISABLED_BY_CONFIGURATION)
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert!(
+        analysis
+            .begin_snapshot(input(&session, 0))
+            .unwrap()
+            .is_empty()
+    );
+    let enabled = analysis
+        .begin_snapshot_configured(input(&session, 0), Some(HashMap::new()))
+        .unwrap();
+    assert_eq!(enabled.len(), 1);
+    assert_eq!(enabled[0].provider_id, HISTORY);
+    assert_eq!(
+        enabled[0].clone().wait().await.stored_status,
+        RunStatus::Succeeded
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(analysis.config_digest(), original_digest);
+    assert_eq!(
+        stored(&session, &handle_for(&handles, DIFF).run_id).status,
+        RunStatus::Succeeded
+    );
+}
+
+#[tokio::test]
+async fn changing_only_a_budget_invalidates_only_its_provider() {
+    let session = session();
+    let history = Double::new(HISTORY, ProviderKind::History, Behaviour::Fixture);
+    let calls = Arc::clone(&history.calls);
+    let analysis = scheduler(
+        &session,
+        vec![
+            history,
+            Double::new(DIFF, ProviderKind::Diff, Behaviour::Fixture),
+        ],
+        config(2),
+    );
+    let original = analysis.begin_snapshot(input(&session, 0)).unwrap();
+    for h in &original {
+        h.clone().wait().await;
+    }
+    let policies = HashMap::from([(
+        HISTORY.into(),
+        ProviderPolicy {
+            max_input_bytes: Some(1),
+            ..ProviderPolicy::default()
+        },
+    )]);
+    let updated = analysis
+        .begin_snapshot_configured(input(&session, 0), Some(policies.clone()))
+        .unwrap();
+    assert_eq!(updated.len(), 1);
+    assert_eq!(updated[0].provider_id, HISTORY);
+    assert_eq!(
+        updated[0].clone().wait().await.reason.as_deref(),
+        Some(reason::INPUT_LIMIT_EXCEEDED)
+    );
+    assert_eq!(
+        stored(&session, &handle_for(&original, HISTORY).run_id).status,
+        RunStatus::Stale
+    );
+    assert_eq!(
+        stored(&session, &handle_for(&original, DIFF).run_id).status,
+        RunStatus::Succeeded
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(
+        analysis
+            .begin_snapshot_configured(input(&session, 0), Some(policies))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn disabling_active_work_cancels_current_and_old_snapshot_attempts() {
+    let session = session();
+    let (history, gate, started) = Double::gated(HISTORY, ProviderKind::History);
+    let analysis = scheduler(&session, vec![history], config(2));
+    let first = analysis.begin_snapshot(input(&session, 0)).unwrap();
+    started.notified().await;
+    let second = analysis.begin_snapshot(input(&session, 1)).unwrap();
+    started.notified().await;
+    let disabled = analysis
+        .begin_snapshot_configured(
+            input(&session, 1),
+            Some(HashMap::from([(
+                HISTORY.into(),
+                ProviderPolicy {
+                    enabled: false,
+                    ..ProviderPolicy::default()
+                },
+            )])),
+        )
+        .unwrap();
+    assert_eq!(
+        disabled[0].clone().wait().await.stored_status,
+        RunStatus::Skipped
+    );
+    gate.add_permits(2);
+    for handle in first.into_iter().chain(second) {
+        let report = handle.wait().await;
+        assert_eq!(report.stored_status, RunStatus::Cancelled);
+    }
+    assert!(findings(&session).is_empty());
+}
+
+#[tokio::test]
+async fn policy_change_rejects_output_already_ready_on_an_older_snapshot() {
+    let session = session();
+    let (history, _gate, started) = Double::gated(HISTORY, ProviderKind::History);
+    let analysis = scheduler(&session, vec![history], config(2));
+    let first = analysis.begin_snapshot(input(&session, 0)).unwrap();
+    started.notified().await;
+    let running = stored(&session, &first[0].run_id);
+    let ctx = ProviderContext {
+        run_id: running.id.clone(),
+        attempt: running.attempt,
+        limits: ProviderLimits::default(),
+        input: Arc::new(input(&session, 0)),
+    };
+    // Model the exact post-output/pre-commit boundary without timing or sleeps.
+    // No await after this point: cancellation cannot win merely by task ordering.
+    let ready = crate::analysis::test_doubles::fixture_output(HISTORY, &ctx).unwrap();
+    assert!(!ready.findings.is_empty());
+    let finding_ids: Vec<_> = ready
+        .findings
+        .iter()
+        .map(|f| f.value().id.clone())
+        .collect();
+    analysis.begin_snapshot(input(&session, 1)).unwrap();
+    analysis
+        .begin_snapshot_configured(
+            input(&session, 1),
+            Some(HashMap::from([(
+                HISTORY.into(),
+                ProviderPolicy {
+                    enabled: false,
+                    ..ProviderPolicy::default()
+                },
+            )])),
+        )
+        .unwrap();
+    assert!(
+        !analysis
+            .inner
+            .active
+            .lock()
+            .unwrap()
+            .contains_key(&(running.snapshot_id.clone(), HISTORY.into()))
+    );
+    let report = analysis
+        .inner
+        .commit(&session.pr_id, &running, ctx.limits, ready, None);
+    assert_eq!(report.stored_status, RunStatus::Cancelled);
+    assert_eq!(stored(&session, &running.id).status, RunStatus::Cancelled);
+    assert!(
+        findings(&session).is_empty(),
+        "no historical output from revoked work"
+    );
+    let store = session.store.lock().unwrap();
+    for id in finding_ids {
+        assert!(store.list_finding_evidence(&id).unwrap().is_empty());
+        assert!(store.list_finding_relations(&id).unwrap().is_empty());
+    }
+}
+
 #[test]
 fn default_limits_are_sane() {
     let limits = ProviderLimits::default();
