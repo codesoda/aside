@@ -100,6 +100,59 @@ code and green/plus is added code, **not** error or safety evidence. Model answe
 must distinguish facts, possible effects, checks and uncertainty. They may still
 be incorrect; always inspect the cited lines and relevant tests yourself.
 
+## Demo walkthrough
+
+Use a build from this PR/branch, not an older installed release. Build the frontend
+and CLI using the [source-build instructions](../README.md#install-from-source).
+No model download is required if a compatible local model is already installed.
+
+In one terminal, start a dedicated Ollama server on an unused loopback port. This
+leaves a server on the usual port 11434 alone:
+
+```sh
+OLLAMA_HOST=127.0.0.1:11435 OLLAMA_NO_CLOUD=1 OLLAMA_NOPRUNE=1 ollama serve
+```
+
+In a second terminal, from the same checkout, use isolated demo configuration.
+Replace `YOUR_INSTALLED_LOCAL_MODEL` with a name listed by
+`OLLAMA_HOST=127.0.0.1:11435 ollama list`:
+
+```sh
+export ASIDE_CONFIG_DIR="$PWD/target/explain-demo-config"
+cargo run --locked -- set ai.local_url http://127.0.0.1:11435
+cargo run --locked -- set ai.local_model YOUR_INSTALLED_LOCAL_MODEL
+cargo run --locked -- demo
+```
+
+1. In the browser, open **Files changed** and choose a short changed line/block.
+2. Click **Explain**, select the **local Ollama** provider, then explicitly send
+   **Explain this change**.
+3. Ask: "What might this affect, and what cannot be determined from these lines?"
+4. Check that follow-ups retain the selection and that review state does not change.
+5. Try Escape/Close and a narrow viewport; Close should remain reachable while scrolling.
+
+The bundled demo uses an offline PR capture and cannot publish a review. Keep both
+processes running during the walkthrough. Browser login URLs and session descriptors
+are private: do not paste them into an issue, PR, screenshot or recording.
+
+### UI screenshots — synthetic responses, not live inference
+
+These screenshots came from the real browser UI with synthetic API responses.
+They demonstrate layout, follow-ups and local/hosted labelling, not model accuracy.
+Real provider tests are described separately under [Validation](#validation).
+
+**Desktop: explanation and follow-up**
+
+![Desktop explanation panel with an explicitly mocked local provider and synthetic answers](images/explain-change-desktop.png)
+
+**Mobile: selected change, explanation and visible Close control**
+
+![Mobile explanation panel with an explicitly mocked local provider and synthetic answer](images/explain-change-mobile.png)
+
+Known lifecycle caveat: one interactive demo did not exit after SIGINT/SIGTERM
+and required a force-quit. That shutdown behaviour remains an investigation item;
+this walkthrough does not claim it is fixed.
+
 ## Context and lifecycle
 
 The browser sends identity only: session, base/head SHA, file ID, diff digest,
@@ -198,6 +251,13 @@ caller impact. However, the first answer overstated runtime retry behavior not
 established by the snippet. This verifies the integration, not unconditional
 answer accuracy. Cloud and startup pruning were disabled; no models were
 downloaded, the model-store inventory was unchanged, and the owned server stopped.
+
+A separate run with existing `qwen3.5:35b-a3b` weights passed the initial explanation
+and follow-up in 8.35 seconds. It correctly qualified unknown caller effects and
+missing diagnostic coverage. The initial answer was 213 words despite a request
+for fewer than 180; the follow-up was 65 words. Selection identity, review state
+and model-store inventory were unchanged. This is a two-request synthetic smoke
+result, not a general quality or performance benchmark.
 
 ### Explicit live Claude smoke test
 
