@@ -176,6 +176,7 @@ pub struct Comment {
     pub updated_at: String,
     pub publish_state: PublishState,
     pub github_comment_id: Option<i64>,
+    pub publish_selected: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -235,10 +236,25 @@ impl Verdict {
 pub struct ReviewState {
     /// `in-progress`, `finished` or `published`.
     pub lifecycle: String,
+    #[ts(type = "number")]
+    pub selection_revision: u64,
+    pub unresolved_publication: Option<UnresolvedPublication>,
     pub verdict: Option<Verdict>,
     pub summary: String,
     pub finished_at: Option<String>,
     pub published_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct UnresolvedPublication {
+    pub attempt_id: String,
+    pub status: String,
+    pub github_review_id: Option<i64>,
+    pub error: Option<String>,
+    pub created_at: String,
+    pub reserved_comment_ids: Vec<String>,
 }
 
 /// Initial snapshot for the browser and agents: PR data plus derived review state.

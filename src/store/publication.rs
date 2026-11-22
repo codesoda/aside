@@ -1,7 +1,10 @@
 use anyhow::{Context, Result, bail};
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 
-use crate::util::{new_id, now_rfc3339};
+use crate::{
+    model::UnresolvedPublication,
+    util::{new_id, now_rfc3339},
+};
 
 use super::Store;
 
@@ -17,6 +20,37 @@ impl std::fmt::Display for ReservedDraft {
 impl std::error::Error for ReservedDraft {}
 
 impl Store {
+    pub fn plan_attempted(&self, pr_id: &str, plan_id: &str) -> Result<bool> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM publication_attempts WHERE pr_id = ?1 AND plan_id = ?2)",
+            params![pr_id, plan_id],
+            |r| r.get(0),
+        )?)
+    }
+
+    pub fn unresolved_publication(&self, pr_id: &str) -> Result<Option<UnresolvedPublication>> {
+        type AttemptRow = (String, String, Option<i64>, Option<String>, String);
+        let row: Option<AttemptRow> = self.conn.query_row(
+            "SELECT a.id, a.status, a.github_review_id, a.error, a.created_at FROM publication_attempts a WHERE a.pr_id = ?1 AND a.status != 'succeeded' ORDER BY a.created_at DESC LIMIT 1",
+            [pr_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        ).optional()?;
+        let Some((attempt_id, status, github_review_id, error, created_at)) = row else {
+            return Ok(None);
+        };
+        let mut stmt = self.conn.prepare("SELECT comment_id FROM publication_reservations WHERE attempt_id = ?1 ORDER BY comment_id")?;
+        let reserved_comment_ids = stmt
+            .query_map([&attempt_id], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(Some(UnresolvedPublication {
+            attempt_id,
+            status,
+            github_review_id,
+            error,
+            created_at,
+            reserved_comment_ids,
+        }))
+    }
+
     pub fn start_publication(
         &mut self,
         pr_id: &str,
@@ -24,12 +58,21 @@ impl Store {
         plan_json: &str,
         head_sha: &str,
         drafts: &[(&str, &str)],
+        expected_selection_revision: u64,
     ) -> Result<String> {
         let id = new_id("pub");
         // IMMEDIATE takes the writer lock before checking, across all processes.
         let tx = self
             .conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let revision: i64 = tx.query_row(
+            "SELECT selection_revision FROM review_sessions WHERE pr_id = ?1",
+            [pr_id],
+            |r| r.get(0),
+        )?;
+        if revision != expected_selection_revision as i64 {
+            bail!("publication plan changed; preview again");
+        }
         let attempted: i64 = tx.query_row(
             "SELECT COUNT(*) FROM publication_attempts WHERE pr_id = ?1 AND plan_id = ?2",
             params![pr_id, plan_id],
@@ -51,7 +94,7 @@ impl Store {
         for &(comment_id, body) in drafts {
             let n: i64 = tx.query_row(
                 "SELECT COUNT(*) FROM review_comments c JOIN review_threads t ON t.id = c.thread_id
-                 WHERE c.id = ?1 AND c.body = ?2 AND c.publish_state = 'draft' AND t.pr_id = ?3",
+                 WHERE c.id = ?1 AND c.body = ?2 AND c.publish_state = 'draft' AND c.publish_selected = 1 AND t.pr_id = ?3",
                 params![comment_id, body, pr_id],
                 |r| r.get(0),
             )?;

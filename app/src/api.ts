@@ -1,22 +1,55 @@
 import type { Evidence } from './generated/Evidence';
 import type { FindingItem } from './generated/FindingItem';
 import type { Page } from './generated/Page';
+import type { PublishBlocker } from './generated/PublishBlocker';
+import type { PublishOutcome } from './generated/PublishOutcome';
+import type { PublishPlan } from './generated/PublishPlan';
+import type { ReviewState } from './generated/ReviewState';
 import type { QueueView } from './generated/QueueView';
 import type { RuleAction } from './generated/RuleAction';
 import type { SessionView } from './generated/SessionView';
+import type { Verdict } from './generated/Verdict';
 
-export type { Evidence, FindingItem, QueueView, SessionView };
+export type { Evidence, FindingItem, PublishBlocker, PublishOutcome, PublishPlan, QueueView, SessionView, Verdict };
 
 export class ApiError extends Error {
   // Keep explicit fields: node:test type stripping rejects parameter properties.
   status: number;
   code: string;
+  details: unknown;
 
-  constructor(status: number, message: string, code = '') {
+  constructor(status: number, message: string, code = '', details?: unknown) {
     super(message);
     this.status = status;
     this.code = code;
+    this.details = details;
   }
+}
+
+export type SelectionResult = { selected: boolean; commentIds: string[]; changed: string[]; selectionRevision: number; sequence: number };
+export type PublishPreview = { plan: PublishPlan; blockers: PublishBlocker[]; sequence: number };
+
+async function postJson<T>(path: string, body: object): Promise<T> {
+  const res = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const payload = await res.json().catch(() => null);
+  if (!res.ok) throw new ApiError(res.status, payload?.message ?? `POST ${path} failed: ${res.status}`, payload?.error ?? '', payload?.details);
+  return payload as T;
+}
+
+export function selectDrafts(commentIds: string[], selected: boolean): Promise<SelectionResult> {
+  return postJson('/api/v1/review/publish/selection', { commentIds, selected });
+}
+export function finishReview(verdict: Verdict, summary: string): Promise<{ review: ReviewState; sequence: number }> {
+  return postJson('/api/v1/review/finish', { verdict, summary });
+}
+export function previewPublication(): Promise<PublishPreview> {
+  return postJson('/api/v1/review/publish/preview', {});
+}
+export function confirmPublication(planId: string): Promise<{ outcome: PublishOutcome; sequence: number }> {
+  return postJson('/api/v1/review/publish', { planId, confirm: true });
+}
+export function refreshReview(): Promise<{ session: SessionView; sequence: number }> {
+  return postJson('/api/v1/refresh', {});
 }
 
 async function mutate(path: string, method: 'POST' | 'DELETE', body: object): Promise<void> {
@@ -147,7 +180,7 @@ export function watchSession(
   for (const event of [
     'resync', 'exclusions.changed', 'file.reviewed', 'thread.created',
     'thread.replied', 'thread.changed', 'comment.changed', 'comment.deleted',
-    'review.finished', 'review.published', 'pr.refreshed',
+    'review.finished', 'review.published', 'review.selection.changed', 'pr.refreshed',
     // Run lifecycle (#27): small versioned deltas; the session view carries
     // the authoritative per-source coverage.
     'analysis.run.queued', 'analysis.run.started', 'analysis.run.succeeded',

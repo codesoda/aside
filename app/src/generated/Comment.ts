@@ -2,4 +2,4 @@
 import type { Actor } from "./Actor";
 import type { PublishState } from "./PublishState";
 
-export type Comment = { id: string, threadId: string, authorKind: Actor, author: string, body: string, createdAt: string, updatedAt: string, publishState: PublishState, githubCommentId: bigint | null, };
+export type Comment = { id: string, threadId: string, authorKind: Actor, author: string, body: string, createdAt: string, updatedAt: string, publishState: PublishState, githubCommentId: bigint | null, publishSelected: boolean, };

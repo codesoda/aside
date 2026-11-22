@@ -18,7 +18,8 @@ mod snapshot;
 
 pub use review::{
     Acknowledgement, Actor, AnchorState, Comment, EventEnvelope, FileScope, FileState, FileStatus,
-    Progress, PublishState, ReviewState, ReviewThread, SessionView, ThreadSource, Verdict,
+    Progress, PublishState, ReviewState, ReviewThread, SessionView, ThreadSource,
+    UnresolvedPublication, Verdict,
 };
 pub use rules::{ExclusionRule, Repository, RuleAction, RuleKind};
 pub use snapshot::{

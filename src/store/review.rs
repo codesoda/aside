@@ -45,12 +45,14 @@ impl Store {
     }
 
     pub fn review_state(&self, pr_id: &str) -> Result<ReviewState> {
-        self.conn
+        let mut state = self.conn
             .query_row(
-                "SELECT lifecycle_state, verdict, summary, finished_at, published_at FROM review_sessions WHERE pr_id = ?1",
+                "SELECT lifecycle_state, verdict, summary, finished_at, published_at, selection_revision FROM review_sessions WHERE pr_id = ?1",
                 [pr_id],
                 |r| {
                     Ok(ReviewState {
+                        selection_revision: r.get::<_, i64>(5)? as u64,
+                        unresolved_publication: None,
                         lifecycle: r.get(0)?,
                         verdict: r.get::<_, Option<String>>(1)?.as_deref().and_then(Verdict::parse),
                         summary: r.get(2)?,
@@ -59,7 +61,9 @@ impl Store {
                     })
                 },
             )
-            .map_err(Into::into)
+            .map_err(anyhow::Error::from)?;
+        state.unresolved_publication = self.unresolved_publication(pr_id)?;
+        Ok(state)
     }
 
     pub fn finish_review(&mut self, pr_id: &str, verdict: Verdict, summary: &str) -> Result<()> {

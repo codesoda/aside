@@ -479,8 +479,9 @@ These are **proposed routes**, to be finalised as a versioned contract:
 | PATCH | `/api/v1/threads/{id}` | Edit/resolve local thread subject to permissions |
 | POST | `/api/v1/refresh` | Re-fetch PR/diff and rederive state |
 | POST | `/api/v1/review/finish` | Store local verdict/draft summary |
-| POST | `/api/v1/review/publish/preview` | Build exact planned GitHub changes |
-| POST | `/api/v1/review/publish` | Apply confirmed plan after freshness check |
+| POST | `/api/v1/review/publish/selection` | Human-only atomic local draft selection (`commentIds`, `selected`; 1–500 IDs) |
+| POST | `/api/v1/review/publish/preview` | Human-only exact planned GitHub changes, omitted drafts and blockers; available offline in demo |
+| POST | `/api/v1/review/publish` | Apply explicitly confirmed, unblocked plan after freshness and selection-revision checks; forbidden in demo |
 
 All mutation endpoints must return the effective updated state or sufficient event/sequence metadata for deterministic UI reconciliation. Use stable IDs unrelated to tree display order; map file IDs to a validated session path, not arbitrary filesystem access. Stale snapshot/fingerprint writes should return `409 Conflict` with a machine-readable reason and fresh data.
 

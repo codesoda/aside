@@ -41,15 +41,20 @@ impl Store {
     }
 
     pub fn insert_comment(&mut self, c: &Comment, github_node_id: Option<&str>) -> Result<()> {
-        self.conn.execute(
+        let tx = self.conn.transaction()?;
+        tx.execute(
             "INSERT INTO review_comments (id, thread_id, author_kind, author, body, publish_state, github_comment_id,
-                github_node_id, created_at, updated_at, seq)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, (SELECT COALESCE(MAX(seq), 0) + 1 FROM review_comments))",
+                github_node_id, created_at, updated_at, seq, publish_selected)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, (SELECT COALESCE(MAX(seq), 0) + 1 FROM review_comments), ?11)",
             params![
                 c.id, c.thread_id, c.author_kind.as_str(), c.author, c.body, c.publish_state.as_str(),
-                c.github_comment_id, github_node_id, c.created_at, c.updated_at
+                c.github_comment_id, github_node_id, c.created_at, c.updated_at, c.publish_selected
             ],
         )?;
+        if c.publish_state == PublishState::Draft {
+            tx.execute("UPDATE review_sessions SET selection_revision = selection_revision + 1 WHERE pr_id = (SELECT pr_id FROM review_threads WHERE id = ?1)", [&c.thread_id])?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -208,6 +213,69 @@ impl Store {
         Ok(())
     }
 
+    pub fn set_publish_selection(
+        &mut self,
+        pr_id: &str,
+        ids: &[String],
+        selected: bool,
+    ) -> Result<(Vec<String>, u64)> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let mut changed = Vec::new();
+        for id in ids {
+            let row: Option<(String, String, String, bool, bool)> = tx.query_row(
+                "SELECT t.pr_id, c.publish_state, c.author_kind, c.publish_selected, EXISTS(SELECT 1 FROM publication_reservations WHERE comment_id = c.id) FROM review_comments c JOIN review_threads t ON t.id = c.thread_id WHERE c.id = ?1",
+                [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            ).optional()?;
+            let (owner, state, author, previous, reserved) =
+                row.ok_or_else(|| NotFound(format!("comment {id}")))?;
+            if owner != pr_id {
+                return Err(NotFound(format!("comment {id}")).into());
+            }
+            if reserved {
+                return Err(ReservedDraft.into());
+            }
+            if state != "draft" || author == "github" {
+                anyhow::bail!("comment is not selectable");
+            }
+            if previous != selected {
+                tx.execute(
+                    "UPDATE review_comments SET publish_selected = ?1 WHERE id = ?2",
+                    params![selected, id],
+                )?;
+                changed.push(id.clone());
+            }
+        }
+        if !changed.is_empty() {
+            tx.execute("UPDATE review_sessions SET selection_revision = selection_revision + 1 WHERE pr_id = ?1", [pr_id])?;
+        }
+        let revision = tx.query_row(
+            "SELECT selection_revision FROM review_sessions WHERE pr_id = ?1",
+            [pr_id],
+            |r| r.get::<_, i64>(0),
+        )? as u64;
+        tx.commit()?;
+        Ok((changed, revision))
+    }
+
+    pub fn plan_inputs(&self, pr_id: &str) -> Result<(Vec<ReviewThread>, u64, Vec<String>)> {
+        let tx = self.conn.unchecked_transaction()?;
+        let threads = self.list_threads(pr_id)?;
+        let revision = tx.query_row(
+            "SELECT selection_revision FROM review_sessions WHERE pr_id = ?1",
+            [pr_id],
+            |r| r.get::<_, i64>(0),
+        )? as u64;
+        let mut stmt = tx.prepare("SELECT r.comment_id FROM publication_reservations r JOIN review_comments c ON c.id = r.comment_id JOIN review_threads t ON t.id = c.thread_id WHERE t.pr_id = ?1")?;
+        let reserved = stmt
+            .query_map([pr_id], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+        drop(stmt);
+        tx.commit()?;
+        Ok((threads, revision, reserved))
+    }
+
     pub fn list_threads(&self, pr_id: &str) -> Result<Vec<ReviewThread>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, source, github_thread_id, path, side, line, start_line, line_text, anchor_state, anchor_reason,
@@ -240,7 +308,7 @@ impl Store {
             })?
             .collect::<rusqlite::Result<_>>()?;
         let mut cstmt = self.conn.prepare(
-            "SELECT c.id, c.thread_id, c.author_kind, c.author, c.body, c.created_at, c.updated_at, c.publish_state, c.github_comment_id
+            "SELECT c.id, c.thread_id, c.author_kind, c.author, c.body, c.created_at, c.updated_at, c.publish_state, c.github_comment_id, c.publish_selected
              FROM review_comments c JOIN review_threads t ON t.id = c.thread_id WHERE t.pr_id = ?1 ORDER BY c.seq",
         )?;
         let comments = cstmt.query_map([pr_id], comment_from_row)?;
@@ -284,7 +352,7 @@ impl Store {
     pub fn get_comment(&self, id: &str) -> Result<Comment> {
         self.conn
             .query_row(
-                "SELECT id, thread_id, author_kind, author, body, created_at, updated_at, publish_state, github_comment_id
+                "SELECT id, thread_id, author_kind, author, body, created_at, updated_at, publish_state, github_comment_id, publish_selected
                  FROM review_comments WHERE id = ?1",
                 [id],
                 comment_from_row,
@@ -294,7 +362,16 @@ impl Store {
     }
 
     pub fn update_comment_body(&mut self, id: &str, body: &str) -> Result<()> {
-        let n = self.conn.execute(
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let existing: Option<(String, bool)> = tx.query_row("SELECT body, EXISTS(SELECT 1 FROM publication_reservations WHERE comment_id = ?1) FROM review_comments WHERE id = ?1 AND publish_state = 'draft'", [id], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
+        if let Some((previous, false)) = existing.as_ref()
+            && previous == body
+        {
+            return Ok(());
+        }
+        let n = tx.execute(
             "UPDATE review_comments SET body = ?1, updated_at = ?2 WHERE id = ?3 AND publish_state = 'draft'
              AND NOT EXISTS (SELECT 1 FROM publication_reservations WHERE comment_id = ?3)",
             params![body, now_rfc3339(), id],
@@ -302,16 +379,18 @@ impl Store {
         if n != 1 {
             return Err(ReservedDraft.into());
         }
+        tx.execute("UPDATE review_sessions SET selection_revision = selection_revision + 1 WHERE pr_id = (SELECT t.pr_id FROM review_comments c JOIN review_threads t ON t.id = c.thread_id WHERE c.id = ?1)", [id])?;
+        tx.commit()?;
         Ok(())
     }
 
     /// Delete a draft comment, and its thread if that leaves the thread empty.
     pub fn delete_comment(&mut self, id: &str) -> Result<()> {
         let tx = self.conn.transaction()?;
-        let thread_id: String = tx.query_row(
-            "SELECT thread_id FROM review_comments WHERE id = ?1",
+        let (thread_id, pr_id): (String, String) = tx.query_row(
+            "SELECT c.thread_id, t.pr_id FROM review_comments c JOIN review_threads t ON t.id = c.thread_id WHERE c.id = ?1",
             [id],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
         let n = tx.execute(
             "DELETE FROM review_comments WHERE id = ?1 AND publish_state = 'draft'
@@ -329,6 +408,7 @@ impl Store {
         if left == 0 {
             tx.execute("DELETE FROM review_threads WHERE id = ?1", [&thread_id])?;
         }
+        tx.execute("UPDATE review_sessions SET selection_revision = selection_revision + 1 WHERE pr_id = ?1", [&pr_id])?;
         tx.commit()?;
         Ok(())
     }
@@ -366,6 +446,7 @@ fn comment_from_row(r: &Row) -> rusqlite::Result<Comment> {
         updated_at: r.get(6)?,
         publish_state: PublishState::parse(&r.get::<_, String>(7)?),
         github_comment_id: r.get(8)?,
+        publish_selected: r.get(9)?,
     })
 }
 

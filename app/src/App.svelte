@@ -1,11 +1,12 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import {
-    ApiError, createFileRule, createThread, fetchFindings, fetchQueue, fetchSession, replyToThread, setReviewed, watchSession,
+    ApiError, createFileRule, createThread, fetchFindings, fetchQueue, fetchSession, replyToThread, selectDrafts, setReviewed, watchSession,
     type FindingItem, type QueueView, type SessionView,
   } from './api';
   import { fileIndicators, type QueueFilter } from './insights';
   import ReviewPrep from './workspace/ReviewPrep.svelte';
+  import FinishReview from './workspace/FinishReview.svelte';
   import InsightsPanel from './insights/InsightsPanel.svelte';
   import Conversations from './workspace/Conversations.svelte';
   import ReviewQueue from './insights/ReviewQueue.svelte';
@@ -29,6 +30,7 @@
     { id: 'prep', label: 'Review prep' },
     { id: 'files', label: 'Files changed' },
     { id: 'conversations', label: 'Conversations' },
+    { id: 'finish', label: 'Finish review' },
   ] as const;
   type WorkspaceView = (typeof views)[number]['id'];
   // Start with review prep so focus areas are visible before opening a diff.
@@ -223,6 +225,18 @@
     }
   }
 
+  async function toggleSelection(ids: string[], selected: boolean) {
+    if (!ids.length || busy) return;
+    busy = true; actionError = null;
+    try {
+      await selectDrafts(ids, selected);
+      session = await fetchSession();
+    } catch (failure) {
+      actionError = failure instanceof Error ? failure.message : String(failure);
+      try { session = await fetchSession(); } catch { /* Keep the selection error visible. */ }
+    } finally { busy = false; }
+  }
+
   function saveDraft() {
     if (!file || !anchor || !draft.trim() || anchor.fileId !== file.id || anchor.digest !== file.diffDigest || fileState?.scope.ignored) return;
     const { fileId, digest, side, line, startLine } = anchor;
@@ -274,11 +288,12 @@
       {/each}
     </nav>
 
-    {#if error || actionError || session.warnings.length}
+    {#if error || actionError || session.warnings.length || session.review.unresolvedPublication}
       <div class="workspace-notices">
         {#if error}<p class="text-danger" role="alert">Refresh failed: {error}</p>{/if}
         {#if actionError}<p class="text-danger" role="alert">{actionError}</p>{/if}
         {#each session.warnings as warning}<p class="text-warning">{warning}</p>{/each}
+        {#if session.review.unresolvedPublication}<p role="alert" class="text-danger">Publication remains unresolved. Check GitHub; Aside will not retry automatically.</p>{/if}
       </div>
     {/if}
 
@@ -485,16 +500,27 @@
                   <div class="p-3">
                     {#if threads.length === 0}<p class="text-sm text-muted">No threads on this file yet. Select a diff line to draft one.</p>{/if}
                     {#each sortedThreads as thread (thread.id)}
+                      {@const drafts = thread.comments.filter((comment) => comment.publishState === 'draft' && comment.authorKind !== 'github')}
                       <article id={'thread-' + thread.id} tabindex="-1" class="review-thread"
                         class:is-selected={selectedThreadId === thread.id}>
                         <p class="text-xs text-muted">
                           {#if thread.source === 'github'}<span class="mr-1 rounded-full border border-accent px-2 font-semibold text-ink"><span aria-hidden="true">❝</span> External feedback · GitHub</span>{:else}<span class="mr-1 rounded-full border border-line px-2 font-semibold text-ink">Aside · local</span>{/if}
                           {thread.side} line {thread.line ?? 'unknown'} · {thread.anchorState}{thread.resolved ? ' · resolved' : ''}
                         </p>
+                        {#if drafts.length}
+                          <label class="mt-2 block text-xs"><input type="checkbox" class="accent-accent" disabled={busy}
+                            checked={drafts.every((comment) => comment.publishSelected)}
+                            onchange={(event) => { const selected = event.currentTarget.checked; event.currentTarget.checked = !selected; toggleSelection(drafts.map((comment) => comment.id), selected); }} /> Include thread drafts when publishing</label>
+                        {/if}
                         {#each thread.comments as comment (comment.id)}
                           <div class="mt-2 border-t border-line pt-2">
                             <p class="text-xs font-semibold">{comment.author} · {comment.publishState}</p>
                             <p class="mt-1 whitespace-pre-wrap break-words">{comment.body}</p>
+                            {#if comment.publishState === 'draft' && comment.authorKind !== 'github'}
+                              <label class="mt-1 block text-xs"><input type="checkbox" class="accent-accent" disabled={busy}
+                                checked={comment.publishSelected}
+                                onchange={(event) => { const selected = event.currentTarget.checked; event.currentTarget.checked = !selected; toggleSelection([comment.id], selected); }} /> Include when publishing</label>
+                            {/if}
                           </div>
                         {/each}
                         {#if !fileState?.scope.ignored}
@@ -522,6 +548,9 @@
           {/if}
         </section>
 
+        <section id="workspace-finish" hidden={activeView !== 'finish'} aria-label="Finish review">
+          <FinishReview {session} onSession={(view) => { session = view; }} />
+        </section>
         <section id="workspace-conversations" hidden={activeView !== 'conversations'} aria-label="Conversations">
           <Conversations {session} onOpenThread={openConversation} onReview={() => openReview()} />
         </section>

@@ -82,6 +82,7 @@ pub(super) async fn create_thread(
         updated_at: now,
         publish_state: PublishState::Draft,
         github_comment_id: None,
+        publish_selected: true,
     };
     let mut store = state
         .session
@@ -138,6 +139,7 @@ pub(super) async fn reply(
         updated_at: now,
         publish_state: PublishState::Draft,
         github_comment_id: None,
+        publish_selected: true,
     };
     state
         .session
@@ -188,6 +190,7 @@ pub(super) async fn update_thread(
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
     use std::sync::Arc;
