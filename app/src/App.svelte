@@ -8,6 +8,9 @@
   import ReviewPrep from './workspace/ReviewPrep.svelte';
   import InsightsPanel from './insights/InsightsPanel.svelte';
   import Conversations from './workspace/Conversations.svelte';
+  import ExplainPanel from './ExplainPanel.svelte';
+  import { selectionCurrent, type ExplainTarget } from './explain';
+  import type { DiffHunk } from './generated/DiffHunk';
   import ReviewQueue from './insights/ReviewQueue.svelte';
   import type { DiffLine } from './generated/DiffLine';
   import type { Side } from './generated/Side';
@@ -45,6 +48,25 @@
   let collapsedFolders = $state<Record<string, boolean>>({});
   let fileQuery = $state('');
   let fileCollapsed = $state(false);
+  let explainTarget = $state<ExplainTarget | null>(null);
+  let explainTrigger: HTMLElement | null = null;
+
+  function explainChange(hunk: DiffHunk, event: MouseEvent, line?: DiffLine) {
+    if (!session || !file) return;
+    explainTrigger = event.currentTarget as HTMLElement;
+    explainTarget = {
+      selection: { sessionId: session.sessionId, baseSha: session.pr.baseSha, headSha: session.pr.headSha,
+        fileId: file.id, diffDigest: file.diffDigest, hunkId: hunk.id, lineId: line?.id ?? null },
+      path: file.path,
+      label: line ? `${line.kind === 'deletion' ? `Removed old line ${line.oldLine}` : `Added new line ${line.newLine}`} and adjacent changes`
+        : `Change block: old lines ${hunk.oldStart}–${hunk.oldStart + Math.max(0, hunk.oldCount - 1)}, new lines ${hunk.newStart}–${hunk.newStart + Math.max(0, hunk.newCount - 1)}`,
+    };
+  }
+
+  function closeExplanation() {
+    explainTarget = null;
+    explainTrigger?.focus({ preventScroll: true });
+  }
   // Review insights (#38) load beside the review, never before it: the diff
   // renders from the session view alone and insights fill in as they arrive.
   let queue = $state<QueueView | null>(null);
@@ -99,6 +121,7 @@
   );
 
   function selectFile(id: string) {
+    explainTarget = null;
     selectedId = id;
     selectedThreadId = null;
     fileCollapsed = false;
@@ -435,9 +458,17 @@
                   {#if file.isBinary || file.hunks.length === 0}
                     <p class="p-4 text-sm text-muted">{file.isBinary ? 'Binary file: no text diff.' : 'No text hunks available for this file.'}</p>
                   {:else}
+                    <details class="border-b border-line p-3 text-sm">
+                      <summary>How to read this diff</summary>
+                      <p class="mt-2"><strong>− Removed (red)</strong> is the old code; <strong>+ Added (green)</strong> is the new code. Red does not mean an error. Unmarked lines are unchanged context. The two number columns refer to the old and new files. <code>@@</code> introduces a block of related changes. Warnings and diagnostics are shown separately, not inferred from these colours.</p>
+                      <p class="mt-2">Use a line’s Explain button or “Explain this change” for a whole block. The separate + button drafts a review comment.</p>
+                    </details>
                     <div class="workspace-code">
                       {#each file.hunks as hunk (hunk.id)}
-                        <div class="min-w-max border-b border-line bg-accent-soft px-3 py-1 text-muted">@@ -{hunk.oldStart},{hunk.oldCount} +{hunk.newStart},{hunk.newCount} @@ {hunk.header}</div>
+                        <div class="flex min-w-max items-center justify-between gap-3 border-b border-line bg-accent-soft px-3 py-1 text-muted">
+                          <span>@@ -{hunk.oldStart},{hunk.oldCount} +{hunk.newStart},{hunk.newCount} @@ {hunk.header}</span>
+                          <button type="button" class="workspace-button font-sans" disabled={!file.patchComplete} onclick={(event) => explainChange(hunk, event)}>Explain this change</button>
+                        </div>
                         {#each hunk.lines as line (line.id)}
                           {@const lineThreads = threadsForLine(line, threads)}
                           <div class="diff-row flex min-w-max whitespace-pre" class:bg-added-soft={line.kind === 'addition'} class:bg-deleted-soft={line.kind === 'deletion'}>
@@ -457,6 +488,12 @@
                             {:else}
                               <span class="w-7 shrink-0"></span>
                             {/if}
+                            {#if line.kind === 'addition' || line.kind === 'deletion'}
+                              <button type="button" class="workspace-button shrink-0 px-1 font-sans text-xs" disabled={!file.patchComplete}
+                                aria-label={`Explain ${line.kind === 'deletion' ? 'removed old' : 'added new'} line ${line.oldLine ?? line.newLine}`}
+                                onclick={(event) => explainChange(hunk, event, line)}>Explain</button>
+                            {/if}
+                            <span class="sr-only">{line.kind === 'addition' ? 'Added: ' : line.kind === 'deletion' ? 'Removed: ' : ''}</span>
                             <span class="px-2" data-code-line={lineSide(line) ? (lineSide(line) === 'LEFT' ? line.oldLine : line.newLine) : undefined} data-side={lineSide(line) ?? undefined}>{line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}{line.text}</span>
                           </div>
                           {#if !fileState?.scope.ignored && anchor?.fileId === file.id && anchor.digest === file.diffDigest && anchor.side === lineSide(line) && anchor.line === (anchor.side === 'LEFT' ? line.oldLine : line.newLine)}
@@ -532,5 +569,10 @@
         </section>
       </main>
     </div>
+    {#if explainTarget}
+      {#key explainTarget}
+        <ExplainPanel target={explainTarget} stale={!selectionCurrent(explainTarget.selection, session, file?.id)} onClose={closeExplanation} />
+      {/key}
+    {/if}
   {/if}
 </div>

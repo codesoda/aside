@@ -82,6 +82,10 @@ Run `target/release/aside` from the checkout, or put the executable on your `PAT
 
 ## Usage
 
+For optional plain-English explanations of selected changes, see
+[Explain this change: local Ollama / Claude setup and privacy boundaries](docs/explain-change.md).
+Q&A is opt-in and cannot edit files or change review status.
+
 ```sh
 aside https://github.com/OWNER/REPO/pull/NUMBER
 aside demo --no-open
