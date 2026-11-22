@@ -16,6 +16,28 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 pub struct Config {
     pub browser: BrowserConfig,
+    pub ai: AiConfig,
+}
+
+/// Opt-in only. Credentials remain with the selected CLI; never in the browser.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AiConfig {
+    pub local_url: String,
+    pub local_model: String,
+    pub claude_enabled: bool,
+    pub claude_model: String,
+}
+
+impl Default for AiConfig {
+    fn default() -> Self {
+        Self {
+            local_url: "http://127.0.0.1:11434".into(),
+            local_model: String::new(),
+            claude_enabled: false,
+            claude_model: "sonnet".into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,15 +54,34 @@ impl Default for BrowserConfig {
 }
 
 /// Every settable key, with a short description for `aside get`.
-pub const KEYS: &[(&str, &str)] = &[(
-    "browser.auto_open",
-    "Open the browser on launch (true/false)",
-)];
+pub const KEYS: &[(&str, &str)] = &[
+    (
+        "browser.auto_open",
+        "Open the browser on launch (true/false)",
+    ),
+    (
+        "ai.local_url",
+        "Local Ollama URL (loopback IP only; restart Aside)",
+    ),
+    (
+        "ai.local_model",
+        "Installed local Ollama model (empty disables; restart Aside)",
+    ),
+    (
+        "ai.claude_enabled",
+        "Enable hosted Claude CLI Q&A (true/false; restart Aside)",
+    ),
+    ("ai.claude_model", "Claude model (restart Aside)"),
+];
 
 impl Config {
     pub fn get(&self, key: &str) -> Result<String> {
         Ok(match key {
             "browser.auto_open" => self.browser.auto_open.to_string(),
+            "ai.local_url" => self.ai.local_url.clone(),
+            "ai.local_model" => self.ai.local_model.clone(),
+            "ai.claude_enabled" => self.ai.claude_enabled.to_string(),
+            "ai.claude_model" => self.ai.claude_model.clone(),
             _ => return Err(unknown_key(key)),
         })
     }
@@ -48,6 +89,10 @@ impl Config {
     pub fn set(&mut self, key: &str, value: &str) -> Result<()> {
         match key {
             "browser.auto_open" => self.browser.auto_open = parse_bool(key, value)?,
+            "ai.local_url" => self.ai.local_url = value.to_owned(),
+            "ai.local_model" => self.ai.local_model = value.to_owned(),
+            "ai.claude_enabled" => self.ai.claude_enabled = parse_bool(key, value)?,
+            "ai.claude_model" => self.ai.claude_model = value.to_owned(),
             _ => return Err(unknown_key(key)),
         }
         Ok(())
@@ -150,6 +195,27 @@ mod tests {
         let path = dir.path().join("config.toml");
         fs::write(&path, "[browser]\n").unwrap();
         assert!(load_from(&path).unwrap().browser.auto_open);
+    }
+
+    #[test]
+    fn ai_is_opt_in_and_round_trips_without_credentials() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut config = Config::default();
+        assert!(config.ai.local_model.is_empty());
+        assert!(!config.ai.claude_enabled);
+        config
+            .set("ai.local_url", "http://127.0.0.1:11434")
+            .unwrap();
+        config.set("ai.local_model", "local-test-model").unwrap();
+        config.set("ai.claude_enabled", "true").unwrap();
+        config.set("ai.claude_model", "sonnet").unwrap();
+        save_to(&path, &config).unwrap();
+        assert_eq!(load_from(&path).unwrap(), config);
+        assert_eq!(config.get("ai.local_model").unwrap(), "local-test-model");
+        assert_eq!(config.get("ai.claude_enabled").unwrap(), "true");
+        assert!(config.set("ai.api_key", "never-stored").is_err());
+        assert!(config.set("ai.claude_enabled", "maybe").is_err());
     }
 
     #[test]

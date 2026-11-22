@@ -3,6 +3,7 @@ mod config;
 mod demo;
 mod descriptor;
 mod diff;
+mod explain;
 mod github;
 mod history;
 mod model;
@@ -228,7 +229,9 @@ async fn start_session(
     }
     let ui_token = util::random_hex(32);
     let agent_token = util::random_hex(32);
-    let state = server::AppState::new(Arc::clone(&session), ui_token.clone(), agent_token.clone());
+    let mut state =
+        server::AppState::new(Arc::clone(&session), ui_token.clone(), agent_token.clone());
+    state.explanations = Arc::new(explain::Explanations::new(config::load()?.ai));
     let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0))).await?;
     let url = format!("http://{}/", listener.local_addr()?);
     let pr = session
