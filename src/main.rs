@@ -62,10 +62,19 @@ enum Command {
         #[command(flatten)]
         serve: ServeOpts,
     },
-    /// Set a global config value.
-    Set { key: String, value: String },
-    /// Show one config value, or all values.
-    Get { key: Option<String> },
+    /// Set a config value (analysis settings require --repo HOST/OWNER/REPO).
+    Set {
+        key: String,
+        value: String,
+        #[arg(long)]
+        repo: Option<String>,
+    },
+    /// Show global values, or repository analysis settings with --repo.
+    Get {
+        key: Option<String>,
+        #[arg(long)]
+        repo: Option<String>,
+    },
     /// Install the embedded Aside skill for coding agents.
     Skill {
         #[command(flatten)]
@@ -212,6 +221,7 @@ async fn start_session(
         Store::open_in_memory()?
     };
     let session = Session::new(snapshot, store, gh, pr_ref)?;
+    session.configure_analysis(config::path()?)?;
     if session.pr_ref.is_some() {
         let cache_root = store::default_path()?
             .parent()
@@ -301,18 +311,42 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
     let (snapshot, pr_ref, gh, opts) = match (cli.command, cli.pr_url) {
-        (Some(Command::Set { key, value }), _) => {
+        (Some(Command::Set { key, value, repo }), _) => {
             let mut cfg = config::load()?;
-            cfg.set(&key, &value)?;
+            cfg.set_scoped(&key, &value, repo.as_deref())?;
             config::save(&cfg)?;
-            eprintln!("{key} = {} ({})", cfg.get(&key)?, config::path()?.display());
+            eprintln!(
+                "{key} = {} ({})",
+                cfg.get_scoped(&key, repo.as_deref())?,
+                config::path()?.display()
+            );
+            if repo.is_some() {
+                eprintln!("Refresh an existing session to apply analysis changes.");
+            }
             return Ok(());
         }
-        (Some(Command::Get { key }), _) => {
+        (Some(Command::Get { key, repo }), _) => {
             let cfg = config::load()?;
-            match key {
-                Some(key) => println!("{}", cfg.get(&key)?),
-                None => {
+            match (key, repo.as_deref()) {
+                (Some(key), repo) => println!("{}", cfg.get_scoped(&key, repo)?),
+                (None, Some(repo)) => {
+                    eprintln!(
+                        "# {} — {}",
+                        config::path()?.display(),
+                        config::repository_key(repo)?
+                    );
+                    for key in config::ANALYSIS_KEYS {
+                        println!("{key} = {}", cfg.get_scoped(key, Some(repo))?);
+                    }
+                    eprintln!("# default preserves the engine's limit; refresh to apply changes.");
+                    eprintln!(
+                        "# Built-ins run locally. History fetch requires separate --fetch-analysis-context consent."
+                    );
+                    eprintln!(
+                        "# No model execution, hosted analysis, or optional external tools are enabled."
+                    );
+                }
+                (None, None) => {
                     eprintln!("# {}", config::path()?.display());
                     for (key, help) in config::KEYS {
                         println!("{key} = {}  # {help}", cfg.get(key)?);
