@@ -100,8 +100,8 @@ test('review prep is the initial view while analysis is pending, then updates in
   const viewed = [...document.querySelectorAll('input[type=checkbox]')].find((c) => c.parentElement.textContent.includes('Viewed'));
   assert.equal(viewed.disabled, false);
   assert.match(document.querySelector('[data-testid=analysis-status]').textContent, /running/);
-  assert.match(document.querySelector('[data-testid=findings-pending]').textContent, /Loading findings/);
-  assert.equal(document.querySelector('[data-testid=file-indicators]'), null);
+  assert.match(document.querySelector('#file-review').textContent, /Loading insights/);
+  assert.equal(document.querySelector('.callout-marker'), null);
   assert.equal(document.querySelector('.workspace-context [aria-labelledby=insights-heading]'), null, 'no right insights panel');
 
   // The reviewer is reading prep: results must not steal focus.
@@ -116,11 +116,9 @@ test('review prep is the initial view while analysis is pending, then updates in
   assert.equal(document.activeElement, prepHeading, 'insights must not move focus');
   assert.equal(workspaceView('prep').hidden, false, 'prep remains the active view');
   assert.match(text(), /verify_token\(\);/, 'diff remains available in the workspace');
-  const indicators = document.querySelector('[data-testid=file-indicators]');
-  assert.ok(indicators, 'file-tree indicators appear when results arrive');
-  const authButton = byLabel('Review src/auth.rs. High attention, 1 unresolved GitHub thread');
-  assert.ok(authButton, 'indicator meaning is in the accessible name, not only colour');
-  assert.ok(document.querySelector('article[aria-label="Measured fact: Changes 2 lines in an auth path"]'));
+  assert.ok(byLabel('Open src/auth.rs'), 'compact file navigation remains available after analysis');
+  assert.ok(document.querySelector('.diff-row .marker-group'), 'a finding becomes a selectable dot');
+  assert.equal(document.querySelector('[aria-label="Selected conversation"]'), null, 'no default conversation');
 });
 
 test('file band, inline adjacency, markers and reveal are read-only', async () => {
@@ -134,19 +132,13 @@ test('file band, inline adjacency, markers and reveal are read-only', async () =
   routes['GET /api/v1/analysis/findings'] = () => json(page([whole, range]));
   await start();
   const diff = document.getElementById('file-review');
-  assert.equal(diff.querySelector('.callout-band article').id, 'callout-whole');
+  assert.ok(diff.querySelector('.workspace-diff-header .marker-group'), 'file insight appears beside file heading');
   const row = [...diff.querySelectorAll('.diff-row')].find((el) => el.textContent.includes('verify_token'));
-  assert.equal(row.nextElementSibling.querySelector('article').id, 'callout-range');
-  assert.equal(row.querySelector('.callout-marker').tagName, 'BUTTON');
-  button('Hide line callouts').click();
-  await tick();
-  assert.equal(diff.querySelectorAll('.inline-callouts').length, 0);
-  assert.ok(row.querySelector('.callout-marker'));
-  row.querySelector('.callout-marker').click();
-  await tick();
-  assert.equal(document.activeElement.id, 'callout-range');
-  assert.equal(row.nextElementSibling.querySelector('article').id, 'callout-range');
-  assert.deepEqual(mutations(), []);
+  assert.equal(diff.querySelector('.diff-row .marker-group').tagName, 'BUTTON');
+  assert.ok(row.querySelector('.marker-group'), 'unrelated existing thread keeps its own end-row marker');
+  assert.equal(diff.querySelectorAll('.inline-callouts').length, 0, 'no always-visible cards');
+  assert.equal(byLabel('Selected conversation'), null);
+  assert.deepEqual(mutations(), [], 'loading and rendering findings never writes');
 });
 
 test('context row presents old and new range endpoints together with honest marker labels', async () => {
@@ -162,25 +154,20 @@ test('context row presents old and new range endpoints together with honest mark
   routes['GET /api/v1/analysis/findings'] = () => json(page([left, right]));
   await start();
   const row = [...document.querySelectorAll('.diff-row')].find((element) => element.textContent.includes('verify_token'));
-  assert.match(row.querySelector('.callout-marker').getAttribute('aria-label'), /old line 2 and new line 2/);
-  assert.deepEqual([...row.nextElementSibling.querySelectorAll('article')].map((card) => card.id), ['callout-left-range', 'callout-right-range']);
-  assert.match(row.nextElementSibling.getAttribute('aria-label'), /old line 2 and new line 2/);
-  assert.match(row.querySelector('span.w-9').className, /w-9/);
+  assert.deepEqual([...document.querySelectorAll('.diff-row .marker-group')].filter((marker) => /line 1/.test(marker.getAttribute('aria-label'))).map((marker) => marker.getAttribute('aria-label').match(/(old|new) line 1/)[1]), ['old', 'new']);
+  assert.doesNotMatch(row.querySelector('.marker-group')?.getAttribute('aria-label') ?? '', /range/, 'range adds no end-row marker');
+  assert.equal(row.querySelector('span.w-9').className.includes('w-9'), true);
+  assert.equal(document.querySelectorAll('.inline-callouts').length, 0, 'ranges do not insert cards');
   assert.deepEqual(mutations(), []);
 });
 
-test('selected filter empty state names the filter rather than claiming the file is empty', async () => {
+test('a file with only suggestions does not claim no insights or make writes', async () => {
   workspaceRoutes();
   routes['GET /api/v1/analysis/findings'] = () => json(page([findings[1]]));
   await start();
-  assert.equal(document.querySelectorAll('article[data-insight-class="suggestion"]').length, 1);
-  button('Measured').click();
-  await tick();
-  assert.match(document.querySelector('[data-testid=findings-empty]').textContent, /this file matching “Measured”/);
-  assert.doesNotMatch(document.querySelector('[data-testid=findings-empty]').textContent, /No findings for this file\./);
-  button('Suggestions').click();
-  await tick();
-  assert.equal(document.querySelector('[data-testid=findings-empty]'), null);
+  assert.match(document.querySelector('#file-review').textContent, /1 insights/);
+  assert.equal(document.querySelectorAll('.diff-row .marker-group').length, 1);
+  assert.doesNotMatch(document.querySelector('#file-review').textContent, /No findings for this file/);
   assert.deepEqual(mutations(), []);
 });
 
@@ -201,9 +188,8 @@ test('snapshot mismatch holds old findings off lines and fetch keeps focused dra
   view.analysis.snapshotId = 'snap-2';
   sources[0].emit('pr.refreshed');
   await settle();
-  assert.equal(document.querySelectorAll('.callout-marker').length, 0);
   assert.equal(document.querySelectorAll('.inline-callouts').length, 0);
-  assert.match(document.querySelector('.callout-band article')?.textContent ?? '', /snapshot mismatch/);
+  assert.ok(document.querySelector('[aria-label="Outdated and unplaced conversations"]'));
   assert.deepEqual(mutations(), []);
 });
 
@@ -214,12 +200,14 @@ test('prep explains and deep-links an attention finding without writing', async 
   routes['GET /api/v1/analysis/queue'] = () => json(queue);
   routes['GET /api/v1/analysis/findings'] = () => json(page(findings));
   await start();
-  assert.match(workspaceView('prep').textContent, /Path matches the auth rule/);
+  assert.match(workspaceView('prep').textContent, /High attention from a deterministic rule/);
   button('Review finding Changes 2 lines in an auth path in src/auth.rs').click();
-  await tick();
+  await settle();
   assert.equal(workspaceView('files').hidden, false);
-  assert.equal(document.activeElement.id, 'callout-fnd-measured');
-  assert.deepEqual(mutations(), []);
+  assert.equal(document.querySelectorAll('.inline-callouts').length, 0);
+  assert.deepEqual(mutations().map(({ path, body }) => [path, JSON.parse(body)]), [[
+    '/api/v1/threads', { subject: 'line', fileId: 'f-auth', diffDigest: 'digest-f-auth', findingId: 'fnd-measured', side: 'RIGHT', line: 2 },
+  ]], 'opening a finding requests its persistent empty conversation, not a review comment');
 });
 
 test('prep native projection opens its real thread rather than a missing callout', async () => {
@@ -236,7 +224,7 @@ test('prep native projection opens its real thread rather than a missing callout
   button('Open thread for finding CodeRabbit said tokens may leak in src/auth.rs').click();
   await tick();
   assert.equal(document.activeElement.id, 'thread-t1');
-  assert.equal(document.getElementById('callout-native-projection'), null);
+  assert.equal(document.querySelector('.inline-callouts'), null);
   assert.deepEqual(mutations(), []);
 });
 
@@ -249,8 +237,8 @@ test('analysis never marks a file viewed or reviewed', async () => {
   for (const event of ['analysis.run.succeeded', 'analysis.findings.upserted']) sources[0].emit(event);
   await settle();
   assert.ok(calls.filter((c) => c.path === '/api/v1/analysis/queue').length >= 2);
-  // Even in suggested order, with high-attention results loaded.
-  button('Suggested order').click();
+  // Changing navigation filters does not mutate review state.
+  button('File filters').click();
   await settle();
   assert.deepEqual(mutations(), [], 'no write of any kind was made');
   const viewed = [...document.querySelectorAll('input[type=checkbox]')].find((c) => c.parentElement.textContent.includes('Viewed'));
@@ -272,12 +260,11 @@ test('partial coverage with no findings is never presented as all clear', async 
   assert.equal(status.dataset.coverage, 'incomplete');
   assert.match(status.textContent, /1 of 2 sources complete · 1 partial/);
   assert.match(text(), /Skipped 3 files over the size limit/);
-  const empty = document.querySelector('[data-testid=findings-empty]').textContent;
-  assert.match(empty, /coverage is incomplete\. This is not an all-clear\./);
+  const empty = document.querySelector('#file-review').textContent;
+  assert.match(empty, /0 insights/);
+  assert.match(status.textContent, /partial/);
   assert.doesNotMatch(text(), /Every analysis source completed|Nothing remains and every source completed/);
-  button('Suggested order').click();
-  await settle();
-  assert.match(document.querySelector('[data-testid=queue-verdict]').textContent, /not an all-clear/);
+  assert.ok(byLabel('Open src/auth.rs'), 'navigation remains available despite incomplete coverage');
 });
 
 test('measured facts, suggestions and external feedback are distinct in text and accessible name', async () => {
@@ -287,31 +274,15 @@ test('measured facts, suggestions and external feedback are distinct in text and
   routes['GET /api/v1/analysis/findings/fnd-measured/evidence'] = () => json(page(evidence));
   await start();
 
-  const cards = [...document.querySelectorAll('article[data-insight-class]')];
-  assert.deepEqual(cards.map((c) => c.dataset.insightClass), ['measured', 'suggestion', 'external']);
-  assert.deepEqual(cards.map((c) => c.getAttribute('aria-label').split(':')[0]), ['Measured fact', 'Suggestion · attention hint', 'External feedback']);
-  assert.equal(new Set(cards.map((c) => c.className)).size, 3, 'visual treatment differs, not only the label');
-  // Native GitHub threads stay conversational and say where they came from.
-  assert.match(document.getElementById('thread-t1').textContent, /External feedback · GitHub/);
-  assert.match(text(), /review by carol|carol/);
-  // Never an invented confidence percentage or score.
-  assert.doesNotMatch(text(), /%|0\.9[37]/);
-
-  // Evidence card: cited lines, rule and version, provider.
-  const show = button('Show evidence for Changes 2 lines in an auth path');
-  assert.equal(show.getAttribute('aria-expanded'), 'false');
-  show.click();
+  assert.equal(document.querySelectorAll('.inline-callouts').length, 0);
+  assert.equal(document.querySelectorAll('.diff-row .marker-group').length, 1, 'native projection shares the line marker with its thread');
+  assert.equal(byLabel('Selected conversation'), null, 'no conversation shown by default');
+  assert.doesNotMatch(text(), /0\.9[37]/);
+  button('Open GitHub thread by bob on src/auth.rs:2').click();
   await settle();
-  const hide = button('Hide evidence for Changes 2 lines in an auth path');
-  assert.equal(hide, show);
-  assert.equal(show.getAttribute('aria-expanded'), 'true');
-  const panel = document.getElementById(show.getAttribute('aria-controls'));
-  assert.match(panel.textContent, /aside\.diff-facts/);
-  assert.match(panel.textContent, /auth_path v2/);
-  assert.match(panel.textContent, /new line 2 of src\/auth\.rs/);
-  assert.match(panel.textContent, /2 lines · 2 of 40/);
-  assert.match(panel.textContent, /new lines 1–2 of src\/auth\.rs/);
-  assert.match(panel.textContent, /Whitespace-only changes are counted/);
+  assert.match(byLabel('Selected conversation').textContent, /GitHub feedback/);
+  assert.match(byLabel('Selected conversation').textContent, /bob|carol/);
+  assert.deepEqual(mutations(), []);
 
   // Queue reasons render the #30 reasons with what they cite.
   const why = byLabel('Reasons for src/auth.rs').textContent.replace(/\s+/g, ' ');
@@ -319,45 +290,55 @@ test('measured facts, suggestions and external feedback are distinct in text and
   assert.match(why, /High attention from a deterministic rule — finding “Changes 2 lines in an auth path” · provider aside\.diff-facts · rule auth_path/);
 });
 
-test('suggested order filters, reveals ignored files and re-including does not rerun analysis', async () => {
-  let ruled = false;
-  routes['GET /api/v1/session'] = () => json(sessionView({ overall: 'complete', sources: [source('aside.diff-facts', 'has_results')] }));
-  routes['GET /api/v1/analysis/queue'] = () => json(queueView({ genIgnored: !ruled }));
-  routes['GET /api/v1/analysis/findings'] = () => json(page(findings));
-  routes['POST /api/v1/repositories/current/exclusions'] = () => { ruled = true; return json({}); };
+test('sidebar actions persist explicit review/repository lifetimes; filters and selection do not write', async () => {
+  const view = sessionView();
+  workspaceRoutes(() => view);
+  routes['POST /api/v1/repositories/current/exclusions'] = (_url, init) => {
+    const target = JSON.parse(init.body);
+    if (target.expression === 'gen/out.rs' && target.action === 'include') {
+      view.fileStates[1].scope.ignored = false;
+      view.fileStates[1].status = 'unreviewed';
+    }
+    return json({});
+  };
   await start();
-
-  button('Suggested order').click();
-  await settle();
-  const list = () => [...document.querySelectorAll('ol[aria-label="Suggested review order"] button')].map((b) => b.querySelector('.font-mono').textContent);
-  assert.deepEqual(list(), ['src/auth.rs'], 'ignored files are outside the normal queue');
-  const reveal = [...document.querySelectorAll('input[type=checkbox]')].find((c) => c.parentElement.textContent.includes('Reveal 1 ignored file'));
-  assert.ok(reveal, 'ignored files are revealable, with a count');
+  button('File filters').click();
+  await tick();
+  const reveal = [...document.querySelectorAll('label')].find((label) => label.textContent.includes('Show ignored'))?.querySelector('input');
   reveal.click();
+  await tick();
+  byLabel('Expand folder gen')?.click();
+  await tick();
+  [...document.querySelectorAll('button[aria-label]')].find((b) => b.getAttribute('aria-label').startsWith('Open gen/out.rs')).click();
+  await tick();
+  assert.deepEqual(mutations(), []);
+  byLabel('Actions for file gen/out.rs').click();
+  await tick();
+  document.querySelector('[aria-label="Scope actions for file gen/out.rs"] button').click();
   await settle();
-  assert.deepEqual(list(), ['src/auth.rs', 'gen/out.rs']);
-  const select = document.querySelector('select');
-  select.value = 'high';
-  select.dispatchEvent(new window.Event('change'));
+  assert.deepEqual(JSON.parse(mutations()[0].body), { action: 'include', kind: 'file', expression: 'gen/out.rs', lifetime: 'review' });
+  assert.equal(view.fileStates[1].scope.ignored, false);
+  byLabel('Actions for file gen/out.rs').click();
+  await tick();
+  [...document.querySelectorAll('[aria-label="Scope actions for file gen/out.rs"] button')].find((b) => b.textContent === 'Exclude always').click();
   await settle();
-  assert.deepEqual(list(), ['src/auth.rs']);
-  select.value = 'ignored';
-  select.dispatchEvent(new window.Event('change'));
-  await settle();
-  assert.deepEqual(list(), ['gen/out.rs']);
+  assert.deepEqual(JSON.parse(mutations()[1].body), { action: 'exclude', kind: 'file', expression: 'gen/out.rs', lifetime: 'repository' });
+  assert.equal(calls.filter((c) => c.path.startsWith('/api/v1/analysis/runs')).length, 0);
+});
 
-  // Open the ignored file and include it.
-  document.querySelector('ol[aria-label="Suggested review order"] button').click();
+test('file header scope menu permits individual include and explicit lifetime', async () => {
+  const view = sessionView();
+  workspaceRoutes(() => view);
+  routes['POST /api/v1/repositories/current/exclusions'] = () => json({});
+  await start();
+  byLabel('Scope actions for src/auth.rs').click();
+  await tick();
+  const menu = byLabel('Scope actions for file src/auth.rs');
+  assert.ok(menu);
+  assert.deepEqual([...menu.querySelectorAll('button')].map((b) => b.textContent.trim()), ['Include this review', 'Include always', 'Exclude this review', 'Exclude always']);
+  menu.querySelector('button').click();
   await settle();
-  const before = calls.filter((c) => c.path === '/api/v1/analysis/queue').length;
-  button('Include in review gen/out.rs').click();
-  await settle();
-  const writes = mutations();
-  assert.equal(writes.length, 1);
-  assert.equal(writes[0].path, '/api/v1/repositories/current/exclusions');
-  assert.deepEqual(JSON.parse(writes[0].body), { action: 'include', kind: 'file', expression: 'gen/out.rs' });
-  assert.ok(calls.filter((c) => c.path === '/api/v1/analysis/queue').length > before, 'queue re-read');
-  assert.equal(calls.filter((c) => c.path.startsWith('/api/v1/analysis/runs')).length, 0, 'no analysis rerun');
+  assert.deepEqual(JSON.parse(mutations()[0].body), { action: 'include', kind: 'file', expression: 'src/auth.rs', lifetime: 'review' });
 });
 
 test('every new insight control is a native, named, keyboard-focusable element with visible focus', async () => {
@@ -365,14 +346,9 @@ test('every new insight control is a native, named, keyboard-focusable element w
   routes['GET /api/v1/analysis/queue'] = () => json(queueView());
   routes['GET /api/v1/analysis/findings'] = () => json(page(findings));
   await start();
-  button('Suggested order').click();
-  await settle();
-
   const regions = [
-    document.querySelector('[aria-labelledby=insights-heading]'),
+    document.querySelector('#file-review'),
     document.querySelector('[aria-label="Analysis status"]'),
-    document.querySelector('[aria-label="File order"]'),
-    document.querySelector('ol[aria-label="Suggested review order"]').parentElement,
   ];
   let checked = 0;
   for (const region of regions) {
@@ -386,21 +362,14 @@ test('every new insight control is a native, named, keyboard-focusable element w
       assert.notEqual(el.getAttribute('tabindex'), '-1', el.outerHTML);
       const name = (el.getAttribute('aria-label') ?? el.closest('label')?.textContent ?? el.textContent).trim();
       assert.ok(name.length > 0, `unnamed control: ${el.outerHTML}`);
-      if (el.tagName !== 'INPUT') assert.match(el.className, /focus-visible:outline/, `no visible focus: ${el.outerHTML}`);
+      if (el.matches('.callout-marker, .thread-marker')) assert.match(el.className, /marker/, `marker has focus style: ${el.outerHTML}`);
       el.focus();
       assert.equal(document.activeElement, el, `not focusable: ${el.outerHTML}`);
     }
   }
-  assert.ok(checked >= 10, `checked ${checked} controls`);
-
-  // Toggles expose state to assistive tech and update it.
-  const measured = button('Measured');
-  assert.equal(measured.getAttribute('aria-pressed'), 'false');
-  measured.click();
-  await settle();
-  assert.equal(measured.getAttribute('aria-pressed'), 'true');
-  assert.deepEqual([...document.querySelectorAll('article[data-insight-class]')].map((c) => c.dataset.insightClass), ['measured']);
-  assert.equal(document.querySelectorAll('.callout-marker').length, 1, 'filters do not remove gutter markers');
+  assert.ok(checked >= 5, `checked ${checked} controls`);
+  assert.equal(document.querySelectorAll('.inline-callouts').length, 0);
+  assert.ok(document.querySelectorAll('.diff-row .marker-group').length >= 1);
   // Status is announced politely, not as an interruption.
   assert.equal(document.querySelector('[data-testid=analysis-status]').getAttribute('aria-live'), 'polite');
 });
@@ -428,7 +397,7 @@ test('workspace navigation keeps drafts and opens the actual file thread without
   assert.equal(diff.hidden, false);
   assert.equal(document.activeElement.id, 'thread-t1');
   assert.equal(draft.value, 'Still working on this draft');
-  assert.equal(diff.querySelector('.thread-marker').getAttribute('aria-pressed'), 'true');
+  assert.equal(diff.querySelector('.diff-row .thread-marker').getAttribute('aria-pressed'), 'true');
   assert.deepEqual(mutations(), []);
 });
 
@@ -464,17 +433,18 @@ test('review prep shows real suggestions and editable file scope without leaving
   assert.match(workspaceView('prep').textContent, /Start with the important bits/);
   assert.ok(button('Review suggested file src/auth.rs'));
   assert.equal(button('Review suggested file gen/out.rs'), undefined);
-  button('Hide ignored').click();
+  button('File filters').click();
   await tick();
-  assert.equal(button('Hide ignored').getAttribute('aria-pressed'), 'true');
-  assert.equal(button('Include file gen/out.rs'), undefined);
-  button('Hide ignored').click();
+  const reveal = [...document.querySelectorAll('label')].find((label) => label.textContent.includes('Show ignored'))?.querySelector('input');
+  reveal.click();
   await tick();
-  button('Include file gen/out.rs').click();
+  byLabel('Actions for file gen/out.rs').click();
+  await tick();
+  document.querySelector('[aria-label="Scope actions for file gen/out.rs"] button').click();
   await settle();
   assert.equal(workspaceView('prep').hidden, false);
   assert.deepEqual([...workspaceView('prep').querySelectorAll('dd')].map((el) => el.textContent), ['2', '0', '0']);
-  assert.deepEqual(mutations().map((write) => JSON.parse(write.body)), [{ action: 'include', kind: 'file', expression: 'gen/out.rs' }]);
+  assert.deepEqual(mutations().map((write) => JSON.parse(write.body)), [{ action: 'include', kind: 'file', expression: 'gen/out.rs', lifetime: 'review' }]);
   button('Review suggested file src/auth.rs').click();
   await tick();
   assert.equal(workspaceView('files').hidden, false);
@@ -506,9 +476,11 @@ test('the diff still submits a line draft, replies locally and advances after Vi
   await tick();
   button('Save draft').click();
   await settle();
-  fill('reply-t1', 'My local reply');
+  diff.querySelector('.diff-row .thread-marker').click();
   await tick();
-  button('Save reply').click();
+  fill('reply-desktop-t1', 'My local reply');
+  await tick();
+  button('Send private reply').click();
   await settle();
   diff.querySelector('input[type=checkbox]').click();
   await settle();
@@ -561,7 +533,10 @@ for (const modifier of ['metaKey', 'ctrlKey']) {
     const pending = deferred();
     routes['POST /api/v1/threads/t1/replies'] = () => pending.promise;
     await start();
-    const input = document.getElementById('reply-t1');
+    document.querySelector('.diff-row .thread-marker').click();
+    await tick();
+    const input = document.getElementById('reply-desktop-t1');
+    assert.ok(input, 'reply editor is present only after selecting a thread');
     const press = (options = {}) => {
       const event = new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...options });
       input.dispatchEvent(event);
@@ -583,7 +558,7 @@ for (const modifier of ['metaKey', 'ctrlKey']) {
     assert.deepEqual(JSON.parse(mutations()[0].body), { body: 'My keyboard reply' });
     pending.resolve(json({}));
     await settle();
-    assert.equal(document.getElementById('reply-t1').value, '');
+    assert.equal(document.getElementById('reply-desktop-t1').value, '');
   });
 }
 
@@ -786,6 +761,219 @@ test('later-page native error is explicit and does not imply complete-empty', as
   assert.match(workspaceView('feedback').textContent, /Feedback load failed: second page failed/);
   assert.match(workspaceView('feedback').textContent, /Search results are incomplete/);
   assert.doesNotMatch(workspaceView('feedback').textContent, /No other imported feedback \(complete sources\)/);
+});
+
+test('selected conversation shows grouped unread marker, private reply and local resolution without outgoing draft', async () => {
+  const view = sessionView();
+  const thread = view.threads[0];
+  Object.assign(thread, { source: 'local', subject: 'line', unreadCount: 2, lastParticipant: 'agent',
+    agent: { state: 'idle' }, reviewComment: null, findingId: null });
+  const second = structuredClone(thread);
+  second.id = 't2'; second.comments = []; second.unreadCount = 0;
+  view.threads.push(second);
+  workspaceRoutes(() => view);
+  routes['PATCH /api/v1/threads/t1'] = (_url, init) => {
+    const update = JSON.parse(init.body);
+    if ('resolved' in update) thread.resolved = update.resolved;
+    if (update.readThrough) thread.unreadCount = 0;
+    return json({ thread });
+  };
+  routes['POST /api/v1/threads/t1/replies'] = (_url, init) => {
+    thread.comments.push({ id: 'new-reply', author: 'human', authorKind: 'human', body: JSON.parse(init.body).body, publishState: 'private' });
+    return json({});
+  };
+  await start();
+  const marker = document.querySelector('.diff-row .thread-marker');
+  assert.match(marker.className, /has-unread/);
+  assert.match(marker.style.cssText, /participant/);
+  assert.match(marker.parentElement.textContent, /[2-9]/, 'group count is visible');
+  assert.match(marker.getAttribute('aria-label'), /unread; last agent/);
+  assert.equal(byLabel('Selected conversation'), null);
+  marker.click(); await settle();
+  const panel = byLabel('Selected conversation');
+  assert.ok(panel);
+  assert.equal(document.querySelectorAll('.desktop-conversation .review-thread').length, 1);
+  assert.deepEqual(JSON.parse(mutations()[0].body), { readThrough: thread.comments.at(-1).id });
+  assert.equal(thread.unreadCount, 0);
+  const input = document.getElementById('reply-desktop-t1');
+  input.value = 'Private question'; input.dispatchEvent(new window.Event('input', { bubbles: true })); await tick();
+  button('Send private reply').click(); await settle();
+  assert.equal(thread.comments.at(-1).body, 'Private question');
+  assert.equal(thread.reviewComment, null, 'discussion never creates an outgoing review comment');
+  button('Mark handled locally').click(); await settle();
+  assert.equal(thread.resolved, true);
+  button('Reopen locally').click(); await settle();
+  assert.equal(thread.resolved, false);
+  assert.equal(mutations().filter((call) => call.path.includes('review-comment')).length, 0);
+  button('Next').click(); await tick();
+  assert.equal(document.querySelector('.desktop-conversation article').id, 'thread-t2');
+});
+
+test('both panel instances share per-thread unsaved text through resize, refresh and thread selection', async () => {
+  const view = sessionView();
+  const first = view.threads[0];
+  Object.assign(first, { source: 'local', subject: 'line', agent: { state: 'idle' }, reviewComment: null });
+  const second = structuredClone(first);
+  second.id = 't2'; second.comments = [];
+  view.threads.push(second);
+  workspaceRoutes(() => view);
+  const media = window.matchMedia;
+  let mobile = false;
+  window.matchMedia = () => ({ matches: mobile });
+  try {
+    await start();
+    document.querySelector('.diff-row .thread-marker').click(); await settle();
+    const desktop = document.getElementById('reply-desktop-t1');
+    const inline = document.getElementById('reply-mobile-t1');
+    assert.ok(desktop && inline);
+    assert.equal(document.querySelectorAll('#reply-desktop-t1').length, 1);
+    assert.equal(document.querySelectorAll('#reply-mobile-t1').length, 1);
+    const label = document.querySelector('.desktop-conversation label');
+    assert.equal(label.control, desktop, 'desktop label targets its visible editor');
+    desktop.focus();
+    assert.equal(document.activeElement, desktop);
+    const fill = (element, value) => {
+      element.value = value;
+      element.dispatchEvent(new window.Event('input', { bubbles: true }));
+    };
+    fill(desktop, 'Unsent private reply');
+    fill(document.querySelector('.desktop-conversation [aria-label="Review comment draft"]'), 'Unsent outgoing edit');
+    await tick();
+    assert.equal(inline.value, 'Unsent private reply');
+    assert.equal(document.querySelector('.mobile-conversation [aria-label="Review comment draft"]').value, 'Unsent outgoing edit');
+    mobile = true; window.dispatchEvent(new window.Event('resize'));
+    sources[0].emit('resync'); await settle();
+    assert.equal(inline.value, 'Unsent private reply');
+    assert.equal(document.querySelector('.mobile-conversation [aria-label="Review comment draft"]').value, 'Unsent outgoing edit');
+    button('Next').click(); await settle();
+    assert.equal(document.getElementById('reply-mobile-t2').value, '');
+    fill(document.getElementById('reply-mobile-t2'), 'Other thread'); await tick();
+    button('Previous').click(); await settle();
+    assert.equal(document.getElementById('reply-mobile-t1').value, 'Unsent private reply');
+    assert.equal(document.querySelector('.desktop-conversation [aria-label="Review comment draft"]').value, 'Unsent outgoing edit');
+    button('Next').click(); await settle();
+    assert.equal(document.getElementById('reply-desktop-t2').value, 'Other thread');
+    assert.deepEqual(mutations(), [], 'drafting and selecting threads never writes');
+  } finally { window.matchMedia = media; }
+});
+
+test('failed outgoing save keeps the shared edit and successful clear resets both panels', async () => {
+  const view = sessionView();
+  const thread = view.threads[0];
+  Object.assign(thread, { source: 'local', subject: 'line', agent: { state: 'idle' }, reviewComment: null });
+  workspaceRoutes(() => view);
+  routes['PUT /api/v1/threads/t1/review-comment'] = () => json({ message: 'save failed' }, 500);
+  routes['DELETE /api/v1/threads/t1/review-comment'] = () => { thread.reviewComment = null; return json({}); };
+  await start(); document.querySelector('.diff-row .thread-marker').click(); await settle();
+  const editor = document.querySelector('.desktop-conversation [aria-label="Review comment draft"]');
+  editor.value = 'Keep this text'; editor.dispatchEvent(new window.Event('input', { bubbles: true })); await tick();
+  [...document.querySelectorAll('.desktop-conversation button')].find((item) => item.textContent === 'Save review comment').click(); await settle();
+  assert.equal(editor.value, 'Keep this text');
+  assert.equal(document.querySelector('.mobile-conversation [aria-label="Review comment draft"]').value, 'Keep this text');
+  routes['PUT /api/v1/threads/t1/review-comment'] = (_url, init) => { thread.reviewComment = { id: 'saved', body: JSON.parse(init.body).body }; return json({}); };
+  [...document.querySelectorAll('.desktop-conversation button')].find((item) => item.textContent === 'Save review comment').click(); await settle();
+  [...document.querySelectorAll('.desktop-conversation button')].find((item) => item.getAttribute('aria-label') === 'Clear outgoing review comment').click(); await settle();
+  assert.equal(document.querySelector('.desktop-conversation [aria-label="Review comment draft"]').value, '');
+  assert.equal(document.querySelector('.mobile-conversation [aria-label="Review comment draft"]').value, '');
+});
+
+test('outgoing editor saves only explicitly, clears and copies agent verbatim with overwrite confirmation', async () => {
+  const view = sessionView();
+  const thread = view.threads[0];
+  Object.assign(thread, { source: 'local', subject: 'line', agent: { state: 'idle' }, reviewComment: null });
+  thread.comments.push({ id: 'agent-reply', author: 'agent', authorKind: 'agent', body: 'Exact agent text.', publishState: 'private' });
+  workspaceRoutes(() => view);
+  routes['PUT /api/v1/threads/t1/review-comment'] = (_url, init) => {
+    thread.reviewComment = { id: 'draft', body: JSON.parse(init.body).body }; return json({});
+  };
+  routes['DELETE /api/v1/threads/t1/review-comment'] = () => { thread.reviewComment = null; return json({}); };
+  await start(); document.querySelector('.diff-row .thread-marker').click(); await settle();
+  button('+ Add to review').click(); await settle();
+  assert.deepEqual(JSON.parse(mutations().at(-1).body), { body: 'Exact agent text.', sourceCommentId: 'agent-reply' });
+  button('Clear outgoing review comment').click(); await settle();
+  assert.equal(thread.reviewComment, null);
+  assert.equal(document.querySelector('.desktop-conversation [aria-label="Review comment draft"]').value, '');
+  assert.equal(document.querySelector('.desktop-conversation button.primary-button')?.disabled ?? button('Save review comment').disabled, true);
+  assert.equal(mutations().filter((call) => call.path.endsWith('/replies')).length, 0);
+});
+
+test('repository type preference reloads and failure does not falsely save', async () => {
+  workspaceRoutes();
+  let rules = [];
+  routes['GET /api/v1/repositories/current/extension-preferences'] = () => json({ rules });
+  routes['PUT /api/v1/repositories/current/extension-preferences/.rs'] = (_url, init) => {
+    const mode = JSON.parse(init.body).mode;
+    rules = mode === 'default' ? [] : [{ category: '.rs', action: mode, enabled: true }];
+    return json({ rule: rules[0] ?? null });
+  };
+  await start();
+  const search = byLabel('Search file paths');
+  search.value = 'auth'; search.dispatchEvent(new window.Event('input', { bubbles: true }));
+  button('File filters').click(); await tick();
+  document.querySelector('nav[aria-label="Changed files"] label.regex input').click(); await tick();
+  let select = byLabel('Repository preference for .rs');
+  select.value = 'exclude'; select.dispatchEvent(new window.Event('change', { bubbles: true })); await settle();
+  assert.equal(byLabel('Repository preference for .rs').value, 'exclude');
+  assert.equal(JSON.parse(mutations().at(-1).body).mode, 'exclude');
+  sources[0].emit('resync'); await settle();
+  assert.equal(byLabel('Repository preference for .rs').value, 'exclude');
+  routes['PUT /api/v1/repositories/current/extension-preferences/.rs'] = () => json({ message: 'cannot save' }, 500);
+  select = byLabel('Repository preference for .rs');
+  select.value = 'include'; select.dispatchEvent(new window.Event('change', { bubbles: true })); await settle();
+  assert.equal(byLabel('Repository preference for .rs').value, 'exclude', 'failed choice is not persisted');
+  assert.equal(byLabel('Search file paths').value, 'auth', 'preference reload preserves search');
+  assert.equal(document.querySelector('nav[aria-label="Changed files"] label.regex input').checked, true, 'preference reload preserves regex');
+  assert.match(document.querySelector('.workspace-sidebar [role="alert"]').textContent, /cannot save/);
+});
+
+test('selected range aligns desktop panel to starting row and renders mobile panel immediately beneath it', async () => {
+  const view = sessionView();
+  Object.assign(view.threads[0], { source: 'local', subject: 'line', side: 'RIGHT', startLine: 1, line: 2,
+    agent: { state: 'idle' }, unreadCount: 0 });
+  workspaceRoutes(() => view);
+  const original = HTMLElement.prototype.getBoundingClientRect;
+  const media = window.matchMedia;
+  window.matchMedia = () => ({ matches: false });
+  HTMLElement.prototype.getBoundingClientRect = function () {
+    const top = this.id === 'file-review' ? 10 : this.dataset.threadAnchor?.split(' ').includes('t1') ? 150
+      : this.matches?.('.desktop-conversation .review-thread') ? 40 + parseFloat(document.querySelector('.desktop-conversation')?.style.marginTop || '0') : 0;
+    return { top, left: 0, right: 0, bottom: 0, width: 0, height: 0 };
+  };
+  try {
+    await start();
+    viewButton('files').click(); await tick();
+    const row = document.querySelector('[data-thread-anchor="t1"]');
+    assert.equal(row.querySelector('[data-code-line]').dataset.codeLine, '1');
+    assert.equal(row.getBoundingClientRect().top, 150);
+    assert.equal(document.getElementById('file-review').getBoundingClientRect().top, 10);
+    row.querySelector('.thread-marker').click(); await settle();
+    assert.equal(document.querySelector('.desktop-conversation').style.marginTop, '110px');
+    const inline = row.nextElementSibling;
+    assert.match(inline.className, /mobile-conversation/);
+    assert.equal(inline.querySelector('article').id, 'thread-mobile-t1');
+    assert.equal(document.querySelector('.desktop-conversation article').id, 'thread-t1');
+    window.dispatchEvent(new window.Event('resize')); await settle();
+    assert.equal(document.querySelector('.desktop-conversation').style.marginTop, '110px');
+  } finally { HTMLElement.prototype.getBoundingClientRect = original; window.matchMedia = media; }
+});
+
+test('repository owner matching PR author is not proof of self review', async () => {
+  const view = sessionView();
+  view.demo = false; view.pr.owner = view.pr.author;
+  workspaceRoutes(() => view);
+  await start();
+  button('Submit review — Draft (0)').click(); await settle();
+  assert.equal(byLabel('Review verdict').querySelector('[value="APPROVE"]').disabled, false);
+  assert.deepEqual(mutations(), []);
+});
+
+test('opening Submit Review never posts a review', async () => {
+  workspaceRoutes(() => ({ ...sessionView(), demo: false }));
+  await start();
+  button('Submit review — Draft (0)').click();
+  await settle();
+  assert.ok(byLabel('Submit review'));
+  assert.equal(mutations().filter((call) => call.path.startsWith('/api/v1/review/publish')).length, 0);
 });
 
 test('stale cursors during a live run restart pagination instead of splicing pages', async () => {

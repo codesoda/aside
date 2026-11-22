@@ -44,9 +44,9 @@ test('only current active attention entries display in server order and deep-lin
   first.findings = [entry('fnd-hint'), entry('fnd-measured'), ...extras.map((f) => entry(f.finding.id)), entry('fnd-external', 'dismissed_local'), entry('missing'), entry('historical', 'untouched', 'high', false)];
   const opened = render({ queue, findings: [...findings, ...extras] });
   assert.match(text(), /Consider checking token reuse/);
-  assert.match(text(), /Suggestion · attention hint/);
-  assert.match(text(), /line 2 of src\/auth.rs · aside.diff-facts/);
-  assert.match(text(), /Path matches the auth rule/);
+  assert.match(text(), /L2 — Consider checking token reuse/);
+  assert.match(text(), /L2 — Changes 2 lines in an auth path/);
+  assert.match(text(), /High attention from a deterministic rule/);
   assert.match(text(), /\+2 more/);
   assert.doesNotMatch(text(), /CodeRabbit said tokens may leak/);
   assert.doesNotMatch(text(), /Extra 1/);

@@ -93,6 +93,9 @@ pub(super) async fn guard(
         )
         .into_response();
     }
+    if actor == Actor::Agent {
+        state.seen_agent();
+    }
     request.extensions_mut().insert(actor);
     let response = next.run(request).await;
     if response.status().is_client_error()

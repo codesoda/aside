@@ -2,7 +2,7 @@
   import type { FindingItem, QueueView, SessionView } from '../api';
   import type { ReviewFinding } from '../generated/ReviewFinding';
   import type { ReviewThread } from '../generated/ReviewThread';
-  import { citedLines, describeReason, emptyFindingsMessage, isThreadProjection, presentAssertion, providerText, verdictMessage } from '../insights';
+  import { describeReason, emptyFindingsMessage, isThreadProjection, verdictMessage } from '../insights';
   import AnalysisStatus from '../insights/AnalysisStatus.svelte';
 
   let { session, queue, findings = null, threads = [], insightsError, onOpenFile, onOpenThread, onStart }: {
@@ -52,9 +52,7 @@
             <div class="min-w-0">
               <button type="button" class="wrap-anywhere font-mono font-semibold text-left hover:underline focus-visible:outline-2 focus-visible:outline-accent" aria-label={`Review suggested file ${item.path}`} onclick={() => onOpenFile(item.fileId)}>{item.path}</button>
               <ul class="preview-description list-disc pl-4" aria-label={`Reasons for ${item.path}`}>
-                {#each reasons as reason, i (i)}
-                  <li>{reason.text}{#if reason.cites.length}{` — ${reason.cites.join(' · ')}`}{/if}</li>
-                {/each}
+                {#each reasons as reason, i (i)}<li>{reason.text}{#if reason.cites.length}{` — ${reason.cites.join(' · ')}`}{/if}</li>{/each}
               </ul>
               {#if findings === null}
                 <p class="preview-description">{insightsError ? 'Findings unavailable.' : 'Loading findings…'}</p>
@@ -62,20 +60,16 @@
                 <ul class="mt-2 space-y-1" aria-label={`Attention findings for ${item.path}`}>
                   {#each attention.slice(0, 3) as entry (entry.id)}
                     {@const finding = byId.get(entry.id)!}
-                    {@const assertion = presentAssertion(finding.assertionKind, finding.validation.status)}
                     {@const projection = isThreadProjection(finding, threads) ? threads.find((thread) => thread.githubThreadId === finding.anchor.githubThreadId) : undefined}
                     <li>
                       {#if !projection || onOpenThread}
                         <button type="button" class="text-left hover:underline focus-visible:outline-2 focus-visible:outline-accent"
                           onclick={() => projection ? onOpenThread?.(item.fileId, projection.id) : onOpenFile(item.fileId, entry.id)}
                           aria-label={projection ? `Open thread for finding ${finding.title} in ${item.path}` : `Review finding ${finding.title} in ${item.path}`}>
-                          <span class="font-semibold">{finding.title}</span>
-                          <span class="block text-xs">{assertion.label} · {citedLines(finding)} · {providerText(finding)}</span>
-                          {#if finding.rationale}<span class="block text-xs text-muted">{finding.rationale}</span>{/if}
+                          <span class="font-semibold">{finding.anchor.line === null ? 'File' : finding.anchor.startLine && finding.anchor.startLine !== finding.anchor.line ? `L${finding.anchor.startLine}–${finding.anchor.line}` : `L${finding.anchor.line}`}</span> — {finding.title}
                         </button>
                       {:else}
-                        <span class="font-semibold">{finding.title}</span>
-                        <span class="block text-xs">{assertion.label} · {citedLines(finding)} · {providerText(finding)} · Native thread</span>
+                        <span class="font-semibold">{finding.anchor.line === null ? 'File' : `L${finding.anchor.startLine ?? finding.anchor.line}`}</span> — {finding.title} · Native thread
                       {/if}
                     </li>
                   {/each}

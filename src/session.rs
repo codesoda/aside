@@ -216,9 +216,10 @@ impl Session {
             (snapshot.clone(), context.clone())
         };
         let store = self.store.lock().expect("store lock poisoned");
-        let rules = store.list_rules(&self.repository.id)?;
+        let rules = store.effective_rules(&self.repository.id, &self.pr_id)?;
         let mut threads = store.list_threads(&self.pr_id)?;
         attach_files(&mut threads, &snapshot.files);
+        crate::publish::attach_draft_targets(&snapshot, &mut threads)?;
         let file_states = self.file_states(&store, &snapshot, &rules)?;
         let progress = progress(&file_states);
         let analysis = self.analysis_summary(&store, &snapshot, &rules)?;
@@ -228,6 +229,7 @@ impl Session {
             demo: self.demo,
             sequence: self.sequence.load(Ordering::SeqCst),
             actor,
+            agent_presence: crate::model::AgentPresence::default(),
             repository: self.repository.clone(),
             pr: snapshot.pr,
             files: snapshot.files,
@@ -291,7 +293,7 @@ impl Session {
             .clone();
         let store = self.store.lock().expect("store lock poisoned");
         let sequence = self.sequence.load(Ordering::SeqCst);
-        let rules = store.list_rules(&self.repository.id)?;
+        let rules = store.effective_rules(&self.repository.id, &self.pr_id)?;
         let summary = self.analysis_summary(&store, &snapshot, &rules)?;
         let mut threads = store.list_threads(&self.pr_id)?;
         attach_files(&mut threads, &snapshot.files);
@@ -1478,6 +1480,8 @@ mod tests {
                 &session.pr_id,
                 &NewThread {
                     id: "anchor".into(),
+                    subject: crate::model::ThreadSubject::Line,
+                    finding_id: None,
                     source: ThreadSource::Local,
                     github_thread_id: None,
                     path: file.path.clone(),
@@ -1541,6 +1545,8 @@ mod tests {
                 &session.pr_id,
                 &NewThread {
                     id: "missing".into(),
+                    subject: crate::model::ThreadSubject::Line,
+                    finding_id: None,
                     source: ThreadSource::Local,
                     github_thread_id: None,
                     path: "git/client.go".into(),

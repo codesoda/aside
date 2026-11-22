@@ -1,7 +1,10 @@
 use anyhow::Result;
 use rusqlite::{OptionalExtension, Row, params};
 
-use crate::model::{Actor, AnchorState, Comment, PublishState, ReviewThread, Side, ThreadSource};
+use crate::model::{
+    Actor, AgentRequest, AgentState, AnchorState, Comment, PublishState, ReviewThread, Side,
+    ThreadSource, ThreadSubject,
+};
 use crate::util::{new_id, now_rfc3339};
 
 use super::{NotFound, ReservedDraft, Store};
@@ -22,6 +25,8 @@ pub struct NewThread {
     pub anchor_reason: Option<String>,
     pub resolved: bool,
     pub created_at: Option<String>,
+    pub subject: ThreadSubject,
+    pub finding_id: Option<String>,
 }
 
 impl Store {
@@ -29,27 +34,30 @@ impl Store {
         let now = now_rfc3339();
         self.conn.execute(
             "INSERT INTO review_threads (id, pr_id, source, github_thread_id, path, side, line, start_line, line_text,
-                diff_digest, head_sha, anchor_state, anchor_reason, resolved, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15)",
+                diff_digest, head_sha, anchor_state, anchor_reason, resolved, created_at, updated_at, subject, finding_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15, ?16, ?17)",
             params![
                 t.id, pr_id, source_str(t.source), t.github_thread_id, t.path, t.side.as_str(), t.line, t.start_line,
                 t.line_text, t.diff_digest, t.head_sha, t.anchor_state.as_str(), t.anchor_reason, t.resolved,
-                t.created_at.as_deref().unwrap_or(&now)
+                t.created_at.as_deref().unwrap_or(&now), t.subject.as_str(), t.finding_id
             ],
         )?;
         Ok(())
     }
 
     pub fn insert_comment(&mut self, c: &Comment, github_node_id: Option<&str>) -> Result<()> {
-        self.conn.execute(
+        let tx = self.conn.transaction()?;
+        let seq: i64 = tx.query_row("UPDATE review_threads SET last_comment_seq = last_comment_seq + 1 WHERE id = ?1 RETURNING last_comment_seq", [&c.thread_id], |r| r.get(0))?;
+        tx.execute(
             "INSERT INTO review_comments (id, thread_id, author_kind, author, body, publish_state, github_comment_id,
                 github_node_id, created_at, updated_at, seq)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, (SELECT COALESCE(MAX(seq), 0) + 1 FROM review_comments))",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 c.id, c.thread_id, c.author_kind.as_str(), c.author, c.body, c.publish_state.as_str(),
-                c.github_comment_id, github_node_id, c.created_at, c.updated_at
+                c.github_comment_id, github_node_id, c.created_at, c.updated_at, seq
             ],
         )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -160,13 +168,24 @@ impl Store {
                             unavailable(&c.unavailable_fields, "updatedAt"), c.updated_at, id,
                             c.author_id, c.author_type],
                     )?;
+                    // A confirmed database ID links a published local comment to
+                    // the native node without replacing its local author/body.
+                    if let Some(database_id) = c.database_id {
+                        tx.execute(
+                            "UPDATE review_comments SET github_node_id = CASE WHEN ?1 = '' THEN github_node_id ELSE ?1 END,
+                             in_reply_to_id = COALESCE(?2, in_reply_to_id)
+                             WHERE id = ?3 AND publish_state = 'published' AND github_comment_id = ?4",
+                            params![c.node_id, c.in_reply_to_id, id, database_id],
+                        )?;
+                    }
                     continue;
                 }
+                let seq: i64 = tx.query_row("UPDATE review_threads SET last_comment_seq = last_comment_seq + 1 WHERE id = ?1 RETURNING last_comment_seq", [&thread_id], |r| r.get(0))?;
                 tx.execute(
                     "INSERT INTO review_comments (id, thread_id, author_kind, author, body, publish_state, github_comment_id,
                         github_node_id, created_at, updated_at, seq, author_node_id, author_type, github_updated_at, in_reply_to_id)
                      VALUES (?1, ?2, 'github', ?3, ?4, 'imported', ?5, ?6, ?7, COALESCE(?8, ?7),
-                        (SELECT COALESCE(MAX(seq), 0) + 1 FROM review_comments), ?9, ?10, ?8, ?14)
+                        ?15, ?9, ?10, ?8, ?14)
                      ON CONFLICT(github_node_id) DO UPDATE SET
                         body = CASE WHEN ?11 THEN review_comments.body ELSE excluded.body END,
                         updated_at = CASE WHEN ?12 THEN review_comments.updated_at ELSE excluded.updated_at END,
@@ -177,7 +196,7 @@ impl Store {
                     params![new_id("cmt"), thread_id, c.author, c.body, c.database_id, c.node_id, c.created_at,
                         c.updated_at, c.author_id, c.author_type,
                         unavailable(&c.unavailable_fields, "body"), unavailable(&c.unavailable_fields, "updatedAt"),
-                        unavailable(&c.unavailable_fields, "author"), c.in_reply_to_id],
+                        unavailable(&c.unavailable_fields, "author"), c.in_reply_to_id, seq],
                 )?;
             }
         }
@@ -211,7 +230,9 @@ impl Store {
     pub fn list_threads(&self, pr_id: &str) -> Result<Vec<ReviewThread>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, source, github_thread_id, path, side, line, start_line, line_text, anchor_state, anchor_reason,
-                    resolved, head_sha, created_at
+                    resolved, head_sha, created_at, subject, finding_id, linked_thread_id, agent_state, agent_request_comment_id, agent_error, agent_updated_at,
+                    (SELECT COUNT(*) FROM review_comments c WHERE c.thread_id = review_threads.id AND c.seq > human_read_seq AND c.author_kind != 'human' AND c.publish_state != 'draft'),
+                    (SELECT author_kind FROM review_comments c WHERE c.thread_id = review_threads.id ORDER BY c.seq DESC LIMIT 1)
              FROM review_threads WHERE pr_id = ?1 ORDER BY created_at, id",
         )?;
         let mut threads: Vec<ReviewThread> = stmt
@@ -236,6 +257,19 @@ impl Store {
                     head_sha: r.get(11)?,
                     created_at: r.get(12)?,
                     comments: Vec::new(),
+                    subject: ThreadSubject::parse(&r.get::<_, String>(13)?),
+                    finding_id: r.get(14)?,
+                    linked_thread_id: r.get(15)?,
+                    agent: AgentRequest {
+                        state: AgentState::parse(&r.get::<_, String>(16)?),
+                        request_comment_id: r.get(17)?,
+                        error: r.get(18)?,
+                        updated_at: r.get(19)?,
+                    },
+                    unread_count: r.get(20)?,
+                    last_participant: r.get::<_, Option<String>>(21)?.as_deref().map(Actor::parse),
+                    review_comment: None,
+                    published_comments: Vec::new(),
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
@@ -248,6 +282,12 @@ impl Store {
             let c = c?;
             if let Some(t) = threads.iter_mut().find(|t| t.id == c.thread_id) {
                 t.comments.push(c);
+            }
+        }
+        for (id, draft, published) in self.conversation_drafts(pr_id)? {
+            if let Some(thread) = threads.iter_mut().find(|t| t.id == id) {
+                thread.review_comment = draft;
+                thread.published_comments = published;
             }
         }
         Ok(threads)
@@ -313,7 +353,7 @@ impl Store {
 
     pub fn update_comment_body(&mut self, id: &str, body: &str) -> Result<()> {
         let n = self.conn.execute(
-            "UPDATE review_comments SET body = ?1, updated_at = ?2 WHERE id = ?3 AND publish_state = 'draft'
+            "UPDATE review_comments SET body = ?1, updated_at = ?2 WHERE id = ?3 AND publish_state = 'private' AND author_kind = 'human'
              AND NOT EXISTS (SELECT 1 FROM publication_reservations WHERE comment_id = ?3)",
             params![body, now_rfc3339(), id],
         )?;
@@ -323,7 +363,7 @@ impl Store {
         Ok(())
     }
 
-    /// Delete a draft comment, and its thread if that leaves the thread empty.
+    /// Delete a private comment, retaining explicit drafts and thread history.
     pub fn delete_comment(&mut self, id: &str) -> Result<()> {
         let tx = self.conn.transaction()?;
         let thread_id: String = tx.query_row(
@@ -331,13 +371,32 @@ impl Store {
             [id],
             |r| r.get(0),
         )?;
+        // A prepared/published outgoing body is independent of its source.
+        // Drop provenance before deleting the private source; retain the body,
+        // reservation and publication history.
+        tx.execute("UPDATE review_comment_drafts SET source_comment_id = NULL WHERE source_comment_id = ?1", [id])?;
         let n = tx.execute(
-            "DELETE FROM review_comments WHERE id = ?1 AND publish_state = 'draft'
+            "DELETE FROM review_comments WHERE id = ?1 AND publish_state = 'private' AND author_kind = 'human'
              AND NOT EXISTS (SELECT 1 FROM publication_reservations WHERE comment_id = ?1)",
             [id],
         )?;
         if n != 1 {
             return Err(ReservedDraft.into());
+        }
+        // The request identity outlives its message. Cancel a pending turn
+        // in this transaction so a delayed agent response cannot be inserted.
+        let now = now_rfc3339();
+        let cancelled = tx.execute(
+            "UPDATE review_threads SET agent_state = 'idle', agent_error = NULL, agent_updated_at = ?3
+             WHERE id = ?1 AND agent_request_comment_id = ?2 AND agent_state IN ('waiting', 'responding')",
+            params![thread_id, id, now],
+        )?;
+        if cancelled != 0 {
+            tx.execute(
+                "UPDATE agent_request_history SET state = 'completed', updated_at = ?2
+                 WHERE comment_id = ?1 AND state IN ('waiting', 'responding')",
+                params![id, now],
+            )?;
         }
         let left: i64 = tx.query_row(
             "SELECT COUNT(*) FROM review_comments WHERE thread_id = ?1",
@@ -345,26 +404,9 @@ impl Store {
             |r| r.get(0),
         )?;
         if left == 0 {
-            tx.execute("DELETE FROM review_threads WHERE id = ?1", [&thread_id])?;
+            tx.execute("DELETE FROM review_threads WHERE id = ?1 AND finding_id IS NULL AND linked_thread_id IS NULL AND NOT EXISTS (SELECT 1 FROM review_comment_drafts WHERE thread_id = ?1) AND NOT EXISTS (SELECT 1 FROM agent_request_history WHERE thread_id = ?1)", [&thread_id])?;
         }
         tx.commit()?;
-        Ok(())
-    }
-
-    pub fn mark_comment_published(
-        &mut self,
-        id: &str,
-        github_comment_id: Option<i64>,
-    ) -> Result<()> {
-        let n = self.conn.execute(
-            "UPDATE review_comments SET publish_state = 'published', github_comment_id = ?1, updated_at = ?2
-             WHERE id = ?3 AND publish_state = 'draft'
-             AND EXISTS (SELECT 1 FROM publication_reservations WHERE comment_id = ?3)",
-            params![github_comment_id, now_rfc3339(), id],
-        )?;
-        if n != 1 {
-            return Err(ReservedDraft.into());
-        }
         Ok(())
     }
 }
@@ -635,6 +677,45 @@ mod tests {
             .collect();
         assert!(columns.contains(&"github_updated_at".to_string()));
         assert!(columns.contains(&"author_node_id".to_string()));
+    }
+
+    #[test]
+    fn confirmed_native_id_links_published_local_comment_without_overwriting_body() {
+        let mut store = Store::open_in_memory().unwrap();
+        let repo = store
+            .resolve_repository("github.com", "o", "r", None)
+            .unwrap();
+        let pr = store
+            .upsert_pull_request(&repo.id, 1, "title", "url")
+            .unwrap();
+        store.conn.execute("INSERT INTO review_threads (id,pr_id,source,path,side,head_sha,anchor_state,created_at,updated_at) VALUES ('local',?1,'local','a','RIGHT','head','current','now','now')", [&pr]).unwrap();
+        store.conn.execute("INSERT INTO review_comments (id,thread_id,author_kind,author,body,publish_state,github_comment_id,created_at,updated_at,seq) VALUES ('mine','local','human','me','local text','published',42,'now','now',1)", []).unwrap();
+        let native: crate::model::GithubThread = serde_json::from_value(json!({
+            "nodeId": "native-thread", "path": "a", "side": "RIGHT", "isOutdated": false, "isResolved": false,
+            "comments": [{"nodeId": "native-comment", "databaseId": 42, "author": "me", "body": "remote text", "createdAt": "now"}]
+        })).unwrap();
+        store
+            .sync_github_threads(&pr, "head", &[native], true)
+            .unwrap();
+        let local = store.get_comment("mine").unwrap();
+        assert_eq!(local.body, "local text");
+        assert_eq!(
+            store
+                .github_comment_node_ids(&pr)
+                .unwrap()
+                .get("mine")
+                .map(String::as_str),
+            Some("native-comment")
+        );
+        assert_eq!(
+            store
+                .list_threads(&pr)
+                .unwrap()
+                .iter()
+                .map(|t| t.comments.len())
+                .sum::<usize>(),
+            1
+        );
     }
 
     #[test]
