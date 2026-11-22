@@ -10,7 +10,7 @@ pub mod context;
 mod feedback;
 #[cfg(test)]
 mod feedback_tests;
-mod git_fallback;
+pub(crate) mod git_fallback;
 mod review;
 mod runner;
 mod snapshot;

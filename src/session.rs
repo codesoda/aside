@@ -52,6 +52,9 @@ pub struct Session {
     /// What the current analysis results were computed for (#27).
     analysis_key: Mutex<Option<AnalysisKey>>,
     analysis_context: RwLock<Option<github::context::AnalysisContext>>,
+    history_objects: RwLock<Option<github::context::HistoryObjects>>,
+    history_generation: AtomicU64,
+    history_config: RwLock<Option<(Option<std::path::PathBuf>, bool, std::path::PathBuf)>>,
 }
 
 /// Emits envelopes on the session's single SSE channel. Cloned into the
@@ -206,6 +209,9 @@ impl Session {
             demo_version: AtomicUsize::new(demo_version),
             analysis_key: Mutex::new(None),
             analysis_context: RwLock::new(None),
+            history_objects: RwLock::new(None),
+            history_generation: AtomicU64::new(0),
+            history_config: RwLock::new(None),
         }))
     }
 
@@ -316,7 +322,11 @@ impl Session {
             .provider_repository_id
             .clone()
             .unwrap_or_else(|| self.repository.id.clone());
-        AnalysisInput::new(&self.pr_id, &canonical, snapshot)
+        let mut input = AnalysisInput::new(&self.pr_id, &canonical, snapshot);
+        input.history_context = self.analysis_context.read().expect("context lock").clone();
+        input.history_objects = self.history_objects.read().expect("history lock").clone();
+        input.history_generation = self.history_generation.load(Ordering::SeqCst);
+        input
     }
 
     /// Per-source completeness and finding counts for the canonical snapshot.
@@ -466,11 +476,97 @@ impl Session {
         Ok((handles, invalidation))
     }
 
+    #[cfg(test)]
     pub fn set_analysis_context(&self, context: github::context::AnalysisContext) {
         *self
             .analysis_context
             .write()
             .expect("context lock poisoned") = Some(context);
+        *self.history_objects.write().expect("history lock") = None;
+        self.history_generation.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Resolve and retain immutable objects for this session. The settings
+    /// also permit a revision refresh to resolve its new pinned commits.
+    pub fn configure_history(
+        &self,
+        checkout: Option<std::path::PathBuf>,
+        fetch: bool,
+        cache: std::path::PathBuf,
+    ) {
+        *self.history_config.write().expect("history config lock") = Some((checkout, fetch, cache));
+        self.resolve_history();
+    }
+
+    fn resolve_history(&self) {
+        let Some((checkout, fetch, cache)) = self
+            .history_config
+            .read()
+            .expect("history config lock")
+            .clone()
+        else {
+            return;
+        };
+        let (Some(gh), Some(reference)) = (&self.gh, &self.pr_ref) else {
+            return;
+        };
+        let snapshot = self.snapshot.read().expect("snapshot lock").clone();
+        let (context, objects) = github::context::resolve_owned(
+            gh.as_ref(),
+            reference,
+            snapshot.provider_repository_id.as_deref(),
+            &snapshot.pr.base_sha,
+            &snapshot.pr.head_sha,
+            checkout.as_deref(),
+            fetch,
+            &cache,
+        );
+        *self.analysis_context.write().expect("context lock") = Some(context);
+        *self.history_objects.write().expect("history lock") = objects;
+        self.history_generation.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Replace context for the current revision without rerunning diff facts.
+    /// A terminal unavailable/read-failed history run is explicitly retried
+    /// even when the recovered context has the same metadata digest.
+    #[cfg(test)]
+    async fn replace_analysis_context(
+        &self,
+        context: github::context::AnalysisContext,
+        objects: Option<github::context::HistoryObjects>,
+    ) -> Result<Vec<RunHandle>> {
+        let snapshot = self.snapshot.read().expect("snapshot lock").clone();
+        if context.base_sha != snapshot.pr.base_sha || context.head_sha != snapshot.pr.head_sha {
+            bail!("history context does not match the captured revision");
+        }
+        let id = self.analysis_input(snapshot).snapshot_id;
+        self.invalidate_history_for_snapshot(&id)?;
+        *self.analysis_context.write().expect("context lock") = Some(context);
+        *self.history_objects.write().expect("history lock") = objects;
+        self.history_generation.fetch_add(1, Ordering::SeqCst);
+        let (mut handles, _) = self.begin_analysis()?;
+        if !handles.iter().any(|h| h.provider_id == "aside.git-history") {
+            handles.push(self.analysis.rerun(&id, "aside.git-history")?);
+        }
+        Ok(handles)
+    }
+
+    fn invalidate_history_for_snapshot(&self, id: &SnapshotId) -> Result<()> {
+        // Active attempts are superseded by the scheduler at the new digest;
+        // do not wait for old work before starting the replacement.
+        let mut store = self.store.lock().expect("store lock");
+        for raw in store.list_analysis_runs(&self.pr_id)? {
+            let run = raw.value();
+            if &run.snapshot_id == id
+                && run.provider_id == "aside.git-history"
+                && matches!(run.status, RunStatus::Succeeded | RunStatus::Partial)
+            {
+                let mut historical = run.clone();
+                historical.status = RunStatus::Stale;
+                store.record_analysis_run(&self.pr_id, &Raw::new(historical)?)?;
+            }
+        }
+        Ok(())
     }
 
     /// Emit an event only after the corresponding mutation has committed.
@@ -481,6 +577,39 @@ impl Session {
             events: self.events.clone(),
         }
         .notify(event_type, payload)
+    }
+
+    fn history_retry_needed(&self, snapshot: &PrSnapshot) -> Result<bool> {
+        let id = self.analysis_input(snapshot.clone()).snapshot_id;
+        let store = self.store.lock().expect("store lock");
+        let runs = store.list_analysis_runs(&self.pr_id)?;
+        let latest = runs
+            .iter()
+            .map(Raw::value)
+            .filter(|r| r.snapshot_id == id && r.provider_id == "aside.git-history")
+            .max_by_key(|r| r.attempt);
+        Ok(latest.is_some_and(|run| {
+            (run.status == RunStatus::Failed
+                && run.coverage.reason_codes.iter().any(|code| {
+                    matches!(
+                        code.as_str(),
+                        "provider_error" | "time_limit_exceeded" | "interrupted"
+                    )
+                }))
+                || (run.status == RunStatus::Partial
+                    && run.coverage.reason_codes.iter().any(|code| {
+                        matches!(
+                            code.as_str(),
+                            "history_read_incomplete"
+                                | "history_objects_unavailable"
+                                | "history_context_unavailable"
+                                | "comparison_base_unavailable"
+                                | "history_context_stale"
+                                | "history_deadline"
+                                | "history_cancelled_or_deadline"
+                        )
+                    }))
+        }))
     }
 
     /// Fetch outside SQLite locks, then persist before replacing the in-memory snapshot.
@@ -506,18 +635,66 @@ impl Session {
             .read()
             .expect("context lock poisoned")
             .clone();
-        let replacement = prior_context.map(|context| {
-            if context.base_sha == snapshot.pr.base_sha && context.head_sha == snapshot.pr.head_sha
-            {
-                context
-            } else {
-                github::context::AnalysisContext::unavailable(
-                    &snapshot.pr.base_sha,
-                    &snapshot.pr.head_sha,
-                    "PR revision changed; analysis context requires resolution again",
-                )
-            }
+        let changed_revision = prior_context.as_ref().is_some_and(|context| {
+            context.base_sha != snapshot.pr.base_sha || context.head_sha != snapshot.pr.head_sha
         });
+        let needs_resolution = self
+            .history_config
+            .read()
+            .expect("history config lock")
+            .is_some()
+            && (changed_revision
+                || self.history_objects.read().expect("history lock").is_none()
+                || self.history_retry_needed(&snapshot)?);
+        let resolved = if needs_resolution {
+            let config = self
+                .history_config
+                .read()
+                .expect("history config lock")
+                .clone();
+            if let (Some((checkout, fetch, cache)), Some(gh), Some(reference)) =
+                (config, self.gh.clone(), self.pr_ref.clone())
+            {
+                let snapshot_for_context = snapshot.clone();
+                Some(
+                    tokio::task::spawn_blocking(move || {
+                        github::context::resolve_owned(
+                            gh.as_ref(),
+                            &reference,
+                            snapshot_for_context.provider_repository_id.as_deref(),
+                            &snapshot_for_context.pr.base_sha,
+                            &snapshot_for_context.pr.head_sha,
+                            checkout.as_deref(),
+                            fetch,
+                            &cache,
+                        )
+                    })
+                    .await
+                    .context("history context resolution task failed")?,
+                )
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let (replacement, replacement_objects) = match resolved {
+            Some((context, objects)) => (Some(context), Some(objects)),
+            None => (
+                prior_context.map(|context| {
+                    if changed_revision {
+                        github::context::AnalysisContext::unavailable(
+                            &snapshot.pr.base_sha,
+                            &snapshot.pr.head_sha,
+                            "PR revision changed; analysis context requires resolution again",
+                        )
+                    } else {
+                        context
+                    }
+                }),
+                changed_revision.then_some(None),
+            ),
+        };
         let previous_head = self
             .snapshot
             .read()
@@ -555,13 +732,34 @@ impl Session {
                 .analysis_context
                 .write()
                 .expect("context lock poisoned") = replacement;
+            if let Some(objects) = replacement_objects {
+                *self.history_objects.write().expect("history lock") = objects;
+                self.history_generation.fetch_add(1, Ordering::SeqCst);
+            }
             *current = snapshot;
         }
         if let Some(next) = next_demo_version {
             self.demo_version.store(next, Ordering::SeqCst);
         }
+        if needs_resolution && !changed_revision {
+            let id = self
+                .analysis_input(self.snapshot.read().expect("snapshot lock").clone())
+                .snapshot_id;
+            self.invalidate_history_for_snapshot(&id)?;
+        }
         let invalidation = match self.begin_analysis() {
-            Ok((_, invalidation)) => invalidation,
+            Ok((handles, invalidation)) => {
+                if needs_resolution && !handles.iter().any(|h| h.provider_id == "aside.git-history")
+                {
+                    let id = self
+                        .analysis_input(self.snapshot.read().expect("snapshot lock").clone())
+                        .snapshot_id;
+                    if let Err(error) = self.analysis.rerun(&id, "aside.git-history") {
+                        eprintln!("could not retry history analysis: {error:#}");
+                    }
+                }
+                invalidation
+            }
             Err(error) => {
                 // Analysis is advisory; a failure here must not fail the refresh.
                 eprintln!("could not start analysis: {error:#}");
@@ -1399,6 +1597,218 @@ mod tests {
         assert_eq!(view.sequence, 1);
         assert_eq!(receiver.try_recv().unwrap().sequence, 1);
         assert_eq!(session.refresh().await.unwrap().sequence, 2);
+    }
+
+    #[tokio::test]
+    async fn same_revision_history_recovery_retries_without_rerunning_diff() {
+        use std::process::Command;
+        let session = session();
+        let snapshot = session.snapshot.read().unwrap().clone();
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().to_owned();
+        let git = |args: &[&str]| {
+            let result = Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(result.status.success(), "{:?}", result);
+            String::from_utf8(result.stdout).unwrap().trim().to_owned()
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.name", "Fixture"]);
+        git(&["config", "user.email", "fixture@example.com"]);
+        let path = &snapshot.files[0].path;
+        std::fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+        std::fs::write(root.join(path), "fixture").unwrap();
+        for n in 0..19 {
+            std::fs::write(root.join(format!("zero-{n:02}.txt")), "fixture").unwrap();
+        }
+        git(&["add", "."]);
+        git(&["commit", "-qm", "baseline"]);
+        let base = git(&["rev-parse", "HEAD"]);
+        let context = github::context::AnalysisContext {
+            source: "fixture".into(),
+            base_sha: snapshot.pr.base_sha.clone(),
+            head_sha: snapshot.pr.head_sha.clone(),
+            comparison_base: Some(base),
+            history_count: 1,
+            shallow: false,
+            complete: true,
+            reason: None,
+        };
+        let broken = tempfile::tempdir().unwrap();
+        let broken_dir = broken.path().join("empty.git");
+        let init = Command::new("git")
+            .args(["init", "--bare", "-q"])
+            .arg(&broken_dir)
+            .status()
+            .unwrap();
+        assert!(init.success());
+        *session.analysis_context.write().unwrap() = Some(context.clone());
+        *session.history_objects.write().unwrap() =
+            Some(github::context::HistoryObjects::fixture(broken, broken_dir));
+        let initial = session.start_analysis().unwrap();
+        for handle in &initial {
+            handle.clone().wait().await;
+        }
+        let old_history = initial
+            .iter()
+            .find(|h| h.provider_id == "aside.git-history")
+            .unwrap();
+        let old_diff = initial
+            .iter()
+            .find(|h| h.provider_id == "aside.diff")
+            .unwrap();
+        let old_run = session
+            .store
+            .lock()
+            .unwrap()
+            .get_analysis_run(&old_history.run_id)
+            .unwrap();
+        assert_eq!(old_run.value().status, RunStatus::Partial);
+        assert!(
+            old_run
+                .value()
+                .coverage
+                .reason_codes
+                .contains(&"history_read_incomplete".into())
+        );
+        assert!(session.history_retry_needed(&snapshot).unwrap());
+        let objects = github::context::HistoryObjects::fixture(temp, root.join(".git"));
+        let recovered = session
+            .replace_analysis_context(context, Some(objects))
+            .await
+            .unwrap();
+        assert_eq!(recovered.len(), 1);
+        let new_history = &recovered[0];
+        assert_eq!(new_history.provider_id, "aside.git-history");
+        assert_ne!(new_history.run_id, old_history.run_id);
+        new_history.clone().wait().await;
+        let store = session.store.lock().unwrap();
+        assert_eq!(
+            store
+                .get_analysis_run(&old_history.run_id)
+                .unwrap()
+                .value()
+                .status,
+            RunStatus::Stale
+        );
+        assert_eq!(
+            store
+                .list_analysis_runs(&session.pr_id)
+                .unwrap()
+                .iter()
+                .filter(|run| run.value().provider_id == "aside.diff")
+                .count(),
+            1
+        );
+        assert_eq!(
+            store
+                .get_analysis_run(&old_diff.run_id)
+                .unwrap()
+                .value()
+                .status,
+            RunStatus::Partial
+        );
+    }
+
+    #[tokio::test]
+    async fn live_refresh_retries_partial_history_deadline_on_unchanged_sha() {
+        let gh = Arc::new(github::fake::FakeGh::default());
+        gh.on(&["pr", "view"], Ok(r#"{"number":7,"title":"test","body":"","url":"https://github.com/o/r/pull/7","state":"OPEN","isDraft":false,"author":{"login":"alice"},"baseRefName":"main","baseRefOid":"base1","headRefName":"feat","headRefOid":"head1","changedFiles":1}"#));
+        gh.on(&["repo", "view"], Ok(r#"{"id":"R_1"}"#));
+        gh.on(
+            &["pr", "diff"],
+            Ok("diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-x\n+y\n"),
+        );
+        gh.on(&["api", "--paginate"], Ok(r#"[[{"filename":"a.rs","status":"modified","patch":null,"additions":1,"deletions":1}]]"#));
+        let reference = PrRef {
+            owner: "o".into(),
+            repo: "r".into(),
+            number: 7,
+        };
+        let snapshot = github::fetch_snapshot(gh.as_ref(), &reference, &Limits::default()).unwrap();
+        let session = Session::new(
+            snapshot.clone(),
+            Store::open_in_memory().unwrap(),
+            Some(gh),
+            Some(reference),
+        )
+        .unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        session.configure_history(None, false, cache.path().to_owned());
+        // Keep an object source so the refresh must consult the latest run's reason.
+        let broken = tempfile::tempdir().unwrap();
+        let bare = broken.path().join("empty.git");
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "--bare", "-q"])
+                .arg(&bare)
+                .status()
+                .unwrap()
+                .success()
+        );
+        *session.history_objects.write().unwrap() =
+            Some(github::context::HistoryObjects::fixture(broken, bare));
+        let initial = session.start_analysis().unwrap();
+        for handle in &initial {
+            handle.clone().wait().await;
+        }
+        let old = initial
+            .iter()
+            .find(|h| h.provider_id == "aside.git-history")
+            .unwrap();
+        let mut deadline = session
+            .store
+            .lock()
+            .unwrap()
+            .get_analysis_run(&old.run_id)
+            .unwrap()
+            .value()
+            .clone();
+        assert_eq!(deadline.status, RunStatus::Partial);
+        deadline.attempt += 1;
+        deadline.id = crate::model::AnalysisRunId::derive(&crate::model::RunKeyInput {
+            snapshot_id: &deadline.snapshot_id,
+            provider_id: &deadline.provider_id,
+            engine_version: &deadline.engine_version,
+            configuration_digest: &deadline.configuration_digest,
+            input_digest: &deadline.input_digest,
+            attempt: deadline.attempt,
+        });
+        deadline.coverage.reason_codes = vec!["history_cancelled_or_deadline".into()];
+        session
+            .store
+            .lock()
+            .unwrap()
+            .record_analysis_run(&session.pr_id, &Raw::new(deadline.clone()).unwrap())
+            .unwrap();
+        assert!(
+            session.history_retry_needed(&snapshot).unwrap(),
+            "deadline must be retryable"
+        );
+        let refreshed = session.refresh().await.unwrap();
+        assert_eq!(refreshed.pr.head_sha, snapshot.pr.head_sha);
+        let runs = session
+            .store
+            .lock()
+            .unwrap()
+            .list_analysis_runs(&session.pr_id)
+            .unwrap();
+        assert!(
+            runs.iter()
+                .any(|r| r.value().provider_id == "aside.git-history"
+                    && r.value().attempt > deadline.attempt),
+            "unchanged revision must retry history"
+        );
+        assert_eq!(
+            runs.iter()
+                .filter(|r| r.value().provider_id == "aside.diff")
+                .count(),
+            1
+        );
     }
 
     #[tokio::test]

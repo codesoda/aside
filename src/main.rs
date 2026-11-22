@@ -4,6 +4,7 @@ mod demo;
 mod descriptor;
 mod diff;
 mod github;
+mod history;
 mod model;
 // TODO(#33): consumed by the session view / findings API.
 #[allow(dead_code)]
@@ -211,24 +212,16 @@ async fn start_session(
         Store::open_in_memory()?
     };
     let session = Session::new(snapshot, store, gh, pr_ref)?;
-    if let (Some(gh), Some(reference)) = (&session.gh, &session.pr_ref) {
-        let snapshot = session.snapshot.read().expect("snapshot lock");
+    if session.pr_ref.is_some() {
         let cache_root = store::default_path()?
             .parent()
             .expect("data directory")
             .to_path_buf();
-        let context = github::context::resolve(
-            gh.as_ref(),
-            reference,
-            snapshot.provider_repository_id.as_deref(),
-            &snapshot.pr.base_sha,
-            &snapshot.pr.head_sha,
-            checkout,
+        session.configure_history(
+            checkout.map(std::path::Path::to_path_buf),
             fetch_analysis,
-            &cache_root,
+            cache_root,
         );
-        drop(snapshot);
-        session.set_analysis_context(context);
     }
     if let Err(error) = session.start_analysis() {
         eprintln!("could not start analysis: {error:#}");

@@ -498,6 +498,122 @@ fn lock(path: PathBuf, deadline: Instant) -> Result<Lock> {
     }
 }
 
+/// A private, validated object snapshot retained for the lifetime of analysis.
+#[derive(Debug, Clone)]
+pub(crate) struct HistoryObjects {
+    pub dir: PathBuf,
+    _guard: std::sync::Arc<tempfile::TempDir>,
+}
+
+#[cfg(test)]
+impl HistoryObjects {
+    pub(crate) fn fixture(guard: tempfile::TempDir, dir: PathBuf) -> Self {
+        Self {
+            dir,
+            _guard: std::sync::Arc::new(guard),
+        }
+    }
+}
+
+/// Resolve context and retain an isolated object snapshot. Do not expose a
+/// path into the user's checkout or a mutable cache to provider tasks.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn resolve_owned(
+    gh: &dyn GhRunner,
+    pr: &PrRef,
+    provider_id: Option<&str>,
+    base: &str,
+    head: &str,
+    checkout: Option<&Path>,
+    fetch: bool,
+    cache_root: &Path,
+) -> (AnalysisContext, Option<HistoryObjects>) {
+    let context = resolve(gh, pr, provider_id, base, head, checkout, fetch, cache_root);
+    retain_resolved(
+        gh,
+        pr,
+        provider_id,
+        base,
+        head,
+        checkout,
+        cache_root,
+        context,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn retain_resolved(
+    gh: &dyn GhRunner,
+    pr: &PrRef,
+    provider_id: Option<&str>,
+    base: &str,
+    head: &str,
+    checkout: Option<&Path>,
+    cache_root: &Path,
+    context: AnalysisContext,
+) -> (AnalysisContext, Option<HistoryObjects>) {
+    let Some(id) = provider_id else {
+        return (context, None);
+    };
+    let deadline = Instant::now() + DEADLINE;
+    let snapshot = (|| -> Result<(tempfile::TempDir, AnalysisContext)> {
+        if context.source == "checkout" {
+            let dir = verified_checkout(
+                checkout.ok_or_else(|| anyhow::anyhow!("checkout missing"))?,
+                gh,
+                id,
+                deadline,
+            )?;
+            let inspected = inspect(
+                &dir.path().join("objects.git"),
+                base,
+                head,
+                "checkout",
+                deadline,
+            )?;
+            return Ok((dir, inspected));
+        }
+        if context.source != "cache" && context.source != "fetched-cache" {
+            bail!("Git context unavailable")
+        }
+        let cache = cache_root.join("git-context").join(format!("{id}.git"));
+        trusted_cache(&cache, id, pr, deadline)?;
+        let temp = tempfile::tempdir()?;
+        let stage = temp.path().join("objects.git");
+        let mut init = git(&stage);
+        init.args(["init", "--bare", "--quiet"]);
+        if !run_git(init, MAX_COMMAND_BYTES, deadline)?.0.success() {
+            bail!("snapshot init failed")
+        }
+        copy_objects(&cache.join("objects"), &stage.join("objects"), deadline)?;
+        if cache.join("shallow").exists() {
+            let content = bounded_file(&cache.join("shallow"), 64 * 1024)?;
+            if !content.lines().all(valid_sha) {
+                bail!("invalid shallow boundary")
+            }
+            fs::write(stage.join("shallow"), content)?;
+        }
+        let inspected = inspect(&stage, base, head, &context.source, deadline)?;
+        Ok((temp, inspected))
+    })();
+    match snapshot {
+        Ok((guard, inspected)) => {
+            let dir = guard.path().join("objects.git");
+            (
+                inspected,
+                Some(HistoryObjects {
+                    dir,
+                    _guard: std::sync::Arc::new(guard),
+                }),
+            )
+        }
+        Err(_) => (
+            AnalysisContext::unavailable(base, head, "validated Git objects could not be retained"),
+            None,
+        ),
+    }
+}
+
 /// Resolve a supplied checkout, then owned cache, then (only by consent) fetch.
 /// Any failure returns API-only coverage, never changes diff completeness.
 #[allow(clippy::too_many_arguments)]
@@ -757,6 +873,65 @@ mod tests {
             String::from_utf8_lossy(&result.stderr)
         );
         String::from_utf8(result.stdout).unwrap().trim().into()
+    }
+
+    #[test]
+    fn retained_context_describes_second_object_snapshot_not_earlier_inspection() {
+        let repo = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        run(repo.path(), &["init", "--quiet"]);
+        run(repo.path(), &["config", "user.email", "test@example.com"]);
+        run(repo.path(), &["config", "user.name", "Test"]);
+        run(
+            repo.path(),
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/acme/repo.git",
+            ],
+        );
+        fs::write(repo.path().join("file"), "base").unwrap();
+        run(repo.path(), &["add", "file"]);
+        run(repo.path(), &["commit", "--quiet", "-m", "base"]);
+        let base = run(repo.path(), &["rev-parse", "HEAD"]);
+        fs::write(repo.path().join("file"), "head").unwrap();
+        run(repo.path(), &["commit", "--quiet", "-am", "head"]);
+        let head = run(repo.path(), &["rev-parse", "HEAD"]);
+        let gh = super::super::fake::FakeGh::default();
+        gh.on(&["repo", "view"], Ok(r#"{"id":"R_1"}"#));
+        let pr = PrRef {
+            owner: "acme".into(),
+            repo: "repo".into(),
+            number: 1,
+        };
+        let first = resolve(
+            &gh,
+            &pr,
+            Some("R_1"),
+            &base,
+            &head,
+            Some(repo.path()),
+            false,
+            cache.path(),
+        );
+        assert!(first.complete);
+        // A shallow boundary appears between resolution and retention.
+        fs::write(repo.path().join(".git/shallow"), format!("{base}\n")).unwrap();
+        let (retained, objects) = retain_resolved(
+            &gh,
+            &pr,
+            Some("R_1"),
+            &base,
+            &head,
+            Some(repo.path()),
+            cache.path(),
+            first,
+        );
+        assert!(objects.is_some());
+        assert!(retained.shallow);
+        assert!(!retained.complete);
+        assert_eq!(retained.source, "checkout");
     }
 
     #[test]
