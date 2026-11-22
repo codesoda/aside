@@ -16,6 +16,7 @@ mod server;
 mod session;
 mod skill;
 mod store;
+mod structure;
 mod update;
 mod util;
 

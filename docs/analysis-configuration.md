@@ -13,6 +13,7 @@ aside set analysis.history.enabled false --repo github.com/owner/repo
 aside set analysis.diff.max_input_bytes 1048576 --repo github.com/owner/repo
 aside set analysis.history.timeout_ms 30000 --repo github.com/owner/repo
 aside set analysis.history.timeout_ms default --repo github.com/owner/repo
+aside set analysis.structure.enabled false --repo github.com/owner/repo
 ```
 
 Repository names are normalized to lowercase. A different host or repository
@@ -25,7 +26,7 @@ settings HTTP API is exposed, and agents do not gain analysis-control rights.
 
 ## Settings and limits
 
-Both `analysis.diff` and `analysis.history` accept:
+`analysis.diff`, `analysis.history`, and `analysis.structure` accept:
 
 | Setting | Default | Allowed override |
 | --- | --- | --- |
@@ -36,8 +37,8 @@ Both `analysis.diff` and `analysis.history` accept:
 | `max_findings` | engine/scheduler default | 1–10,000 findings |
 
 `default` removes a numeric override; unspecified fields retain engine-specific
-limits. Limits are ceilings, not promises of complete analysis: Git history has
-additional internal traversal, output and deadline bounds. The source coverage
+limits. Limits are ceilings, not promises of complete analysis: Git history and
+Rust structural analysis have additional internal traversal, parse and deadline bounds. The source coverage
 notices show the effective scheduler limits. Input byte/file limits refer to the
 captured PR diff, not the entire repository/history size.
 
@@ -58,7 +59,15 @@ Authentication remains managed by `gh`.
 - Diff analysis is in-process over the already captured snapshot.
 - History uses bounded local Git subprocesses. Enabling it **does not authorize
   network fetching**: that still requires `--fetch-analysis-context`. Disabling
-  history skips both provider execution and history resolution/fetch.
+  history skips its provider execution. Context resolution remains enabled when
+  structure is enabled; fetch still requires separate consent.
+- Structure inventories Rust entities and conservative relationships from pinned
+  local Git objects. It supports conventional Cargo source layouts; unsupported
+  layouts, unresolved references, and out-of-corpus exposure remain explicit
+  limitations. Enabling structure can resolve local context even when history is
+  disabled, but never authorizes network fetching. That still requires
+  `--fetch-analysis-context`. Disable both history and structure to skip context
+  resolution and fetch.
 - There is no model execution, hosted analysis, optional external tool execution,
   tool installation, or GitHub publication enabled by these preferences.
 - Disabled providers remain visible as `skipped` with reason

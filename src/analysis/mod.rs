@@ -31,5 +31,6 @@ pub fn default_providers() -> Vec<Arc<dyn AnalysisProvider>> {
     vec![
         Arc::new(providers::DiffFactsProvider::default()),
         Arc::new(providers::HistoryProvider::default()),
+        Arc::new(providers::StructureProvider::default()),
     ]
 }

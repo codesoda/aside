@@ -529,10 +529,14 @@ impl Scheduler {
             .expect("registered provider");
         let policies = self.inner.policies.lock().expect("policy lock");
         let (enabled, limits, _) = self.configuration_for(provider.as_ref(), &policies);
-        let capability = if provider.descriptor().kind == super::ProviderKind::History {
-            "local Git subprocesses; history fetch requires separate --fetch-analysis-context consent"
-        } else {
-            "in-process snapshot analysis"
+        let capability = match provider.descriptor().kind {
+            super::ProviderKind::History => {
+                "local Git subprocesses; history fetch requires separate --fetch-analysis-context consent"
+            }
+            super::ProviderKind::Structural => {
+                "local Git object and in-process Rust syntax analysis; context fetch requires separate --fetch-analysis-context consent"
+            }
+            _ => "in-process snapshot analysis",
         };
         format!(
             "{}; {capability}; no model execution or hosted analysis; limits: {} ms, {} diff bytes, {} changed files, {} findings",

@@ -55,6 +55,7 @@ pub struct RepositoryConfig {
 pub struct AnalysisConfig {
     pub diff: ProviderPolicy,
     pub history: ProviderPolicy,
+    pub structure: ProviderPolicy,
 }
 
 impl AnalysisConfig {
@@ -62,6 +63,7 @@ impl AnalysisConfig {
         HashMap::from([
             (crate::diff::facts::PROVIDER_ID.into(), self.diff.clone()),
             ("aside.git-history".into(), self.history.clone()),
+            ("aside.structure".into(), self.structure.clone()),
         ])
     }
 }
@@ -95,6 +97,11 @@ pub const ANALYSIS_KEYS: &[&str] = &[
     "analysis.history.max_input_bytes",
     "analysis.history.max_input_files",
     "analysis.history.max_findings",
+    "analysis.structure.enabled",
+    "analysis.structure.timeout_ms",
+    "analysis.structure.max_input_bytes",
+    "analysis.structure.max_input_files",
+    "analysis.structure.max_findings",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -139,6 +146,7 @@ impl Config {
             }
             repo.analysis.diff.validate()?;
             repo.analysis.history.validate()?;
+            repo.analysis.structure.validate()?;
         }
         Ok(())
     }
@@ -161,10 +169,11 @@ impl Config {
         let repo = repo.context("analysis settings require --repo HOST/OWNER/REPO")?;
         let config = self.analysis_for(repo)?;
         let (provider, field) = analysis_key(key)?;
-        let policy = if provider == "diff" {
-            &config.diff
-        } else {
-            &config.history
+        let policy = match provider {
+            "diff" => &config.diff,
+            "history" => &config.history,
+            "structure" => &config.structure,
+            _ => unreachable!("validated analysis key"),
         };
         Ok(match field {
             "enabled" => policy.enabled.to_string(),
@@ -200,10 +209,11 @@ impl Config {
         let (provider, field) = analysis_key(key)?;
         // Validate a copy first: an invalid change never mutates existing settings.
         let mut config = self.repositories.get(&repo).cloned().unwrap_or_default();
-        let policy = if provider == "diff" {
-            &mut config.analysis.diff
-        } else {
-            &mut config.analysis.history
+        let policy = match provider {
+            "diff" => &mut config.analysis.diff,
+            "history" => &mut config.analysis.history,
+            "structure" => &mut config.analysis.structure,
+            _ => unreachable!("validated analysis key"),
         };
         match field {
             "enabled" => policy.enabled = parse_bool(key, value)?,
@@ -421,11 +431,39 @@ mod tests {
                 Some("github.com/owner/repo"),
             )
             .unwrap();
+        config
+            .set_scoped(
+                "analysis.structure.enabled",
+                "false",
+                Some("github.com/owner/repo"),
+            )
+            .unwrap();
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("config.toml");
         save_to(&path, &config).unwrap();
         let loaded = load_from(&path).unwrap();
         assert_eq!(config, loaded);
+        assert!(
+            !loaded
+                .analysis_for("github.com/owner/repo")
+                .unwrap()
+                .structure
+                .enabled
+        );
+        assert!(
+            loaded
+                .analysis_for("github.com/other/repo")
+                .unwrap()
+                .structure
+                .enabled
+        );
+        assert!(
+            loaded
+                .analysis_for("github.com/owner/repo")
+                .unwrap()
+                .policies()
+                .contains_key("aside.structure")
+        );
         assert!(
             !loaded
                 .analysis_for("github.com/OWNER/REPO")
@@ -495,6 +533,8 @@ mod tests {
             ("analysis.history.max_input_files", "100001"),
             ("analysis.diff.max_findings", "10001"),
             ("analysis.history.token", "secret"),
+            ("analysis.structure.timeout_ms", "0"),
+            ("analysis.structure.token", "secret"),
             ("analysis.model.enabled", "true"),
             ("analysis.diff.enabled", "maybe"),
         ] {

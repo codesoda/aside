@@ -82,22 +82,41 @@ fn path(bytes: &[u8]) -> Result<String> {
     Ok(text.to_owned())
 }
 
-fn tree(dir: &Path, base: &str, deadline: Instant) -> Result<BTreeMap<String, String>> {
-    let bytes = command(dir, &["ls-tree", "-r", "-z", base], MAX_OUTPUT, deadline)?;
-    parse_tree(&bytes)
+pub fn tree(dir: &Path, base: &str, deadline: Instant) -> Result<BTreeMap<String, String>> {
+    tree_with_exclusions(dir, base, deadline).map(|(files, _)| files)
 }
 
+/// Pinned regular files and paths excluded because Git records a link, not a source blob.
+pub fn tree_with_exclusions(
+    dir: &Path,
+    base: &str,
+    deadline: Instant,
+) -> Result<(BTreeMap<String, String>, Vec<String>)> {
+    let bytes = command(dir, &["ls-tree", "-r", "-z", base], MAX_OUTPUT, deadline)?;
+    parse_tree_with_exclusions(&bytes, MAX_PATHS)
+}
+
+#[cfg(test)]
 fn parse_tree(bytes: &[u8]) -> Result<BTreeMap<String, String>> {
     parse_tree_limited(bytes, MAX_PATHS)
 }
 
+#[cfg(test)]
 fn parse_tree_limited(bytes: &[u8], max_paths: usize) -> Result<BTreeMap<String, String>> {
+    parse_tree_with_exclusions(bytes, max_paths).map(|(files, _)| files)
+}
+
+fn parse_tree_with_exclusions(
+    bytes: &[u8],
+    max_paths: usize,
+) -> Result<(BTreeMap<String, String>, Vec<String>)> {
     if !bytes.is_empty() && !bytes.ends_with(&[0]) {
         bail!("partial tree record")
     }
     let mut files = BTreeMap::new();
+    let mut excluded = Vec::new();
     if bytes.is_empty() {
-        return Ok(files);
+        return Ok((files, excluded));
     }
     for (index, row) in bytes[..bytes.len() - 1].split(|c| *c == 0).enumerate() {
         if index >= max_paths {
@@ -108,13 +127,21 @@ fn parse_tree_limited(bytes: &[u8], max_paths: usize) -> Result<BTreeMap<String,
             .context("malformed tree record")?;
         let parts: Vec<_> = metadata.split(|c| *c == b' ').collect();
         if parts.len() != 3 || parts[1] != b"blob" || !valid_sha(std::str::from_utf8(parts[2])?) {
-            if parts.len() == 3 && parts[0] == b"160000" {
+            if parts.len() == 3
+                && parts[0] == b"160000"
+                && valid_sha(std::str::from_utf8(parts[2])?)
+            {
+                excluded.push(format!("{}: gitlink excluded", path(name)?));
                 continue;
             }
             bail!("malformed tree object")
         }
-        if parts[0] != b"100644" && parts[0] != b"100755" {
+        if parts[0] == b"120000" {
+            excluded.push(format!("{}: symlink excluded", path(name)?));
             continue;
+        }
+        if parts[0] != b"100644" && parts[0] != b"100755" {
+            bail!("unsupported Git tree mode")
         }
         let name = path(name)?;
         if files
@@ -124,7 +151,7 @@ fn parse_tree_limited(bytes: &[u8], max_paths: usize) -> Result<BTreeMap<String,
             bail!("duplicate baseline path")
         }
     }
-    Ok(files)
+    Ok((files, excluded))
 }
 
 trait SplitByte {
