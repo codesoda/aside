@@ -202,6 +202,8 @@ async fn local_transport_sends_only_explicit_context_and_never_tools() {
     assert_eq!(calls[0]["messages"][1]["content"], "only-selected-code");
     assert_eq!(calls[0]["tools"], json!([]));
     assert_eq!(calls[0]["stream"], false);
+    assert_eq!(calls[0]["think"], false);
+    assert_eq!(calls[0]["options"]["num_predict"], 1500);
     server.abort();
 }
 
@@ -298,7 +300,7 @@ async fn cloud_model_is_rejected_before_sending_code() {
 }
 
 #[tokio::test]
-async fn provider_errors_and_empty_answers_do_not_fallback() {
+async fn provider_errors_and_empty_or_truncated_answers_do_not_fallback() {
     for (status, response) in [
         (
             axum::http::StatusCode::UNAUTHORIZED,
@@ -307,6 +309,10 @@ async fn provider_errors_and_empty_answers_do_not_fallback() {
         (
             axum::http::StatusCode::OK,
             json!({"done":true,"message":{"content":""}}),
+        ),
+        (
+            axum::http::StatusCode::OK,
+            json!({"done":true,"done_reason":"length","message":{"content":"Partial answer"}}),
         ),
     ] {
         let (url, calls, server) = fake_ollama(

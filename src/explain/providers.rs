@@ -179,12 +179,14 @@ pub async fn answer(config: &AiConfig, provider: &str, prompt: &str) -> Result<S
                     "This is not a verified local Ollama model. Cloud/remote models are not allowed for local Q&A.",
                 ));
             }
+            // Spend the bounded output budget on the answer, not optional reasoning.
             let response = local_post(&client, base.join("api/chat").unwrap(), json!({
-                "model": config.local_model, "stream": false, "tools": [],
+                "model": config.local_model, "stream": false, "think": false, "tools": [],
                 "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}],
                 "options": {"num_predict": 1500, "num_ctx": 32768}
             })).await?;
             if response.get("done") != Some(&Value::Bool(true))
+                || response.get("done_reason").and_then(Value::as_str) == Some("length")
                 || response.get("error").is_some()
                 || response
                     .pointer("/message/tool_calls")

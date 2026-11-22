@@ -30,7 +30,12 @@ hostnames, LAN hosts, URL credentials or custom paths. Requests bypass HTTP prox
 and never follow redirects. Before sending code, Aside calls `/api/show` and
 requires local model architecture metadata with no `remote_model`/`remote_host`.
 Remote/cloud models and unknown metadata are rejected; there is no hosted fallback.
-The subsequent `/api/chat` request is non-streaming and supplies no tools.
+The subsequent `/api/chat` request is non-streaming, requests `think: false`, and
+supplies no tools. Optional reasoning must not consume the bounded answer budget;
+responses reported as token-limited are rejected rather than shown as complete.
+
+If an installed model appears missing, check the daemon's `OLLAMA_MODELS` and any
+`~/.ollama/models` symlink target before downloading another copy.
 
 Trust boundary: the configured local service must really be Ollama running local
 weights. Aside cannot prevent a malicious local service from forwarding data, or
@@ -164,6 +169,36 @@ leaves the review usable, and no unrelated files/review state are accessed.
 Also inspect the panel at mobile/desktop sizes and with keyboard navigation.
 Do not launch an Aside demo or make a hosted request without the operator's consent.
 
+### Explicit live local Ollama smoke test
+
+After approving local inference, start a trusted cloud-disabled Ollama server
+(`OLLAMA_NO_CLOUD=1`) with an existing text model. For an isolated validation using
+a shared model store, also disable startup pruning (`OLLAMA_NOPRUNE=1`) and use a
+temporary HOME. This test does not start a server, download a model, or change
+Aside's global configuration. Supply the actual loopback URL and installed model:
+
+```sh
+ASIDE_LIVE_OLLAMA_SMOKE=1 \
+ASIDE_LIVE_OLLAMA_URL=http://127.0.0.1:11434 \
+ASIDE_LIVE_OLLAMA_MODEL=YOUR_INSTALLED_LOCAL_MODEL \
+cargo test --locked server::explain_live_tests::local_synthetic_smoke \
+  -- --ignored --exact --nocapture
+```
+
+The ignored, environment-gated test shares the synthetic retry-limit fixture
+below and calls the actual authenticated API handler and local adapter. Claude
+remains disabled; no hosted fallback is enabled. Both answers are checked for
+selection identity and unchanged review state, then printed for manual inspection.
+
+A real run with Ollama 0.40.16 and existing `qwen3.5:4b` weights completed both
+requests after explicitly disabling optional thinking. The initial attempt had
+failed the usable-answer guard. The successful run identified 5 → 10; its follow-up
+retained those values, distinguished removal from a bug, and acknowledged unknown
+caller impact. However, the first answer overstated runtime retry behavior not
+established by the snippet. This verifies the integration, not unconditional
+answer accuracy. Cloud and startup pruning were disabled; no models were
+downloaded, the model-store inventory was unchanged, and the owned server stopped.
+
 ### Explicit live Claude smoke test
 
 Only after the operator approves two hosted requests and any associated usage:
@@ -205,8 +240,8 @@ provider errors, inert HTML, stale/mismatched replies, keyboard access, focus
 restoration, scroll preservation on opening, and unchanged review state. Manual
 mobile inspection prompted a sticky panel heading so Close remains visible while
 scrolling. No external browser requests or unexpected console/page errors occurred.
-These UI checks used mocked provider responses, not live inference. Live local
-Ollama validation still requires an installed model and is not claimed here.
+These UI checks used mocked provider responses, not live inference. The separate
+live provider tests above verify the API/adapter path with synthetic code.
 
 ## Interface references
 
