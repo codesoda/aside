@@ -4,6 +4,8 @@ import type { Page } from './generated/Page';
 import type { QueueView } from './generated/QueueView';
 import type { RuleAction } from './generated/RuleAction';
 import type { SessionView } from './generated/SessionView';
+import type { ReviewThread } from './generated/ReviewThread';
+import type { GithubThread } from './generated/GithubThread';
 
 export type { Evidence, FindingItem, QueueView, SessionView };
 
@@ -107,6 +109,29 @@ export async function fetchAllPages<T>(path: string, attempts = 3): Promise<{ it
     }
   }
   throw new ResultsChangedError();
+}
+
+/** Native GitHub feedback is read-only and never a finding. */
+export type NativeFeedbackRecord = {
+  resourceKind: string;
+  native?: Record<string, unknown>;
+  [field: string]: unknown;
+};
+
+export type FeedbackThread = Omit<ReviewThread, 'comments'> & {
+  /** Persisted association to native GitHub comments, independent of database ID. */
+  comments: (ReviewThread['comments'][number] & { githubNodeId?: string })[];
+  /** Joined from the current GitHub snapshot, not persisted review state. */
+  github: GithubThread | null;
+  resolutionKnown: boolean;
+};
+
+export function fetchFeedbackThreads(): Promise<{ items: FeedbackThread[]; last: Page<FeedbackThread> }> {
+  return fetchAllPages<FeedbackThread>('/api/v1/github-feedback/threads?includeIgnored=true');
+}
+
+export function fetchFeedbackRecords(): Promise<{ items: NativeFeedbackRecord[]; last: Page<NativeFeedbackRecord> }> {
+  return fetchAllPages<NativeFeedbackRecord>('/api/v1/github-feedback/records?includeIgnored=true');
 }
 
 /** Current findings, including ignored files so they can be revealed. */

@@ -170,6 +170,7 @@ pub fn router(state: AppState) -> Router {
         .route("/analysis/findings/{id}/evidence", get(analysis::evidence))
         .route("/github-feedback/threads", get(analysis::feedback))
         .route("/github-feedback/checks", get(analysis::checks))
+        .route("/github-feedback/records", get(analysis::records))
         .route(
             "/repositories/current/exclusions",
             get(exclusions).post(create_exclusion),

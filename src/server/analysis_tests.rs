@@ -166,6 +166,7 @@ async fn routes(app: &Router) -> Vec<String> {
         "/api/v1/analysis/findings".into(),
         format!("/api/v1/analysis/findings/{id}/evidence"),
         "/api/v1/github-feedback/threads".into(),
+        "/api/v1/github-feedback/records".into(),
     ]
 }
 
@@ -633,6 +634,154 @@ async fn empty_page_from_a_partial_run_is_distinguishable_from_a_clean_one() {
 }
 
 #[tokio::test]
+async fn native_records_cover_every_non_thread_source_across_pages_without_mutations() {
+    use crate::github::checks::Coverage;
+    use crate::model::{ImportedCheckAnnotation, ImportedCommitStatus, NativeSourceKey};
+    use std::collections::HashSet;
+
+    let mut snapshot = demo::snapshot(0);
+    let head = snapshot.pr.head_sha.clone();
+    let review = snapshot.reviews[0].clone();
+    snapshot.reviews = (0..205)
+        .map(|i| {
+            let mut r = review.clone();
+            r.node_id = Some(format!("review-{i}"));
+            if i == 203 {
+                r.node_id = None;
+                r.database_id = Some(987654321);
+            }
+            if i == 204 {
+                r.node_id = None;
+                r.database_id = None;
+            }
+            r
+        })
+        .collect();
+    snapshot.checks.sha = head.clone();
+    snapshot.checks.runs_coverage.completeness = Completeness::Complete;
+    snapshot.checks.statuses_coverage.completeness = Completeness::Complete;
+    snapshot.checks.runs.push(crate::model::ImportedCheckRun {
+        github_check_run_id: 42,
+        app_slug: Some("ci".into()),
+        name: "CI".into(),
+        status: "completed".into(),
+        conclusion: Some("failure".into()),
+        head_sha: head.clone(),
+        started_at: None,
+        completed_at: None,
+        details_url: Some("https://example.test/check".into()),
+        summary: None,
+        annotations_count: 1,
+        observed_at: "now".into(),
+    });
+    snapshot.checks.annotations.push(ImportedCheckAnnotation {
+        check_run_id: 42,
+        key: NativeSourceKey::ContentFingerprint("annotation-1".into()),
+        path: "src/a.rs".into(),
+        start_line: 1,
+        end_line: 1,
+        start_column: None,
+        end_column: None,
+        annotation_level: serde_json::from_str("\"warning\"").unwrap(),
+        title: None,
+        message: "native annotation".into(),
+        raw_details: None,
+        head_sha: head.clone(),
+        observed_at: "now".into(),
+    });
+    snapshot.checks.annotation_coverage.push((
+        42,
+        Coverage {
+            completeness: Completeness::Partial,
+            reasons: vec!["page_limit".into()],
+        },
+    ));
+    snapshot.checks.statuses.push(ImportedCommitStatus {
+        github_status_id: 7,
+        context: "ci".into(),
+        state: "success".into(),
+        description: None,
+        target_url: None,
+        sha: head,
+        updated_at: None,
+        observed_at: "now".into(),
+    });
+    let session = Session::new(snapshot, Store::open_in_memory().unwrap(), None, None).unwrap();
+    session.start_analysis().unwrap();
+    let app = app(&session);
+    let before = ok(&app, "/api/v1/session").await;
+    let findings_before = ok(&app, "/api/v1/analysis/findings").await;
+    let mut cursor: Option<String> = None;
+    let mut all = Vec::new();
+    loop {
+        let path = match &cursor {
+            Some(c) => format!("/api/v1/github-feedback/records?limit=37&cursor={c}"),
+            None => "/api/v1/github-feedback/records?limit=37".into(),
+        };
+        let page = ok(&app, &path).await;
+        assert_eq!(page["coverage"]["sources"].as_array().unwrap().len(), 5);
+        assert!(!page["coverage"]["complete"].as_bool().unwrap());
+        all.extend(page["items"].as_array().unwrap().iter().cloned());
+        cursor = page["nextCursor"].as_str().map(str::to_owned);
+        if cursor.is_none() {
+            break;
+        }
+    }
+    let kinds: HashSet<_> = all
+        .iter()
+        .filter_map(|r| r["resourceKind"].as_str())
+        .map(|s| s.split(':').next().unwrap())
+        .collect();
+    assert_eq!(
+        kinds,
+        HashSet::from([
+            "reviews",
+            "issue_comments",
+            "check_runs",
+            "check_annotations",
+            "commit_statuses"
+        ])
+    );
+    assert_eq!(
+        all.len(),
+        205 + before["issueComments"].as_array().unwrap().len() + 3
+    );
+    let ids: HashSet<_> = all
+        .iter()
+        .filter_map(|r| r["native"]["key"]["value"].as_str())
+        .collect();
+    assert_eq!(
+        ids.len(),
+        all.iter().filter(|r| !r["native"].is_null()).count()
+    );
+    assert!(
+        all.iter()
+            .filter(|r| r["native"].is_null())
+            .all(|r| r["nodeId"].is_null() && r["databaseId"].is_null())
+    );
+    assert!(
+        all.iter()
+            .any(|r| r["native"]["key"]["value"] == "987654321")
+    );
+    let run = all
+        .iter()
+        .find(|r| {
+            r["resourceKind"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with("check_runs:")
+        })
+        .unwrap();
+    assert_eq!(run["annotationCoverage"]["completeness"], "partial");
+    assert_eq!(run["currentHead"], true);
+    assert_eq!(run["native"]["externalUrl"], "https://example.test/check");
+    assert_eq!(ok(&app, "/api/v1/session").await, before);
+    assert_eq!(ok(&app, "/api/v1/analysis/findings").await, findings_before);
+    let checks = ok(&app, "/api/v1/github-feedback/checks").await;
+    assert_eq!(checks["total"], 3);
+}
+
+#[tokio::test]
 async fn checks_are_persisted_and_served_separately_from_review_threads() {
     let mut snapshot = demo::snapshot(0);
     snapshot.checks.sha = snapshot.pr.head_sha.clone();
@@ -686,6 +835,153 @@ async fn checks_are_persisted_and_served_separately_from_review_threads() {
     session.refresh().await.unwrap();
     let stale = ok(&app, "/api/v1/github-feedback/checks").await;
     assert_eq!(stale["items"][0]["currentHead"], false);
+}
+
+#[tokio::test]
+async fn feedback_joins_native_metadata_and_rejects_changed_payload_cursor() {
+    let mut snapshot = demo::snapshot(0);
+    assert!(snapshot.github_threads.len() >= 3);
+    let first_id = snapshot.github_threads[0].node_id.clone();
+    let rest_id = snapshot.github_threads[1].node_id.clone();
+    let missing_id = snapshot.github_threads[2].node_id.clone();
+    let native = &mut snapshot.github_threads[0];
+    native.url = Some("https://github.com/acme/pr/pull/1#discussion_r1".into());
+    native.comments[0].url = Some("https://github.com/acme/pr/pull/1#discussion_r1".into());
+    native.comments[0].author_type = Some("Bot".into());
+    native.comments[0].outdated = Some(true);
+    native.comments[0].original_line = Some(19);
+    snapshot.github_threads[1].rest_only = true;
+    let session = Session::new(snapshot, Store::open_in_memory().unwrap(), None, None).unwrap();
+    let app = app(&session);
+    let before = ok(&app, "/api/v1/session").await;
+    // The stored thread remains, but current native metadata is missing.
+    session
+        .snapshot
+        .write()
+        .unwrap()
+        .github_threads
+        .retain(|t| t.node_id != missing_id);
+    let page = ok(
+        &app,
+        "/api/v1/github-feedback/threads?limit=1&includeIgnored=true",
+    )
+    .await;
+    let cursor = page["nextCursor"].as_str().unwrap();
+    let cursor_thread_id = page["items"][0]["githubThreadId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut all = page["items"].as_array().unwrap().clone();
+    let mut next = Some(cursor.to_string());
+    while let Some(cursor) = next {
+        let page = ok(
+            &app,
+            &format!("/api/v1/github-feedback/threads?limit=1&includeIgnored=true&cursor={cursor}"),
+        )
+        .await;
+        all.extend(page["items"].as_array().unwrap().iter().cloned());
+        next = page["nextCursor"].as_str().map(str::to_owned);
+    }
+    let find = |id: &str| all.iter().find(|t| t["githubThreadId"] == id).unwrap();
+    let first = find(&first_id);
+    assert_eq!(
+        first["github"]["url"],
+        "https://github.com/acme/pr/pull/1#discussion_r1"
+    );
+    assert_eq!(first["github"]["comments"][0]["authorType"], "Bot");
+    assert_eq!(first["github"]["comments"][0]["outdated"], true);
+    assert_eq!(first["github"]["comments"][0]["originalLine"], 19);
+    assert_eq!(first["resolutionKnown"], true);
+    assert_eq!(find(&rest_id)["resolutionKnown"], false);
+    assert_eq!(find(&missing_id)["github"], Value::Null);
+    assert_eq!(find(&missing_id)["resolutionKnown"], false);
+    // A field-level GraphQL error invalidates the resolution assertion.
+    session.snapshot.write().unwrap().github_threads[0]
+        .unavailable_fields
+        .push("isResolved".into());
+    let after = ok(&app, "/api/v1/github-feedback/threads?includeIgnored=true").await;
+    let changed = after["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["githubThreadId"] == first_id)
+        .unwrap();
+    assert_eq!(changed["resolutionKnown"], false);
+    let cursor_native = session
+        .snapshot
+        .read()
+        .unwrap()
+        .github_threads
+        .iter()
+        .find(|t| t.node_id == cursor_thread_id)
+        .cloned()
+        .unwrap();
+    session
+        .snapshot
+        .write()
+        .unwrap()
+        .github_threads
+        .iter_mut()
+        .find(|t| t.node_id == cursor_thread_id)
+        .unwrap()
+        .comments[0]
+        .author_type = Some(format!(
+        "changed-from-{:?}",
+        cursor_native.comments[0].author_type
+    ));
+    let (status, body) = get(
+        &app,
+        &format!("/api/v1/github-feedback/threads?limit=1&includeIgnored=true&cursor={cursor}"),
+        Some(AGENT),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_recoverable_conflict(status, &body, "results_changed");
+    assert_eq!(
+        before["threads"],
+        ok(&app, "/api/v1/session").await["threads"]
+    );
+}
+
+#[tokio::test]
+async fn feedback_serves_persisted_node_id_for_comment_without_database_id() {
+    let mut snapshot = demo::snapshot(0);
+    let comment = &mut snapshot.github_threads[0].comments[0];
+    comment.database_id = None;
+    comment.node_id = "node-only-comment".into();
+    comment.url = Some("https://github.com/acme/pr/pull/1#discussion_node".into());
+    comment.author_type = Some("Bot".into());
+    comment.original_line = Some(19);
+    let session = Session::new(snapshot, Store::open_in_memory().unwrap(), None, None).unwrap();
+    let page = ok(
+        &app(&session),
+        "/api/v1/github-feedback/threads?includeIgnored=true",
+    )
+    .await;
+    let thread = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| {
+            item["github"]["comments"]
+                .as_array()
+                .is_some_and(|comments| {
+                    comments
+                        .iter()
+                        .any(|comment| comment["nodeId"] == "node-only-comment")
+                })
+        })
+        .unwrap();
+    let native = &thread["github"]["comments"][0];
+    assert_eq!(native["databaseId"], Value::Null);
+    assert_eq!(
+        native["url"],
+        "https://github.com/acme/pr/pull/1#discussion_node"
+    );
+    assert_eq!(native["authorType"], "Bot");
+    assert_eq!(native["originalLine"], 19);
+    assert_eq!(thread["comments"][0]["githubCommentId"], Value::Null);
+    assert_eq!(thread["comments"][0]["githubNodeId"], "node-only-comment");
 }
 
 #[tokio::test]

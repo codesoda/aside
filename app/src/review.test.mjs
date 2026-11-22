@@ -493,6 +493,182 @@ test('selecting adjacent code lines creates a contextual thread anchored to the 
   });
 });
 
+test('native feedback loads all pages, searches a later reply and preserves ignored state on reveal/navigation', async () => {
+  workspaceRoutes();
+  const view = sessionView();
+  view.fileStates[0].scope.ignored = true;
+  routes['GET /api/v1/session'] = () => json(view);
+  const thread = { ...view.threads[0], id: 'native-1', source: 'github', path: view.files[0].path,
+    resolved: false, resolutionKnown: true, github: { nodeId: 'native-1', isResolved: false, isOutdated: false, comments: [] },
+    comments: [{ ...view.threads[0].comments[0], id: 'reply-late', body: 'Unique later page reply' }] };
+  routes['GET /api/v1/github-feedback/threads'] = (url) => json(url.searchParams.has('cursor')
+    ? page([thread]) : { ...page(Array.from({ length: 200 }, (_, i) => ({ ...thread, id: `resolved-${i}`, resolved: true, github: { ...thread.github, isResolved: true } }))), hasMore: true, nextCursor: 'later' });
+  routes['GET /api/v1/github-feedback/records'] = (url) => json(url.searchParams.has('cursor')
+    ? page([{ resourceKind: 'github_check_annotation', native: { key: 'annotation-1' }, raw: { message: 'Later annotation', path: 'src/a.rs', endLine: 3, checkRunId: 42, annotationLevel: 'warning' } }])
+    : { ...page(Array.from({ length: 200 }, (_, i) => ({ resourceKind: 'github_check_run', native: { key: `run-${i}` }, raw: { name: `Run ${i}`, conclusion: 'success' } }))), hasMore: true, nextCursor: 'later' });
+  await start();
+  viewButton('feedback').click();
+  await tick();
+  assert.match(workspaceView('feedback').textContent, /1 confirmed unresolved thread on ignored files/);
+  assert.doesNotMatch(workspaceView('feedback').textContent, /Unique later page reply/);
+  button('Reveal ignored feedback').click();
+  await tick();
+  const search = document.getElementById('feedback-search');
+  search.value = 'Unique later page reply';
+  search.dispatchEvent(new window.Event('input', { bubbles: true }));
+  await tick();
+  assert.match(workspaceView('feedback').textContent, /Unique later page reply/);
+  assert.ok(button(`Open ${thread.path} in review`));
+  button(`Open ${thread.path} in review`).click();
+  await tick();
+  assert.equal(workspaceView('files').hidden, false);
+  assert.deepEqual(mutations(), []);
+  assert.equal(view.fileStates[0].scope.ignored, true);
+  assert.equal(calls.filter((call) => call.path === '/api/v1/github-feedback/threads').length, 2);
+  assert.equal(calls.filter((call) => call.path === '/api/v1/github-feedback/records').length, 2);
+});
+
+test('native feedback distinguishes missing metadata and partial source coverage', async () => {
+  workspaceRoutes();
+  routes['GET /api/v1/github-feedback/threads'] = () => json(page([]));
+  routes['GET /api/v1/github-feedback/records'] = () => json(page([{ resourceKind: 'github_status', native: { key: 's1' }, raw: { description: 'Queued' } }], {
+    complete: false, sources: [source('github.commit_statuses', 'incomplete', { completeness: 'partial', limitations: ['page limit reached'] })],
+  }));
+  await start();
+  viewButton('feedback').click();
+  await tick();
+  assert.match(workspaceView('feedback').textContent, /Source link unavailable/);
+  assert.match(workspaceView('feedback').textContent, /freshness: unknown/);
+  assert.match(workspaceView('feedback').textContent, /page limit reached/);
+  assert.match(workspaceView('feedback').textContent, /Native metadata/);
+  assert.deepEqual(mutations(), []);
+});
+
+test('native cards show supported links, anchors, freshness and unmappable navigation without writes', async () => {
+  workspaceRoutes();
+  const view = sessionView();
+  view.fileStates[0].scope.ignored = true;
+  routes['GET /api/v1/session'] = () => json(view);
+  const original = view.threads[0];
+  const thread = { ...original, source: 'github', id: 'linked-thread', path: view.files[0].path,
+    resolved: false, resolutionKnown: true, headSha: 'stale-persisted-head', anchorState: 'outdated', anchorReason: 'head changed', startLine: 2, line: 5,
+    github: { nodeId: 'linked-thread', url: 'https://github.com/example/thread', isOutdated: true, isResolved: false,
+      subjectType: 'LINE', originalLine: 4, comments: [{ nodeId: 'native-comment', databaseId: null,
+        url: 'https://github.com/example/comment', authorType: 'Bot', outdated: true, line: null, originalLine: 4, commitOid: view.pr.headSha }] },
+    comments: [{ ...original.comments[0], id: 'linked-comment', githubCommentId: null, githubNodeId: 'native-comment', body: 'Linked reply' }] };
+  routes['GET /api/v1/github-feedback/threads'] = () => json(page([thread, { ...thread, id: 'orphan', path: 'missing/file.rs', github: null, resolutionKnown: false }]));
+  routes['GET /api/v1/github-feedback/records'] = () => json(page([
+    { resourceKind: 'check_runs:oldsha', native: { key: 'old' }, currentHead: false, appSlug: 'checks-app', name: 'Old run', status: 'completed', annotationCoverage: { state: 'partial' }, headSha: 'oldsha', detailsUrl: 'https://github.com/example/run' },
+    { resourceKind: 'check_runs:newsha', native: { key: 'new' }, currentHead: true, appSlug: 'checks-app', name: 'New run', headSha: 'newsha' },
+    { resourceKind: 'check_annotations:oldsha', native: { key: 'annotation' }, path: 'src/file.rs', startLine: 3, endLine: 7, checkRunId: 4, annotationLevel: 'warning', message: 'Check range' },
+  ]));
+  await start();
+  viewButton('feedback').click();
+  button('Reveal ignored feedback').focus();
+  assert.equal(document.activeElement, button('Reveal ignored feedback'));
+  button('Reveal ignored feedback').click();
+  await tick();
+  const feedback = workspaceView('feedback');
+  assert.match(feedback.textContent, /anchor outdated · head changed/);
+  assert.match(feedback.textContent, /lines 2–5/);
+  assert.match(feedback.textContent, /Native anchor: outdated · LINE · original line 4/);
+  assert.match(feedback.textContent, /native commit matches current head \(not necessarily refreshed\)/);
+  assert.doesNotMatch(feedback.textContent, /native commit stale-persisted-head/);
+  assert.match(feedback.textContent, /Resolution unknown/);
+  assert.match(feedback.textContent, /Native comment anchor: outdated · line unknown · original line 4/);
+  assert.match(feedback.textContent, /\(Bot\)/);
+  assert.match(feedback.textContent, /src\/file.rs:3–7/);
+  assert.match(feedback.textContent, /historical head/);
+  assert.match(feedback.textContent, /current head \(not necessarily refreshed\)/);
+  assert.match(feedback.textContent, /historical head/);
+  assert.match(feedback.textContent, /checks-app/);
+  assert.match(feedback.textContent, /Annotation coverage/);
+  assert.equal(feedback.querySelectorAll('section[aria-label="Check runs"]').length, 1);
+  assert.equal(feedback.querySelector('a[href="https://github.com/example/thread"]').textContent, 'Open thread on GitHub');
+  assert.equal(feedback.querySelector('a[href="https://github.com/example/comment"]').textContent, 'Open comment on GitHub');
+  assert.match(feedback.textContent, /No matching current file/);
+  assert.match(feedback.textContent, /Thread source link unavailable/);
+  assert.equal(button('Open missing/file.rs in review'), undefined);
+  assert.deepEqual(mutations(), []);
+  assert.equal(view.fileStates[0].scope.ignored, true);
+  button('Hide ignored feedback').click();
+  await tick();
+  assert.equal(feedback.querySelector('[data-feedback-thread="linked-thread"]'), null);
+  assert.deepEqual(mutations(), []);
+});
+
+test('REST-only and missing resolution never inflate ignored unresolved counts; persisted head is not freshness', async () => {
+  workspaceRoutes();
+  const view = sessionView();
+  view.fileStates[0].scope.ignored = true;
+  routes['GET /api/v1/session'] = () => json(view);
+  const base = { ...view.threads[0], source: 'github', path: view.files[0].path, resolved: false,
+    headSha: view.pr.headSha, anchorState: 'outdated', comments: [] };
+  let threads = [
+    { ...base, id: 'rest-only', resolutionKnown: false, github: { nodeId: 'rest', restOnly: true, isResolved: false, isOutdated: true, comments: [] } },
+    { ...base, id: 'missing-resolution', resolutionKnown: false, github: { nodeId: 'missing', isResolved: false, isOutdated: true, comments: [] } },
+    { ...base, id: 'confirmed', resolutionKnown: true, github: { nodeId: 'confirmed', isResolved: false, isOutdated: true, comments: [] } },
+  ];
+  routes['GET /api/v1/github-feedback/threads'] = () => json(page(threads));
+  routes['GET /api/v1/github-feedback/records'] = () => json(page([]));
+  await start();
+  viewButton('feedback').click();
+  await tick();
+  let feedback = workspaceView('feedback');
+  assert.match(feedback.textContent, /1 confirmed unresolved thread on ignored files · 2 with resolution unknown/);
+  button('Reveal ignored feedback').click();
+  await tick();
+  assert.match(feedback.textContent, /Resolution unknown \(REST-only\)/);
+  assert.match(feedback.textContent, /Native anchor: outdated/);
+  assert.match(feedback.textContent, /freshness unknown/);
+  assert.doesNotMatch(feedback.textContent, /native commit matches current head/);
+  // Refresh can change the PR head without rewriting the imported thread's
+  // persisted head. Native commit evidence, not that field, controls freshness.
+  view.pr.headSha = 'new-head';
+  threads = threads.map((thread) => ({ ...thread, github: { ...thread.github, comments: [
+    { nodeId: 'evidence', databaseId: 7, commitOid: 'old-head', body: '', author: '', createdAt: '' },
+  ] } }));
+  sources[0].emit('pr.refreshed');
+  await settle();
+  feedback = workspaceView('feedback');
+  assert.match(feedback.textContent, /native commit differs from current head/);
+  assert.equal(view.fileStates[0].scope.ignored, true);
+  assert.deepEqual(mutations(), []);
+});
+
+test('native records restart bounded stale pagination and reject later-page failures', async () => {
+  const { fetchFeedbackRecords, ResultsChangedError } = await import('./api.ts');
+  let attempts = 0;
+  routes['GET /api/v1/github-feedback/records'] = (url) => {
+    attempts++;
+    if (url.searchParams.has('cursor') && attempts === 2) return json({ error: 'cursor_stale' }, 409);
+    return url.searchParams.has('cursor') ? json(page([{ resourceKind: 'github_status', native: { key: 'last' } }]))
+      : json({ ...page([{ resourceKind: 'github_review', native: { key: 'first' } }]), hasMore: true, nextCursor: 'next' });
+  };
+  assert.deepEqual((await fetchFeedbackRecords()).items.map((record) => record.resourceKind), ['github_review', 'github_status']);
+  assert.equal(attempts, 4);
+  routes['GET /api/v1/github-feedback/records'] = (url) => url.searchParams.has('cursor')
+    ? json({ error: 'cursor_stale' }, 409) : json({ ...page([]), hasMore: true, nextCursor: 'next' });
+  await assert.rejects(fetchFeedbackRecords(), ResultsChangedError);
+  routes['GET /api/v1/github-feedback/records'] = (url) => url.searchParams.has('cursor')
+    ? json({ error: 'server_unavailable' }, 503) : json({ ...page([]), hasMore: true, nextCursor: 'next' });
+  await assert.rejects(fetchFeedbackRecords(), /503/);
+});
+
+test('later-page native error is explicit and does not imply complete-empty', async () => {
+  workspaceRoutes();
+  routes['GET /api/v1/github-feedback/threads'] = () => json(page([]));
+  routes['GET /api/v1/github-feedback/records'] = (url) => url.searchParams.has('cursor')
+    ? json({ error: 'backend_failure', message: 'second page failed' }, 500)
+    : json({ ...page([{ resourceKind: 'github_review', native: {} }]), hasMore: true, nextCursor: 'next' });
+  await start();
+  viewButton('feedback').click();
+  await tick();
+  assert.match(workspaceView('feedback').textContent, /Feedback load failed: second page failed/);
+  assert.match(workspaceView('feedback').textContent, /Search results are incomplete/);
+  assert.doesNotMatch(workspaceView('feedback').textContent, /No other imported feedback \(complete sources\)/);
+});
+
 test('stale cursors during a live run restart pagination instead of splicing pages', async () => {
   const { fetchAllPages, ResultsChangedError } = await import('./api.ts');
   let served = 0;

@@ -253,6 +253,24 @@ impl Store {
         Ok(threads)
     }
 
+    /// Stable persisted comment-to-GitHub node association for the feedback API.
+    pub fn github_comment_node_ids(
+        &self,
+        pr_id: &str,
+    ) -> Result<std::collections::HashMap<String, String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT c.id, c.github_node_id FROM review_comments c
+             JOIN review_threads t ON t.id = c.thread_id
+             WHERE t.pr_id = ?1 AND c.github_node_id IS NOT NULL",
+        )?;
+        let pairs = stmt
+            .query_map([pr_id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(pairs.into_iter().collect())
+    }
+
     pub fn get_thread(&self, pr_id: &str, id: &str) -> Result<ReviewThread> {
         self.list_threads(pr_id)?
             .into_iter()

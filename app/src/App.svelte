@@ -1,13 +1,16 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import {
-    ApiError, createFileRule, createThread, fetchFindings, fetchQueue, fetchSession, replyToThread, setReviewed, watchSession,
-    type FindingItem, type QueueView, type SessionView,
+    ApiError, createFileRule, createThread, fetchFeedbackRecords, fetchFeedbackThreads, fetchFindings, fetchQueue, fetchSession, replyToThread, setReviewed, watchSession,
+    type FeedbackThread, type FindingItem, type NativeFeedbackRecord, type QueueView, type SessionView,
   } from './api';
   import { fileIndicators, type QueueFilter } from './insights';
   import ReviewPrep from './workspace/ReviewPrep.svelte';
   import InsightsPanel from './insights/InsightsPanel.svelte';
   import Conversations from './workspace/Conversations.svelte';
+  import Feedback from './workspace/Feedback.svelte';
+  import type { Page } from './generated/Page';
+  import { unresolvedByPath } from './feedback';
   import ReviewQueue from './insights/ReviewQueue.svelte';
   import type { DiffLine } from './generated/DiffLine';
   import type { Side } from './generated/Side';
@@ -29,6 +32,7 @@
     { id: 'prep', label: 'Review prep' },
     { id: 'files', label: 'Files changed' },
     { id: 'conversations', label: 'Conversations' },
+    { id: 'feedback', label: 'GitHub feedback' },
   ] as const;
   type WorkspaceView = (typeof views)[number]['id'];
   // Start with review prep so focus areas are visible before opening a diff.
@@ -55,6 +59,39 @@
   let queueFilter = $state<QueueFilter>('remaining');
   let showIgnored = $state(false);
   let hideIgnoredInTree = $state(false);
+  let feedbackThreads = $state<FeedbackThread[]>([]);
+  let feedbackRecords = $state<NativeFeedbackRecord[]>([]);
+  let feedbackThreadPage = $state<Page<FeedbackThread> | null>(null);
+  let feedbackRecordPage = $state<Page<NativeFeedbackRecord> | null>(null);
+  let feedbackErrors = $state<string[]>([]);
+  let feedbackLoading = $state(false);
+  let feedbackRequest = 0;
+
+  function loadFeedback() {
+    const request = ++feedbackRequest;
+    feedbackLoading = true;
+    feedbackErrors = [];
+    void Promise.allSettled([fetchFeedbackThreads(), fetchFeedbackRecords()]).then(([threadsResult, recordsResult]) => {
+      if (request !== feedbackRequest) return;
+      feedbackLoading = false;
+      if (threadsResult.status === 'fulfilled') {
+        feedbackThreads = threadsResult.value.items;
+        feedbackThreadPage = threadsResult.value.last;
+      } else {
+        feedbackThreads = [];
+        feedbackThreadPage = null;
+        feedbackErrors.push(threadsResult.reason instanceof Error ? threadsResult.reason.message : String(threadsResult.reason));
+      }
+      if (recordsResult.status === 'fulfilled') {
+        feedbackRecords = recordsResult.value.items;
+        feedbackRecordPage = recordsResult.value.last;
+      } else {
+        feedbackRecords = [];
+        feedbackRecordPage = null;
+        feedbackErrors.push(recordsResult.reason instanceof Error ? recordsResult.reason.message : String(recordsResult.reason));
+      }
+    });
+  }
 
   /** Fire-and-forget; read-only. Latest request wins. */
   function loadInsights() {
@@ -74,7 +111,7 @@
     // A stacked sidebar would otherwise push the first diff below the viewport.
     treeVisible = !window.matchMedia?.('(max-width: 760px)').matches;
     return watchSession(
-      (view) => { session = view; error = null; loadInsights(); },
+      (view) => { session = view; error = null; loadInsights(); loadFeedback(); },
       (failure) => { error = String(failure); },
     );
   });
@@ -84,6 +121,10 @@
   const queueById = $derived(new Map(queue?.queue.items.map((entry) => [entry.fileId, entry])));
   const fileState = $derived(file && statesById.get(file.id));
   const conversationCount = $derived(session ? session.threads.length + session.reviews.length + session.issueComments.length : 0);
+  const feedbackCounts = $derived(unresolvedByPath(feedbackThreads));
+  const ignoredFeedbackPaths = $derived(new Set(session?.fileStates.filter((state) => state.scope.ignored)
+    .map((state) => session?.files.find((item) => item.id === state.fileId)?.path)
+    .filter((path): path is string => !!path) ?? []));
   const threads = $derived(session?.threads.filter((thread) => thread.fileId === file?.id || thread.path === file?.path) ?? []);
   const sortedThreads = $derived(orderThreads(threads));
   const fileTree = $derived(buildFileTree(session?.files.filter((item) =>
@@ -112,6 +153,14 @@
     if (id) fileCollapsed = false;
     activeView = 'files';
     if (movingToDiff) void tick().then(() => document.getElementById('file-review-heading')?.focus());
+  }
+
+  function openFeedbackFile(path: string) {
+    const target = session?.files.find((item) => item.path === path);
+    if (!target) return;
+    fileQuery = '';
+    hideIgnoredInTree = false;
+    openReview(target.id);
   }
 
   function openPrep() {
@@ -285,9 +334,10 @@
     {#snippet renderFile(item: ChangedFile)}
       {@const state = statesById.get(item.id)}
       {@const indicators = fileIndicators(queueById.get(item.id))}
+      {@const ignoredThreads = state?.scope.ignored ? feedbackCounts.get(item.path) ?? 0 : 0}
       <li class="tree-row" class:is-current={file?.id === item.id} class:is-ignored={state?.scope.ignored}>
         <button type="button" onclick={() => openReview(item.id)} aria-current={file?.id === item.id ? 'true' : undefined}
-          aria-label={`Review ${item.path}${indicators.length ? `. ${indicators.map((i) => i.label).join(', ')}` : ''}`} title={item.path}
+          aria-label={`Review ${item.path}${indicators.length ? `. ${indicators.map((i) => i.label).join(', ')}` : ''}${ignoredThreads ? `. ${ignoredThreads} unresolved GitHub threads on ignored file` : ''}`} title={item.path}
           class="tree-file">
           <span class="tree-glyph" aria-hidden="true">▤</span>
           <span class="min-w-0">
@@ -295,6 +345,7 @@
             <span class="block text-xs text-muted">
               {fileStatusLabels[state?.status ?? 'unreviewed']} · +{item.additions} −{item.deletions}
             </span>
+            {#if ignoredThreads}<span class="block text-xs text-warning">{ignoredThreads} unresolved GitHub {ignoredThreads === 1 ? 'thread' : 'threads'} · ignored</span>{/if}
             {#if indicators.length}
               <span class="mt-1 flex flex-wrap gap-1" aria-hidden="true" data-testid="file-indicators">
                 {#each indicators as indicator (indicator.key)}
@@ -522,6 +573,12 @@
           {/if}
         </section>
 
+        <section id="workspace-feedback" hidden={activeView !== 'feedback'} aria-label="GitHub feedback">
+          <Feedback threads={feedbackThreads} records={feedbackRecords} threadPage={feedbackThreadPage} recordPage={feedbackRecordPage}
+            loading={feedbackLoading} errors={feedbackErrors}
+            ignoredPaths={ignoredFeedbackPaths} availablePaths={new Set(session.files.map((item) => item.path))} headSha={session.pr.headSha}
+            onOpenFile={openFeedbackFile} />
+        </section>
         <section id="workspace-conversations" hidden={activeView !== 'conversations'} aria-label="Conversations">
           <Conversations {session} onOpenThread={openConversation} onReview={() => openReview()} />
         </section>
