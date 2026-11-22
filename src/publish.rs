@@ -936,6 +936,213 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn incomplete_local_snapshot_cannot_be_previewed_or_published() {
+        let mut local = snapshot();
+        local.complete = false;
+        let fake = Arc::new(FakeGh::default());
+        let session = Session::new(
+            local,
+            Store::open_in_memory().unwrap(),
+            Some(fake.clone()),
+            Some(PrRef {
+                owner: "o".into(),
+                repo: "r".into(),
+                number: 1,
+            }),
+        )
+        .unwrap();
+        session
+            .store
+            .lock()
+            .unwrap()
+            .finish_review(&session.pr_id, Verdict::Approve, "okay")
+            .unwrap();
+        assert!(
+            preview(&session)
+                .unwrap_err()
+                .to_string()
+                .contains("incomplete")
+        );
+        assert!(
+            publish(&session, "any-plan", true)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("incomplete")
+        );
+        assert!(fake.calls_matching(&["api", "--method", "POST"]).is_empty());
+    }
+
+    #[test]
+    fn incomplete_stored_file_omits_root_and_dependent_replies() {
+        let mut local = snapshot();
+        local.files = diff::parse_unified(
+            "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n",
+            "head",
+            &diff::Limits::default(),
+        )
+        .files;
+        local.files[0].patch_complete = false;
+        // Keep the snapshot complete to exercise the per-file anchor guard.
+        assert!(local.complete);
+        let fake = Arc::new(FakeGh::default());
+        let session = Session::new(
+            local,
+            Store::open_in_memory().unwrap(),
+            Some(fake),
+            Some(PrRef {
+                owner: "o".into(),
+                repo: "r".into(),
+                number: 1,
+            }),
+        )
+        .unwrap();
+        {
+            let mut store = session.store.lock().unwrap();
+            store
+                .insert_thread(
+                    &session.pr_id,
+                    &NewThread {
+                        id: "t".into(),
+                        source: ThreadSource::Local,
+                        github_thread_id: None,
+                        path: "a.rs".into(),
+                        side: Side::Right,
+                        line: Some(1),
+                        start_line: None,
+                        line_text: Some("new".into()),
+                        diff_digest: None,
+                        head_sha: "head".into(),
+                        anchor_state: AnchorState::Current,
+                        anchor_reason: None,
+                        resolved: false,
+                        created_at: None,
+                    },
+                )
+                .unwrap();
+            for (id, body) in [("root", "fix"), ("reply", "follow up")] {
+                store
+                    .insert_comment(
+                        &Comment {
+                            id: id.into(),
+                            thread_id: "t".into(),
+                            author_kind: Actor::Human,
+                            author: "me".into(),
+                            body: body.into(),
+                            created_at: id.into(),
+                            updated_at: id.into(),
+                            publish_state: PublishState::Draft,
+                            github_comment_id: None,
+                        },
+                        None,
+                    )
+                    .unwrap();
+            }
+            store
+                .finish_review(&session.pr_id, Verdict::Comment, "body")
+                .unwrap();
+        }
+        let plan = preview(&session).unwrap();
+        assert!(plan.inline.is_empty());
+        assert!(plan.replies.is_empty());
+        assert_eq!(plan.omitted.len(), 2);
+        assert_eq!(plan.omitted[0].comment_id, "root");
+        assert!(plan.omitted[0].reason.contains("incomplete"));
+        assert_eq!(plan.omitted[1].comment_id, "reply");
+        assert!(plan.omitted[1].reason.contains("parent"));
+    }
+
+    #[tokio::test]
+    async fn incomplete_fresh_snapshot_fails_before_claim_and_keeps_draft() {
+        let mut local = snapshot();
+        local.files = diff::parse_unified(
+            "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n",
+            "head",
+            &diff::Limits::default(),
+        )
+        .files;
+        let fake = Arc::new(FakeGh::default());
+        // The manifest and aggregate disagree. The API has no patch, so the
+        // fresh snapshot is incomplete even though base/head still match.
+        script_preflight(
+            &fake,
+            "base",
+            "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n",
+            r#"[[{"filename":"a.rs","status":"modified","patch":null,"additions":2,"deletions":1}]]"#,
+        );
+        let session = Session::new(
+            local,
+            Store::open_in_memory().unwrap(),
+            Some(fake.clone()),
+            Some(PrRef {
+                owner: "o".into(),
+                repo: "r".into(),
+                number: 1,
+            }),
+        )
+        .unwrap();
+        {
+            let mut store = session.store.lock().unwrap();
+            store
+                .insert_thread(
+                    &session.pr_id,
+                    &NewThread {
+                        id: "t".into(),
+                        source: ThreadSource::Local,
+                        github_thread_id: None,
+                        path: "a.rs".into(),
+                        side: Side::Right,
+                        line: Some(1),
+                        start_line: None,
+                        line_text: Some("new".into()),
+                        diff_digest: None,
+                        head_sha: "head".into(),
+                        anchor_state: AnchorState::Current,
+                        anchor_reason: None,
+                        resolved: false,
+                        created_at: None,
+                    },
+                )
+                .unwrap();
+            store
+                .insert_comment(
+                    &Comment {
+                        id: "c".into(),
+                        thread_id: "t".into(),
+                        author_kind: Actor::Human,
+                        author: "me".into(),
+                        body: "fix".into(),
+                        created_at: "now".into(),
+                        updated_at: "now".into(),
+                        publish_state: PublishState::Draft,
+                        github_comment_id: None,
+                    },
+                    None,
+                )
+                .unwrap();
+            store
+                .finish_review(&session.pr_id, Verdict::Comment, "body")
+                .unwrap();
+        }
+        let plan = preview(&session).unwrap();
+        assert_eq!(plan.inline.len(), 1);
+        let error = publish(&session, &plan.plan_id, true).await.unwrap_err();
+        assert!(error.to_string().contains("diff changed"), "{error:#}");
+        assert!(fake.calls_matching(&["api", "--method", "POST"]).is_empty());
+        let mut store = session.store.lock().unwrap();
+        assert_eq!(
+            store.list_threads(&session.pr_id).unwrap()[0].comments[0].publish_state,
+            PublishState::Draft
+        );
+        // Test the same store: a separate store would not detect an early claim.
+        assert!(
+            store
+                .start_publication(&session.pr_id, "other", "{}", "head", &[("c", "fix")])
+                .is_ok()
+        );
+    }
+
     #[test]
     fn stale_draft_is_omitted_without_moving_its_anchor() {
         let t = ReviewThread {

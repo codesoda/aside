@@ -187,10 +187,144 @@ pub(super) async fn update_thread(
     ))
 }
 
+fn editable_comment(state: &AppState, id: &str, actor: Actor) -> ApiResult<Comment> {
+    let store = state
+        .session
+        .store
+        .lock()
+        .map_err(|_| ApiError::internal())?;
+    let comment = store.get_comment(id).map_err(db_error)?;
+    store
+        .get_thread(&state.session.pr_id, &comment.thread_id)
+        .map_err(db_error)?;
+    if comment.publish_state != PublishState::Draft || comment.author_kind != actor {
+        return Err(ApiError::forbidden());
+    }
+    Ok(comment)
+}
+pub(super) async fn update_comment(
+    State(state): State<AppState>,
+    axum::Extension(actor): axum::Extension<Actor>,
+    Path(id): Path<String>,
+    Json(input): Json<ReplyInput>,
+) -> ApiResult<Json<Value>> {
+    body_text(&input.body)?;
+    editable_comment(&state, &id, actor)?;
+    state
+        .session
+        .store
+        .lock()
+        .map_err(|_| ApiError::internal())?
+        .update_comment_body(&id, input.body.trim())
+        .map_err(db_error)?;
+    let event = state
+        .session
+        .notify("comment.changed", json!({"commentId":id}));
+    Ok(Json(
+        json!({"comment":state.session.store.lock().map_err(|_| ApiError::internal())?.get_comment(&id).map_err(db_error)?,"sequence":event.sequence}),
+    ))
+}
+pub(super) async fn delete_comment(
+    State(state): State<AppState>,
+    axum::Extension(actor): axum::Extension<Actor>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    editable_comment(&state, &id, actor)?;
+    state
+        .session
+        .store
+        .lock()
+        .map_err(|_| ApiError::internal())?
+        .delete_comment(&id)
+        .map_err(db_error)?;
+    let event = state
+        .session
+        .notify("comment.deleted", json!({"commentId":id}));
+    Ok(Json(json!({"sequence":event.sequence})))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    #[tokio::test]
+    async fn incomplete_patch_rejects_human_and_agent_anchored_threads_without_mutation() {
+        use axum::http::StatusCode;
+        use std::sync::atomic::Ordering;
+        use tokio::sync::broadcast::error::TryRecvError;
+
+        let mut snapshot = crate::demo::snapshot(0);
+        let file = snapshot
+            .files
+            .iter_mut()
+            .find(|file| {
+                file.hunks.iter().any(|hunk| {
+                    hunk.lines
+                        .iter()
+                        .any(|line| line.new_line.is_some() && line.kind != LineKind::Meta)
+                })
+            })
+            .unwrap();
+        let line = file
+            .hunks
+            .iter()
+            .flat_map(|hunk| &hunk.lines)
+            .find_map(|line| line.new_line.filter(|_| line.kind != LineKind::Meta))
+            .unwrap();
+        file.patch_complete = false;
+        let file_id = file.id.clone();
+        let diff_digest = file.diff_digest.clone();
+        let input = || ThreadInput {
+            file_id: file_id.clone(),
+            diff_digest: diff_digest.clone(),
+            side: Side::Right,
+            line,
+            start_line: None,
+            body: "Valid anchored draft".into(),
+        };
+        let session = crate::session::Session::new(
+            snapshot,
+            crate::store::Store::open_in_memory().unwrap(),
+            None,
+            None,
+        )
+        .unwrap();
+        let state = AppState::new(Arc::clone(&session), "ui".into(), "agent".into());
+        let mut events = session.events.subscribe();
+        let before = serde_json::to_value(
+            session
+                .store
+                .lock()
+                .unwrap()
+                .list_threads(&session.pr_id)
+                .unwrap(),
+        )
+        .unwrap();
+        let sequence = session.sequence.load(Ordering::SeqCst);
+
+        for actor in [Actor::Human, Actor::Agent] {
+            let error = create_thread(State(state.clone()), axum::Extension(actor), Json(input()))
+                .await
+                .unwrap_err();
+            assert_eq!(error.status, StatusCode::BAD_REQUEST, "{actor:?}");
+            assert_eq!(
+                serde_json::to_value(
+                    session
+                        .store
+                        .lock()
+                        .unwrap()
+                        .list_threads(&session.pr_id)
+                        .unwrap()
+                )
+                .unwrap(),
+                before,
+                "{actor:?} must not create a thread or comment"
+            );
+            assert_eq!(session.sequence.load(Ordering::SeqCst), sequence);
+            assert!(matches!(events.try_recv(), Err(TryRecvError::Empty)));
+        }
+    }
 
     #[tokio::test]
     async fn human_thread_event_gives_host_the_message_and_code_context() {
@@ -264,60 +398,4 @@ mod tests {
             "agent drafts do not request a reply"
         );
     }
-}
-
-fn editable_comment(state: &AppState, id: &str, actor: Actor) -> ApiResult<Comment> {
-    let store = state
-        .session
-        .store
-        .lock()
-        .map_err(|_| ApiError::internal())?;
-    let comment = store.get_comment(id).map_err(db_error)?;
-    store
-        .get_thread(&state.session.pr_id, &comment.thread_id)
-        .map_err(db_error)?;
-    if comment.publish_state != PublishState::Draft || comment.author_kind != actor {
-        return Err(ApiError::forbidden());
-    }
-    Ok(comment)
-}
-pub(super) async fn update_comment(
-    State(state): State<AppState>,
-    axum::Extension(actor): axum::Extension<Actor>,
-    Path(id): Path<String>,
-    Json(input): Json<ReplyInput>,
-) -> ApiResult<Json<Value>> {
-    body_text(&input.body)?;
-    editable_comment(&state, &id, actor)?;
-    state
-        .session
-        .store
-        .lock()
-        .map_err(|_| ApiError::internal())?
-        .update_comment_body(&id, input.body.trim())
-        .map_err(db_error)?;
-    let event = state
-        .session
-        .notify("comment.changed", json!({"commentId":id}));
-    Ok(Json(
-        json!({"comment":state.session.store.lock().map_err(|_| ApiError::internal())?.get_comment(&id).map_err(db_error)?,"sequence":event.sequence}),
-    ))
-}
-pub(super) async fn delete_comment(
-    State(state): State<AppState>,
-    axum::Extension(actor): axum::Extension<Actor>,
-    Path(id): Path<String>,
-) -> ApiResult<Json<Value>> {
-    editable_comment(&state, &id, actor)?;
-    state
-        .session
-        .store
-        .lock()
-        .map_err(|_| ApiError::internal())?
-        .delete_comment(&id)
-        .map_err(db_error)?;
-    let event = state
-        .session
-        .notify("comment.deleted", json!({"commentId":id}));
-    Ok(Json(json!({"sequence":event.sequence})))
 }
