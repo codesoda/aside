@@ -290,6 +290,18 @@
   .thread-marker:hover, .thread-marker[aria-pressed="true"] {
     @apply ring-2;
   }
+  .callout-marker {
+    @apply size-3.5 shrink-0 border-2 border-accent bg-accent-soft;
+  }
+  .callout-marker:hover, .callout-marker[aria-pressed="true"] {
+    @apply bg-accent ring-2 ring-accent-soft;
+  }
+  .callout-band {
+    @apply min-w-0 border-b border-line bg-sidebar px-3 py-3 font-sans whitespace-normal;
+  }
+  .inline-callouts {
+    @apply border-y border-line bg-canvas;
+  }
 }
 
 @media (hover: hover) and (pointer: fine) {

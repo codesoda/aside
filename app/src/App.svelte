@@ -4,9 +4,11 @@
     ApiError, createFileRule, createThread, fetchFeedbackRecords, fetchFeedbackThreads, fetchFindings, fetchQueue, fetchSession, replyToThread, setReviewed, watchSession,
     type FeedbackThread, type FindingItem, type NativeFeedbackRecord, type QueueView, type SessionView,
   } from './api';
-  import { fileIndicators, type QueueFilter } from './insights';
+  import { fileIndicators, type FindingFilter, type QueueFilter } from './insights';
+  import { placeCallouts } from './callouts';
+  import FileCallouts from './insights/FileCallouts.svelte';
+  import FindingCard from './insights/FindingCard.svelte';
   import ReviewPrep from './workspace/ReviewPrep.svelte';
-  import InsightsPanel from './insights/InsightsPanel.svelte';
   import Conversations from './workspace/Conversations.svelte';
   import Feedback from './workspace/Feedback.svelte';
   import type { Page } from './generated/Page';
@@ -52,6 +54,10 @@
   // renders from the session view alone and insights fill in as they arrive.
   let queue = $state<QueueView | null>(null);
   let findingItems = $state<FindingItem[] | null>(null);
+  let findingsSnapshotId = $state<string | null>(null);
+  let findingFilter = $state<FindingFilter>('all');
+  let showLineCallouts = $state(true);
+  let selectedFindingId = $state<string | null>(null);
   let insightsError = $state<string | null>(null);
   let insightsLoading = $state(false);
   let insightsRequest = 0;
@@ -101,7 +107,10 @@
       if (request !== insightsRequest) return;
       insightsLoading = false;
       if (q.status === 'fulfilled') queue = q.value;
-      if (f.status === 'fulfilled') findingItems = f.value.items;
+      if (f.status === 'fulfilled') {
+        findingItems = f.value.items;
+        findingsSnapshotId = f.value.last.snapshotId;
+      }
       const failed = [q, f].find((r) => r.status === 'rejected') as PromiseRejectedResult | undefined;
       insightsError = failed ? (failed.reason instanceof Error ? failed.reason.message : String(failed.reason)) : null;
     });
@@ -141,6 +150,7 @@
   function selectFile(id: string) {
     selectedId = id;
     selectedThreadId = null;
+    selectedFindingId = null;
     fileCollapsed = false;
     anchor = null;
     draft = '';
@@ -182,7 +192,32 @@
     void showThread(threadId);
   }
 
-  const queueItem = $derived(file && queueById.get(file.id));
+  const fileFindings = $derived((findingItems ?? []).filter((item) =>
+    item.finding.anchor.fileId === file?.id || item.finding.anchor.currentPath === file?.path));
+  const callouts = $derived(placeCallouts(fileFindings, file ? [file] : [],
+    findingsSnapshotId === session?.analysis.snapshotId ? session.analysis.snapshotId : '', findingFilter, session?.threads ?? []));
+  const markerCallouts = $derived(placeCallouts(fileFindings, file ? [file] : [],
+    findingsSnapshotId === session?.analysis.snapshotId ? session.analysis.snapshotId : '', 'all', session?.threads ?? []).inline);
+
+  async function showCallout(id: string) {
+    findingFilter = 'all';
+    showLineCallouts = true;
+    selectedFindingId = id;
+    await tick();
+    const card = document.getElementById(`callout-${id}`);
+    card?.focus({ preventScroll: true });
+    card?.scrollIntoView({ block: 'nearest' });
+  }
+
+  function openPrepFinding(fileId: string, findingId?: string) {
+    openReview(fileId);
+    if (findingId) void showCallout(findingId);
+  }
+
+  function openPrepThread(fileId: string, threadId: string) {
+    openReview(fileId);
+    void showThread(threadId);
+  }
 
   function setScope(path: string, ignored: boolean) {
     // Rules only re-rank on the server; no analysis rerun is requested.
@@ -215,6 +250,8 @@
     const range = selection.getRangeAt(0);
     const code = document.querySelector('#file-review .workspace-code');
     if (!code || !code.contains(range.commonAncestorContainer)) return;
+    if ([range.startContainer, range.endContainer].some((node) =>
+      (node instanceof Element ? node : node.parentElement)?.closest('[data-callout-scope], .callout-band'))) return;
     const lines = [...code.querySelectorAll<HTMLElement>('[data-code-line]')]
       .filter((element) => range.intersectsNode(element));
     if (!lines.length || lines.some((element) => !element.dataset.side || element.dataset.side !== lines[0].dataset.side)) return;
@@ -428,7 +465,8 @@
 
       <main class="workspace-main">
         <section id="workspace-prep" hidden={activeView !== 'prep'} aria-label="Review prep">
-          <ReviewPrep {session} {queue} {insightsError} onOpenFile={openReview} onStart={startReview} />
+          <ReviewPrep {session} {queue} findings={findingsSnapshotId === session.analysis.snapshotId ? findingItems : null}
+            threads={session.threads} {insightsError} onOpenFile={openPrepFinding} onOpenThread={openPrepThread} onStart={startReview} />
         </section>
         <section id="workspace-files" hidden={activeView !== 'files'} aria-label="Files changed">
           <div class="workspace-view-heading">
@@ -475,6 +513,9 @@
                   </div>
                 </div>
                 {#if !fileCollapsed}
+                  <FileCallouts placements={callouts} summary={session.analysis} loading={insightsLoading}
+                    findingsLoaded={findingItems !== null} bind:filter={findingFilter} bind:showLines={showLineCallouts}
+                    selectedId={selectedFindingId} onReveal={(id) => void showCallout(id)} />
                   {#if fileState?.scope.ignored}
                     <p class="border-b border-line p-4 text-sm text-muted">Ignored by review scope. Read-only; this file does not count toward progress.</p>
                   {/if}
@@ -486,16 +527,23 @@
                         <div class="min-w-max border-b border-line bg-accent-soft px-3 py-1 text-muted">@@ -{hunk.oldStart},{hunk.oldCount} +{hunk.newStart},{hunk.newCount} @@ {hunk.header}</div>
                         {#each hunk.lines as line (line.id)}
                           {@const lineThreads = threadsForLine(line, threads)}
+                          {@const lineFindings = markerCallouts.filter((entry) => entry.line === (entry.side === 'LEFT' ? line.oldLine : line.newLine))}
+                          {@const visibleFindings = callouts.inline.filter((entry) => entry.line === (entry.side === 'LEFT' ? line.oldLine : line.newLine))}
                           <div class="diff-row flex min-w-max whitespace-pre" class:bg-added-soft={line.kind === 'addition'} class:bg-deleted-soft={line.kind === 'deletion'}>
                             <span class="w-12 shrink-0 select-none border-r border-line px-2 text-right text-muted">{line.oldLine ?? ''}</span>
                             <span class="w-12 shrink-0 select-none border-r border-line px-2 text-right text-muted">{line.newLine ?? ''}</span>
-                            <span class="flex w-6 shrink-0 items-center justify-center">
+                            <span class="flex w-9 shrink-0 items-center justify-center gap-1">
                               {#if line.kind !== 'meta' && lineThreads.length}
                                 <button type="button" onclick={() => void showThread(lineThreads[0].id)}
                                   aria-label={`Show ${lineThreads.length} ${lineThreads.length === 1 ? 'thread' : 'threads'} on ${lineThreads[0].side === 'LEFT' ? 'old' : 'new'} line ${lineThreads[0].line}`}
                                   aria-pressed={lineThreads.some((thread) => thread.id === selectedThreadId)}
                                   title={`${lineThreads.length} ${lineThreads.length === 1 ? 'thread' : 'threads'} on this line`}
                                   class="thread-marker"></button>
+                              {/if}
+                              {#if lineFindings.length}
+                                <button type="button" class="callout-marker" aria-label={`Show ${lineFindings.length} ${lineFindings.length === 1 ? 'finding' : 'findings'} on ${lineFindings.map((entry) => `${entry.side === 'LEFT' ? 'old' : 'new'} line ${entry.line}`).filter((label, index, labels) => labels.indexOf(label) === index).join(' and ')}`}
+                                  aria-pressed={lineFindings.some((entry) => entry.item.finding.id === selectedFindingId)}
+                                  onclick={() => void showCallout(lineFindings[0].item.finding.id)}></button>
                               {/if}
                             </span>
                             {#if lineSide(line) && file.patchComplete && !fileState?.scope.ignored}
@@ -505,6 +553,14 @@
                             {/if}
                             <span class="px-2" data-code-line={lineSide(line) ? (lineSide(line) === 'LEFT' ? line.oldLine : line.newLine) : undefined} data-side={lineSide(line) ?? undefined}>{line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}{line.text}</span>
                           </div>
+                          {#if showLineCallouts && visibleFindings.length}
+                            <div class="callout-band inline-callouts" aria-label={`Findings on ${visibleFindings.map((entry) => `${entry.side === 'LEFT' ? 'old' : 'new'} line ${entry.line}`).filter((label, index, labels) => labels.indexOf(label) === index).join(' and ')}`}>
+                              {#each visibleFindings as callout (callout.item.finding.id)}
+                                <FindingCard item={callout.item} scopeLabel={callout.startLine === callout.line ? `${callout.side === 'LEFT' ? 'Old' : 'New'} line ${callout.line}` : `${callout.side === 'LEFT' ? 'Old' : 'New'} lines ${callout.startLine}–${callout.line}`}
+                                  selected={selectedFindingId === callout.item.finding.id} />
+                              {/each}
+                            </div>
+                          {/if}
                           {#if !fileState?.scope.ignored && anchor?.fileId === file.id && anchor.digest === file.diffDigest && anchor.side === lineSide(line) && anchor.line === (anchor.side === 'LEFT' ? line.oldLine : line.newLine)}
                             <div class="min-w-0 border-y border-line bg-canvas p-3 font-sans whitespace-normal">
                               <label for="draft" class="block text-sm font-semibold">Draft on {anchor.side === 'LEFT' ? 'old' : 'new'} {anchor.startLine ? `lines ${anchor.startLine}–${anchor.line}` : `line ${anchor.line}`}</label>
@@ -564,8 +620,6 @@
                     {/each}
                   </div>
                 </section>
-                <InsightsPanel {file} summary={session.analysis} {queueItem} findings={findingItems} {threads}
-                  loading={insightsLoading} onShowThread={(id) => void showThread(id)} />
               </aside>
             </div>
           {:else}

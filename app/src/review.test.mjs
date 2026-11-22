@@ -102,6 +102,7 @@ test('review prep is the initial view while analysis is pending, then updates in
   assert.match(document.querySelector('[data-testid=analysis-status]').textContent, /running/);
   assert.match(document.querySelector('[data-testid=findings-pending]').textContent, /Loading findings/);
   assert.equal(document.querySelector('[data-testid=file-indicators]'), null);
+  assert.equal(document.querySelector('.workspace-context [aria-labelledby=insights-heading]'), null, 'no right insights panel');
 
   // The reviewer is reading prep: results must not steal focus.
   const prepHeading = document.getElementById('review-prep-heading');
@@ -120,6 +121,123 @@ test('review prep is the initial view while analysis is pending, then updates in
   const authButton = byLabel('Review src/auth.rs. High attention, 1 unresolved GitHub thread');
   assert.ok(authButton, 'indicator meaning is in the accessible name, not only colour');
   assert.ok(document.querySelector('article[aria-label="Measured fact: Changes 2 lines in an auth path"]'));
+});
+
+test('file band, inline adjacency, markers and reveal are read-only', async () => {
+  const whole = structuredClone(findings[0]);
+  whole.finding.id = 'whole';
+  whole.finding.anchor = { ...whole.finding.anchor, kind: 'file', line: null, side: null };
+  const range = structuredClone(findings[1]);
+  range.finding.id = 'range';
+  range.finding.anchor = { ...range.finding.anchor, kind: 'diff_range', startLine: 1, line: 2 };
+  workspaceRoutes();
+  routes['GET /api/v1/analysis/findings'] = () => json(page([whole, range]));
+  await start();
+  const diff = document.getElementById('file-review');
+  assert.equal(diff.querySelector('.callout-band article').id, 'callout-whole');
+  const row = [...diff.querySelectorAll('.diff-row')].find((el) => el.textContent.includes('verify_token'));
+  assert.equal(row.nextElementSibling.querySelector('article').id, 'callout-range');
+  assert.equal(row.querySelector('.callout-marker').tagName, 'BUTTON');
+  button('Hide line callouts').click();
+  await tick();
+  assert.equal(diff.querySelectorAll('.inline-callouts').length, 0);
+  assert.ok(row.querySelector('.callout-marker'));
+  row.querySelector('.callout-marker').click();
+  await tick();
+  assert.equal(document.activeElement.id, 'callout-range');
+  assert.equal(row.nextElementSibling.querySelector('article').id, 'callout-range');
+  assert.deepEqual(mutations(), []);
+});
+
+test('context row presents old and new range endpoints together with honest marker labels', async () => {
+  const view = sessionView();
+  view.files[0].hunks[0].lines[1] = { ...view.files[0].hunks[0].lines[1], kind: 'context', oldLine: 2 };
+  const left = structuredClone(findings[0]);
+  left.finding.id = 'left-range';
+  left.finding.anchor = { ...left.finding.anchor, kind: 'diff_range', side: 'LEFT', startLine: 1, line: 2 };
+  const right = structuredClone(findings[1]);
+  right.finding.id = 'right-range';
+  right.finding.anchor = { ...right.finding.anchor, kind: 'diff_range', side: 'RIGHT', startLine: 1, line: 2 };
+  workspaceRoutes(() => view);
+  routes['GET /api/v1/analysis/findings'] = () => json(page([left, right]));
+  await start();
+  const row = [...document.querySelectorAll('.diff-row')].find((element) => element.textContent.includes('verify_token'));
+  assert.match(row.querySelector('.callout-marker').getAttribute('aria-label'), /old line 2 and new line 2/);
+  assert.deepEqual([...row.nextElementSibling.querySelectorAll('article')].map((card) => card.id), ['callout-left-range', 'callout-right-range']);
+  assert.match(row.nextElementSibling.getAttribute('aria-label'), /old line 2 and new line 2/);
+  assert.match(row.querySelector('span.w-9').className, /w-9/);
+  assert.deepEqual(mutations(), []);
+});
+
+test('selected filter empty state names the filter rather than claiming the file is empty', async () => {
+  workspaceRoutes();
+  routes['GET /api/v1/analysis/findings'] = () => json(page([findings[1]]));
+  await start();
+  assert.equal(document.querySelectorAll('article[data-insight-class="suggestion"]').length, 1);
+  button('Measured').click();
+  await tick();
+  assert.match(document.querySelector('[data-testid=findings-empty]').textContent, /this file matching “Measured”/);
+  assert.doesNotMatch(document.querySelector('[data-testid=findings-empty]').textContent, /No findings for this file\./);
+  button('Suggestions').click();
+  await tick();
+  assert.equal(document.querySelector('[data-testid=findings-empty]'), null);
+  assert.deepEqual(mutations(), []);
+});
+
+test('snapshot mismatch holds old findings off lines and fetch keeps focused draft', async () => {
+  const view = sessionView();
+  workspaceRoutes(() => view);
+  await start();
+  document.querySelector('[title="Draft a comment on this line"]').click();
+  await tick();
+  const draft = document.getElementById('draft');
+  draft.value = 'unfinished';
+  draft.dispatchEvent(new window.Event('input', { bubbles: true }));
+  draft.focus();
+  sources[0].emit('analysis.findings.upserted');
+  await settle();
+  assert.equal(document.activeElement, draft);
+  assert.equal(draft.value, 'unfinished');
+  view.analysis.snapshotId = 'snap-2';
+  sources[0].emit('pr.refreshed');
+  await settle();
+  assert.equal(document.querySelectorAll('.callout-marker').length, 0);
+  assert.equal(document.querySelectorAll('.inline-callouts').length, 0);
+  assert.match(document.querySelector('.callout-band article')?.textContent ?? '', /snapshot mismatch/);
+  assert.deepEqual(mutations(), []);
+});
+
+test('prep explains and deep-links an attention finding without writing', async () => {
+  const queue = queueView();
+  queue.queue.items[0].findings = [{ id: 'fnd-measured', current: true, attention: 'high', disposition: 'active' }];
+  routes['GET /api/v1/session'] = () => json(sessionView());
+  routes['GET /api/v1/analysis/queue'] = () => json(queue);
+  routes['GET /api/v1/analysis/findings'] = () => json(page(findings));
+  await start();
+  assert.match(workspaceView('prep').textContent, /Path matches the auth rule/);
+  button('Review finding Changes 2 lines in an auth path in src/auth.rs').click();
+  await tick();
+  assert.equal(workspaceView('files').hidden, false);
+  assert.equal(document.activeElement.id, 'callout-fnd-measured');
+  assert.deepEqual(mutations(), []);
+});
+
+test('prep native projection opens its real thread rather than a missing callout', async () => {
+  const projection = structuredClone(findings[2]);
+  projection.finding.id = 'native-projection';
+  projection.finding.anchor.githubThreadId = 'GH_T1';
+  const queue = queueView();
+  queue.queue.items[0].findings = [{ id: projection.finding.id, current: true, attention: 'high', disposition: 'active' }];
+  routes['GET /api/v1/session'] = () => json(sessionView());
+  routes['GET /api/v1/analysis/queue'] = () => json(queue);
+  routes['GET /api/v1/analysis/findings'] = () => json(page([projection]));
+  await start();
+  assert.match(workspaceView('prep').textContent, /CodeRabbit said tokens may leak/);
+  button('Open thread for finding CodeRabbit said tokens may leak in src/auth.rs').click();
+  await tick();
+  assert.equal(document.activeElement.id, 'thread-t1');
+  assert.equal(document.getElementById('callout-native-projection'), null);
+  assert.deepEqual(mutations(), []);
 });
 
 test('analysis never marks a file viewed or reviewed', async () => {
@@ -282,6 +400,7 @@ test('every new insight control is a native, named, keyboard-focusable element w
   await settle();
   assert.equal(measured.getAttribute('aria-pressed'), 'true');
   assert.deepEqual([...document.querySelectorAll('article[data-insight-class]')].map((c) => c.dataset.insightClass), ['measured']);
+  assert.equal(document.querySelectorAll('.callout-marker').length, 1, 'filters do not remove gutter markers');
   // Status is announced politely, not as an interruption.
   assert.equal(document.querySelector('[data-testid=analysis-status]').getAttribute('aria-live'), 'polite');
 });
