@@ -2,6 +2,8 @@
 mod analysis;
 mod assets;
 mod auth;
+#[cfg(test)]
+mod auth_tests;
 mod exclusions;
 mod files;
 mod review;
