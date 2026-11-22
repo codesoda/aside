@@ -4,6 +4,9 @@
 
 mod diff;
 mod history;
+mod history_cochange;
+#[cfg(test)]
+mod history_cochange_tests;
 #[cfg(test)]
 mod history_tests;
 

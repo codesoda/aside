@@ -15,6 +15,7 @@ use crate::{
         self, AnalysisInput, AnalysisProvider, RunEvent, RunHandle, Scheduler, SchedulerConfig,
         SystemClock,
     },
+    config::{self, AnalysisConfig},
     demo,
     diff::{self, Limits},
     github::{self, GhRunner, PrRef},
@@ -51,6 +52,8 @@ pub struct Session {
     demo_version: AtomicUsize,
     /// What the current analysis results were computed for (#27).
     analysis_key: Mutex<Option<AnalysisKey>>,
+    analysis_config_path: RwLock<Option<std::path::PathBuf>>,
+    analysis_settings: RwLock<AnalysisConfig>,
     analysis_context: RwLock<Option<github::context::AnalysisContext>>,
     history_objects: RwLock<Option<github::context::HistoryObjects>>,
     history_generation: AtomicU64,
@@ -208,6 +211,8 @@ impl Session {
             refresh_lock: AsyncMutex::new(()),
             demo_version: AtomicUsize::new(demo_version),
             analysis_key: Mutex::new(None),
+            analysis_config_path: RwLock::new(None),
+            analysis_settings: RwLock::new(AnalysisConfig::default()),
             analysis_context: RwLock::new(None),
             history_objects: RwLock::new(None),
             history_generation: AtomicU64::new(0),
@@ -345,6 +350,7 @@ impl Session {
             .collect();
         let runs = store.list_analysis_runs(&self.pr_id)?;
         for provider in self.analysis.provider_ids() {
+            let notice = self.analysis.capability_notice(&provider);
             // Latest attempt on the current snapshot; earlier attempts and
             // other snapshots never stand in for it.
             let latest = runs
@@ -364,10 +370,10 @@ impl Session {
                     item_kind: "findings".into(),
                     state: classify(None, Completeness::NotRun, KnownCount::Unknown),
                     reason_codes: vec!["not_run".into()],
-                    limitations: Vec::new(),
+                    limitations: vec![notice],
                 },
                 Some(run) => {
-                    let items = if run.status.is_terminal() && run.status != RunStatus::Failed {
+                    let items = if matches!(run.status, RunStatus::Succeeded | RunStatus::Partial) {
                         KnownCount::Known {
                             value: store.count_run_findings(&run.id)?,
                         }
@@ -385,7 +391,9 @@ impl Session {
                         item_kind: "findings".into(),
                         state: classify(Some(run.status), run.coverage.completeness, items),
                         reason_codes: run.coverage.reason_codes.clone(),
-                        limitations: run.warnings.iter().map(|w| w.message.clone()).collect(),
+                        limitations: std::iter::once(notice)
+                            .chain(run.warnings.iter().map(|w| w.message.clone()))
+                            .collect(),
                     }
                 }
             });
@@ -412,6 +420,46 @@ impl Session {
             }
         }
         Ok(summary)
+    }
+
+    /// Called before startup analysis/history resolution. Configuration stays
+    /// outside PR data and is reloaded only during explicit session refresh.
+    pub fn configure_analysis(&self, path: std::path::PathBuf) -> Result<()> {
+        if self
+            .analysis_key
+            .lock()
+            .expect("analysis key lock")
+            .is_some()
+        {
+            bail!("configure analysis before starting the session; use refresh to reload");
+        }
+        let settings = config::load_from(&path)?.analysis_for(&self.repository_config_key())?;
+        *self.analysis_settings.write().expect("settings lock") = settings;
+        *self.analysis_config_path.write().expect("config path lock") = Some(path);
+        Ok(())
+    }
+
+    fn repository_config_key(&self) -> String {
+        format!(
+            "{}/{}/{}",
+            self.repository.host, self.repository.owner, self.repository.name
+        )
+    }
+
+    fn reload_analysis_settings(&self) -> Result<AnalysisConfig> {
+        match self
+            .analysis_config_path
+            .read()
+            .expect("config path lock")
+            .as_ref()
+        {
+            Some(path) => config::load_from(path)?.analysis_for(&self.repository_config_key()),
+            None => Ok(self
+                .analysis_settings
+                .read()
+                .expect("settings lock")
+                .clone()),
+        }
     }
 
     /// Pins analysis to the current PR snapshot and starts providers in the
@@ -441,7 +489,7 @@ impl Session {
             .expect("snapshot lock poisoned")
             .clone();
         let input = self.analysis_input(snapshot.clone());
-        let next = AnalysisKey {
+        let mut next = AnalysisKey {
             snapshot_id: input.snapshot_id.clone(),
             base_sha: input.base_sha.clone(),
             head_sha: input.head_sha.clone(),
@@ -466,7 +514,15 @@ impl Session {
                 }
             }
         };
-        let handles = self.analysis.begin_snapshot(input)?;
+        let policies = self
+            .analysis_settings
+            .read()
+            .expect("settings lock")
+            .policies();
+        let handles = self
+            .analysis
+            .begin_snapshot_configured(input, Some(policies))?;
+        next.config_digest = Some(self.analysis.config_digest());
         {
             let mut store = self.store.lock().expect("store lock poisoned");
             record_import_sources(&mut store, &self.pr_id, &next.snapshot_id, &snapshot)?;
@@ -499,6 +555,15 @@ impl Session {
     }
 
     fn resolve_history(&self) {
+        if !self
+            .analysis_settings
+            .read()
+            .expect("settings lock")
+            .history
+            .enabled
+        {
+            return;
+        }
         let Some((checkout, fetch, cache)) = self
             .history_config
             .read()
@@ -617,6 +682,8 @@ impl Session {
     /// Demo mode alternates deterministic versions 0 and 1.
     pub async fn refresh(&self) -> Result<SessionView> {
         let _refresh = self.refresh_lock.lock().await;
+        // Fail before network calls or state changes on malformed local config.
+        let settings = self.reload_analysis_settings()?;
         let (snapshot, next_demo_version) = if self.demo {
             let next = (self.demo_version.load(Ordering::SeqCst) + 1) % 2;
             (demo::snapshot(next), Some(next))
@@ -638,11 +705,12 @@ impl Session {
         let changed_revision = prior_context.as_ref().is_some_and(|context| {
             context.base_sha != snapshot.pr.base_sha || context.head_sha != snapshot.pr.head_sha
         });
-        let needs_resolution = self
-            .history_config
-            .read()
-            .expect("history config lock")
-            .is_some()
+        let needs_resolution = settings.history.enabled
+            && self
+                .history_config
+                .read()
+                .expect("history config lock")
+                .is_some()
             && (changed_revision
                 || self.history_objects.read().expect("history lock").is_none()
                 || self.history_retry_needed(&snapshot)?);
@@ -678,22 +746,26 @@ impl Session {
         } else {
             None
         };
-        let (replacement, replacement_objects) = match resolved {
-            Some((context, objects)) => (Some(context), Some(objects)),
-            None => (
-                prior_context.map(|context| {
-                    if changed_revision {
-                        github::context::AnalysisContext::unavailable(
-                            &snapshot.pr.base_sha,
-                            &snapshot.pr.head_sha,
-                            "PR revision changed; analysis context requires resolution again",
-                        )
-                    } else {
-                        context
-                    }
-                }),
-                changed_revision.then_some(None),
-            ),
+        let (replacement, replacement_objects) = if !settings.history.enabled {
+            (None, prior_context.is_some().then_some(None))
+        } else {
+            match resolved {
+                Some((context, objects)) => (Some(context), Some(objects)),
+                None => (
+                    prior_context.map(|context| {
+                        if changed_revision {
+                            github::context::AnalysisContext::unavailable(
+                                &snapshot.pr.base_sha,
+                                &snapshot.pr.head_sha,
+                                "PR revision changed; analysis context requires resolution again",
+                            )
+                        } else {
+                            context
+                        }
+                    }),
+                    changed_revision.then_some(None),
+                ),
+            }
         };
         let previous_head = self
             .snapshot
@@ -747,6 +819,7 @@ impl Session {
                 .snapshot_id;
             self.invalidate_history_for_snapshot(&id)?;
         }
+        *self.analysis_settings.write().expect("settings lock") = settings;
         let invalidation = match self.begin_analysis() {
             Ok((handles, invalidation)) => {
                 if needs_resolution && !handles.iter().any(|h| h.provider_id == "aside.git-history")
@@ -1712,6 +1785,120 @@ mod tests {
                 .status,
             RunStatus::Partial
         );
+    }
+
+    #[tokio::test]
+    async fn repository_policy_refresh_is_scoped_preserves_review_and_never_fetches_when_disabled()
+    {
+        let gh = Arc::new(github::fake::FakeGh::default());
+        gh.on(&["pr", "view"], Ok(r#"{"number":7,"title":"test","body":"","url":"https://github.com/o/r/pull/7","state":"OPEN","isDraft":false,"author":{"login":"alice"},"baseRefName":"main","baseRefOid":"base1","headRefName":"feat","headRefOid":"head1","changedFiles":1}"#));
+        gh.on(&["repo", "view"], Ok(r#"{"id":"R_1"}"#));
+        gh.on(
+            &["pr", "diff"],
+            Ok("diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-x\n+y\n"),
+        );
+        gh.on(&["api", "--paginate"], Ok(r#"[[{"filename":"a.rs","status":"modified","patch":null,"additions":1,"deletions":1}]]"#));
+        let reference = PrRef {
+            owner: "o".into(),
+            repo: "r".into(),
+            number: 7,
+        };
+        let snapshot = github::fetch_snapshot(gh.as_ref(), &reference, &Limits::default()).unwrap();
+        let session = Session::new(
+            snapshot,
+            Store::open_in_memory().unwrap(),
+            Some(gh.clone()),
+            Some(reference),
+        )
+        .unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("config.toml");
+        let cache = root.path().join("history-cache");
+        let mut config = config::Config::default();
+        config
+            .set_scoped("analysis.history.enabled", "false", Some("github.com/o/r"))
+            .unwrap();
+        config::save_to(&path, &config).unwrap();
+        session.configure_analysis(path.clone()).unwrap();
+        let calls = gh.calls.lock().unwrap().len();
+        session.configure_history(None, true, cache.clone());
+        assert_eq!(gh.calls.lock().unwrap().len(), calls);
+        assert!(
+            !cache.exists(),
+            "disabled history must not resolve or fetch"
+        );
+        acknowledge(&session, "a.rs", "reviewed");
+        let initial = session.start_analysis().unwrap();
+        for h in &initial {
+            h.clone().wait().await;
+        }
+        let before = session.view(Actor::Human).unwrap();
+        let history = before
+            .analysis
+            .sources
+            .iter()
+            .find(|s| s.source_id == "aside.git-history")
+            .unwrap();
+        assert_eq!(history.items, KnownCount::Unknown);
+        assert_eq!(
+            history.reason_codes,
+            vec![analysis::reason::DISABLED_BY_CONFIGURATION]
+        );
+        assert!(
+            history
+                .limitations
+                .iter()
+                .any(|s| s.contains("no model execution"))
+        );
+        let old_history = history.run_id.clone();
+        let old_diff = before
+            .analysis
+            .sources
+            .iter()
+            .find(|s| s.source_id == crate::diff::facts::PROVIDER_ID)
+            .unwrap()
+            .run_id
+            .clone();
+        config
+            .set_scoped("analysis.diff.max_input_bytes", "1", Some("github.com/o/r"))
+            .unwrap();
+        config::save_to(&path, &config).unwrap();
+        let after = session.refresh().await.unwrap();
+        assert_eq!(before.file_states, after.file_states);
+        assert_eq!(before.progress, after.progress);
+        assert_eq!(
+            after
+                .analysis
+                .sources
+                .iter()
+                .find(|s| s.source_id == "aside.git-history")
+                .unwrap()
+                .run_id,
+            old_history
+        );
+        let diff = after
+            .analysis
+            .sources
+            .iter()
+            .find(|s| s.source_id == crate::diff::facts::PROVIDER_ID)
+            .unwrap();
+        assert_ne!(diff.run_id, old_diff);
+        assert_eq!(
+            diff.reason_codes,
+            vec![analysis::reason::INPUT_LIMIT_EXCEEDED]
+        );
+        assert_eq!(diff.items, KnownCount::Unknown);
+        assert!(!cache.exists());
+        let calls = gh.calls.lock().unwrap().len();
+        std::fs::write(
+            &path,
+            "[repositories.\"github.com/o/r\".analysis.history]\ntoken = 'credential-canary'\n",
+        )
+        .unwrap();
+        let error = session.refresh().await.unwrap_err();
+        assert!(!format!("{error:#}").contains("credential-canary"));
+        assert_eq!(gh.calls.lock().unwrap().len(), calls);
+        assert_eq!(session.view(Actor::Human).unwrap().analysis, after.analysis);
     }
 
     #[tokio::test]

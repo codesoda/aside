@@ -1,7 +1,9 @@
 //! Review-intelligence analysis: the provider contract and the scheduler
 //! that runs providers in the background without blocking review (#22).
 
+mod policy;
 mod provider;
+pub use policy::ProviderPolicy;
 mod providers;
 mod scheduler;
 

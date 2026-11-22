@@ -96,6 +96,8 @@ aside --help
 
 `aside demo` replays a bundled, offline capture of [cli/cli#14921](https://github.com/cli/cli/pull/14921); refresh uses a synthetic revision and cannot publish. Aside binds to `127.0.0.1` on an OS-assigned port and opens the review directly unless you pass `--no-open` or disable `browser.auto_open`. Keep the process running while you review. With `--no-open`, use the private login URL printed to stderr to open the UI; do not share that URL. It writes machine-readable session events to stdout and diagnostics to stderr. The agent-facing workflow and security boundaries are documented in [`skills/aside/SKILL.md`](skills/aside/SKILL.md).
 
+Repository analysis controls are available through `aside get --repo github.com/OWNER/REPO` and `aside set analysis.history.enabled false --repo github.com/OWNER/REPO`. Refresh an existing session to apply changes. See [analysis configuration](docs/analysis-configuration.md) for budgets, capabilities, and privacy boundaries.
+
 For unattended updates, `aside update --yes` is an explicit install confirmation. The updater downloads release assets and checks their published SHA-256 before replacing the CLI. It never queries the rate-limited GitHub API for the version check. The application stores its review database and private session descriptors in the OS user data directory. `ASIDE_DATA_DIR` overrides that location. Keep session descriptors private: they contain an agent credential.
 
 <p align="right"><a href="#readme-top">Back to top</a></p>

@@ -18,6 +18,7 @@
   import type { ChangedFile } from './generated/ChangedFile';
   import { buildFileTree, nextUnreviewedFile, type FileTreeNode } from './fileTree';
   import { orderThreads, threadsForLine } from './threadMarkers';
+  import { reviewPageTitle } from './pageTitle';
 
   let session = $state<SessionView | null>(null);
   let error = $state<string | null>(null);
@@ -260,6 +261,10 @@
   }
 
 </script>
+
+<svelte:head>
+  <title>{error ? 'Review unavailable · Aside' : session ? reviewPageTitle(session.pr) : 'Loading review… · Aside'}</title>
+</svelte:head>
 
 <svelte:window onmouseup={selectCode} onkeyup={selectCode} />
 

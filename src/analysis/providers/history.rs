@@ -29,7 +29,7 @@ use std::{
 };
 
 pub const ID: &str = "aside.git-history";
-const VERSION: &str = "aside.git-history/1";
+const VERSION: &str = "aside.git-history/2";
 const METHOD: &str = "aside.git-history.baseline@1";
 
 pub struct HistoryProvider {
@@ -59,7 +59,7 @@ impl Default for HistoryProvider {
                 kind: ProviderKind::History,
                 engine_version: VERSION.into(),
                 configuration_digest: crate::util::sha256_hex(
-                    b"180d;1000commits;exact-path;rust-ts-0.27.2-0.24.2;v1",
+                    b"180d;1000commits;exact-path;rust-ts-0.27.2-0.24.2;cochange-50paths-5support-0.6confidence-50000pairs-100hints;v2",
                 ),
                 mode: AnalysisMode::Static,
                 limits: Some(ProviderLimits {
@@ -256,7 +256,7 @@ fn scan(ctx: ProviderContext, cancelled: &AtomicBool) -> Result<ProviderOutput> 
         "walked": history.walked, "counted": history.counted, "mergeSkipped": history.merges_skipped,
         "capped": false, "historyComplete": context.complete, "renamePolicy": "path-exact; PR renames use previous path; no inferred following",
         "parser": "tree-sitter 0.27.2/tree-sitter-rust 0.24.2", "rustPopulation": rust.len(), "rustParsed": parsed.len(), "rustFailed": failed,
-        "baselinePopulation": history.files.len() });
+        "baselinePopulation": history.files.len(), "cochange": super::history_cochange::corpus(&history) });
     if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
         return Ok(partial(&ctx, "history_cancelled_or_deadline"));
     }
@@ -435,6 +435,16 @@ fn scan(ctx: ProviderContext, cancelled: &AtomicBool) -> Result<ProviderOutput> 
         });
     }
     output.coverage.analyzed_files = KnownCount::Known { value: analyzed };
+    // Association coverage is independent of language parsing and percentile
+    // availability; a small or non-Rust baseline may still have useful pairs.
+    super::history_cochange::append(
+        &ctx,
+        &history,
+        deadline,
+        cancelled,
+        &observed_at,
+        &mut output,
+    )?;
     Ok(output)
 }
 

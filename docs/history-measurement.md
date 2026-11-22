@@ -1,5 +1,61 @@
 # Pinned Git history measurements
 
+## Temporal co-change inspection hints
+
+The same pinned history read also measures exact-path co-change transactions.
+This is independent of Rust parsing and percentile availability: small and
+non-Rust repositories can produce useful associations without a churn rank.
+
+A transaction is one non-merge commit inside the inclusive baseline window.
+Distinct commit identities remain distinct even when timestamps match. Empty
+commits are eligible transactions but add no path support. Commits touching
+**more than 50 distinct paths** are excluded from co-change, **before** filtering
+against the baseline tree: deleted and non-baseline paths count toward breadth.
+These bulk commits still count for churn. No history sampling is performed.
+
+For a changed baseline path A and a baseline partner B absent from the PR:
+
+- `supportAB`: eligible transactions containing both paths;
+- `supportA` / `supportB`: eligible transactions containing each path;
+- A→B confidence: `supportAB / supportA`; reverse: `supportAB / supportB`.
+
+A hint requires `supportAB >= 5` and A→B confidence **at least 0.6** (inclusive,
+compared with integer arithmetic). Reverse confidence is reported separately;
+A→B does not imply B→A. These engineering thresholds are not calibrated defect
+probabilities. Hints say to inspect a related file, never that code is missing.
+They are informational-severity attention hints with at most Investigate priority.
+
+Both current and previous PR paths are excluded as partners. A renamed source
+uses its previous baseline path but anchors to its current PR file. A partner is
+related baseline context, not an invented PR file or line. Historically ambiguous
+identities are excluded; renames are not followed or reconstructed.
+
+Corpus evidence includes the comparison base, inclusive window, walked and
+counted commits, merge/bulk exclusions, eligible-transaction denominator,
+thresholds, method version and unsampled status. Association evidence adds both
+directional ratios and supports, up to five lexically first `(commit SHA,
+committer timestamp)` examples, and qualifying/emitted output counts. Examples
+are illustrations, not the population used for measurement. Merge-exclusion
+counts cover the whole bounded traversal; counted/eligible transactions cover
+only the declared window.
+
+Only pairs involving changed baseline paths are tracked, with a hard cap of
+50,000 candidate pairs. Hitting that cap produces unknown co-change coverage and
+**no** association hints rather than biased partial support. The traversal's
+existing commit/object/deadline bounds still fail closed. Incomplete context,
+missing baseline paths and ambiguous identities remain unknown, not verified
+zero findings. No eligible history likewise has unknown association coverage.
+
+Hints sort by support descending, then A→B confidence descending, then exact
+source/partner paths. At most 100 are emitted, further restricted by the
+provider's remaining finding budget. Truncation is explicitly partial coverage
+with `cochange_output_truncated`; it is output truncation, not history sampling.
+Co-change cancellation is checked during counting and emission; interrupted
+measurement emits no co-change hints. The engine/configuration version changes
+with this rule, preventing reuse of old provider results.
+
+## Churn and complexity
+
 The `aside.git-history` provider uses an immutable copy of validated Git objects. It reads the captured comparison-base commit, not PR commits or the current checkout. When Git history is unavailable, the provider reports partial coverage rather than a clean result. Incomplete reads keep a structured run warning with a reason, pinned base, available tree-path and walked/counted/merge counts, any known anchor/window, and the configured resource limits. These counts describe only work completed before failure; no rank or hotspot score is emitted. History failures do not stop diff facts.
 
 The baseline commit's **committer timestamp** anchors an inclusive 180-day window. Commits after that timestamp do not count. Git traversal inspects at most 1,001 commits, independent of timestamp ordering. A history cap, shallow boundary, missing object, malformed Git response, output limit or deadline makes the population incomplete. Merge commits contribute no changed paths; the evidence reports how many were skipped.
