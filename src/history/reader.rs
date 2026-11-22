@@ -31,6 +31,13 @@ pub struct IncompleteHistory {
 }
 
 #[derive(Debug, Clone)]
+pub struct Transaction {
+    pub id: String,
+    pub timestamp: i64,
+    pub paths: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct History {
     pub base: String,
     pub anchor: i64,
@@ -38,6 +45,9 @@ pub struct History {
     pub walked: usize,
     pub counted: usize,
     pub merges_skipped: usize,
+    /// Co-change only: commits wider than MAX_COMMIT_PATHS, before filtering.
+    pub broad_skipped: usize,
+    pub transactions: Vec<Transaction>,
     pub files: BTreeMap<String, String>,
     pub touches: BTreeMap<String, Vec<i64>>,
     pub ambiguous: BTreeSet<String>,
@@ -296,6 +306,8 @@ fn read_inner(
         walked: commits.len(),
         counted: 0,
         merges_skipped: 0,
+        broad_skipped: 0,
+        transactions: Vec::new(),
         files,
         touches: BTreeMap::new(),
         ambiguous: BTreeSet::new(),
@@ -353,6 +365,7 @@ fn read_inner(
             )?
         };
         let mut touched = BTreeSet::new();
+        let mut all_paths = BTreeSet::new();
         for (status, name) in diff_records(&bytes, MAX_PATHS)? {
             if status == b'D' {
                 deleted.insert(name.clone());
@@ -363,12 +376,24 @@ fn read_inner(
             if deleted.contains(&name) && added.contains(&name) {
                 result.ambiguous.insert(name.clone());
             }
+            all_paths.insert(name.clone());
             if result.files.contains_key(&name) {
                 touched.insert(name);
             }
         }
         for name in touched {
             result.touches.entry(name).or_default().push(timestamp);
+        }
+        // Breadth includes deleted/non-baseline paths, so filtering cannot
+        // turn a bulk change into a spurious narrow association.
+        if all_paths.len() > super::cochange::MAX_COMMIT_PATHS {
+            result.broad_skipped += 1;
+        } else {
+            result.transactions.push(Transaction {
+                id: sha,
+                timestamp,
+                paths: all_paths,
+            });
         }
         result.counted += 1;
         diagnostic.counted = result.counted;
@@ -617,6 +642,68 @@ mod tests {
         assert!(h.ambiguous.contains("old.rs"));
         assert_eq!(h.files.len(), 2);
         assert_eq!(h.touches["old.rs"].len(), 3);
+    }
+
+    #[test]
+    fn cochange_bulk_filter_counts_all_distinct_paths_before_baseline_filtering() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.name", "Fixture"]);
+        git(&["config", "user.email", "fixture@example.com"]);
+        for name in ["a", "b"] {
+            std::fs::write(dir.join(name), "0").unwrap();
+        }
+        for n in 0..49 {
+            std::fs::write(dir.join(format!("old-{n}")), "0").unwrap();
+        }
+        git(&["add", "."]);
+        git(&["commit", "-qm", "51 paths"]);
+        // 49 deleted paths plus two modified paths: still broad even though
+        // only a/b survive in the next tree.
+        for n in 0..49 {
+            git(&["rm", "-q", &format!("old-{n}")]);
+        }
+        for name in ["a", "b"] {
+            std::fs::write(dir.join(name), "1").unwrap();
+        }
+        git(&["commit", "-qam", "51 paths again"]);
+        for n in 0..48 {
+            std::fs::write(dir.join(format!("new-{n}")), "0").unwrap();
+        }
+        for name in ["a", "b"] {
+            std::fs::write(dir.join(name), "2").unwrap();
+        }
+        git(&["add", "."]);
+        git(&["commit", "-qm", "exactly 50 paths"]);
+        let base = git(&["rev-parse", "HEAD"]);
+        let h = read(
+            &dir.join(".git"),
+            &base,
+            Instant::now() + std::time::Duration::from_secs(30),
+        )
+        .unwrap();
+        assert_eq!(h.counted, 3);
+        assert_eq!(h.broad_skipped, 2);
+        assert_eq!(h.transactions.len(), 1);
+        assert_eq!(h.transactions[0].id, base);
+        assert_eq!(h.transactions[0].paths.len(), 50);
+        assert_eq!(
+            h.touches["a"].len(),
+            3,
+            "bulk filtering must not change churn"
+        );
+        assert_eq!(h.touches["b"].len(), 3);
     }
 
     #[test]
