@@ -5,6 +5,7 @@
 
 mod analysis;
 mod conversations;
+mod promotion;
 mod publication;
 mod repositories;
 mod review;
@@ -19,6 +20,7 @@ pub use analysis::{
     ANALYSIS_SNAPSHOT_RETENTION, AnalysisBatch, BatchOutcome, ImportBatch, ImportedSourceWrite,
     ObservationLabel, PruneReport, Raw, RevisionConflict, StoredFinding,
 };
+pub use promotion::{PromotionAnchor, PromotionConflict};
 pub use publication::ReservedDraft;
 pub use rules::RuleUpdate;
 pub use threads::NewThread;

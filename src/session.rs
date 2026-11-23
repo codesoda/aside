@@ -318,6 +318,7 @@ impl Session {
             summary,
             threads,
             file_states,
+            files: snapshot.files,
             github_threads: snapshot.github_threads,
             reviews: snapshot.reviews,
             issue_comments: snapshot.issue_comments,
@@ -920,6 +921,7 @@ pub(crate) struct AnalysisRead<'a> {
     pub session_id: &'a str,
     /// Derived review/scope state of every changed file (read-only).
     pub file_states: Vec<FileState>,
+    pub files: Vec<crate::model::ChangedFile>,
     /// Native imported GitHub threads of the canonical snapshot.
     pub github_threads: Vec<GithubThread>,
     pub reviews: Vec<crate::model::ImportedReview>,

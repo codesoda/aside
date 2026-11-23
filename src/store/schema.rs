@@ -377,6 +377,18 @@ pub(super) const MIGRATIONS: &[&str] = &[
     "ALTER TABLE review_comment_drafts ADD COLUMN publish_selected INTEGER NOT NULL DEFAULT 1;
      ALTER TABLE review_sessions ADD COLUMN selection_revision INTEGER NOT NULL DEFAULT 0;
      ALTER TABLE review_threads ADD COLUMN legacy_reply_seq INTEGER;",
+    // v11: durable scoped idempotency for local finding promotion.
+    "CREATE TABLE finding_promotion_operations (
+        pr_id TEXT NOT NULL REFERENCES pull_requests(id),
+        session_id TEXT NOT NULL,
+        operation_id TEXT NOT NULL,
+        finding_id TEXT NOT NULL,
+        expected_revision INTEGER NOT NULL,
+        anchor_json TEXT NOT NULL CHECK (json_valid(anchor_json)),
+        head_sha TEXT NOT NULL,
+        draft_id TEXT NOT NULL,
+        PRIMARY KEY (pr_id, session_id, operation_id)
+    );",
 ];
 
 pub(super) const GITHUB_METADATA: &[(&str, &str, &str)] = &[

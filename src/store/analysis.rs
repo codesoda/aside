@@ -804,6 +804,27 @@ impl Store {
         state: &FindingUserState,
         expected_revision: u64,
     ) -> Result<FindingUserState> {
+        self.put_finding_user_state_inner(pr_id, state, expected_revision, false)
+    }
+
+    /// Reject a triage update when its finding is no longer current. Both the
+    /// current-snapshot check and CAS happen under the same write lock.
+    pub fn put_current_finding_user_state(
+        &mut self,
+        pr_id: &str,
+        state: &FindingUserState,
+        expected_revision: u64,
+    ) -> Result<FindingUserState> {
+        self.put_finding_user_state_inner(pr_id, state, expected_revision, true)
+    }
+
+    fn put_finding_user_state_inner(
+        &mut self,
+        pr_id: &str,
+        state: &FindingUserState,
+        expected_revision: u64,
+        require_current: bool,
+    ) -> Result<FindingUserState> {
         if state.disposition == UserDisposition::Snoozed && state.snoozed_until.is_none() {
             bail!("a snoozed finding needs snoozedUntil");
         }
@@ -815,6 +836,18 @@ impl Store {
         )?;
         if !exists {
             return Err(NotFound(format!("finding {}", state.finding_id)).into());
+        }
+        if require_current {
+            let is_current: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM finding_occurrences o JOIN analysis_runs r ON r.id = o.run_id JOIN analysis_current_snapshots c ON c.snapshot_id = o.snapshot_id AND c.pr_id = ?2 WHERE o.finding_id = ?1 AND r.status IN ('running','succeeded','partial') AND o.applicability IN ('current_exact','current_related'))",
+                params![state.finding_id.as_str(), pr_id], |r| r.get(0),
+            )?;
+            if !is_current {
+                return Err(NotFound(format!("finding {}", state.finding_id)).into());
+            }
+            if state.session_id != pr_id {
+                bail!("finding state session must match PR");
+            }
         }
         let current = read_user_state(&tx, &state.session_id, &state.finding_id)?;
         if current.as_ref().map_or(0, |s| s.revision) != expected_revision {
@@ -997,7 +1030,7 @@ fn upsert_run(
 }
 
 #[allow(dead_code)] // TODO(#26): not consumed by the binary yet.
-fn read_user_state(
+pub(super) fn read_user_state(
     conn: &rusqlite::Connection,
     session_id: &str,
     finding_id: &FindingId,

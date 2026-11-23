@@ -1,13 +1,14 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import {
-    ApiError, createInsightThread, createScopeRule, createThread, fetchFeedbackRecords, fetchFeedbackThreads, fetchFindings, fetchQueue, fetchSession, fetchExtensionPreferences, patchThread, putExtensionPreference, selectDrafts, setReviewed, watchSession,
+    ApiError, createInsightThread, createScopeRule, createThread, fetchFeedbackRecords, fetchFeedbackThreads, fetchFindings, fetchQueue, fetchSession, fetchExtensionPreferences, patchThread, promoteFinding, putExtensionPreference, selectDrafts, setFindingState, setReviewed, watchSession,
     type ConversationThread, type FeedbackThread, type FindingItem, type NativeFeedbackRecord, type QueueView, type SessionView,
   } from './api';
   import { placeCallouts } from './callouts';
   import ConversationPanel from './workspace/ConversationPanel.svelte';
   import type { ConversationDraft } from './workspace/ConversationPanel.svelte';
   import ReviewPrep from './workspace/ReviewPrep.svelte';
+  import FindingBrowser from './insights/FindingBrowser.svelte';
   import FinishReview from './workspace/FinishReview.svelte';
   import Conversations from './workspace/Conversations.svelte';
   import Feedback from './workspace/Feedback.svelte';
@@ -114,6 +115,72 @@
   let insightsError = $state<string | null>(null);
   let insightsLoading = $state(false);
   let insightsRequest = 0;
+  let includeHistorical = $state(false);
+  let findingPending = $state<string | null>(null);
+  let findingError = $state<string | null>(null);
+  let findingsLoadError = $state<string | null>(null);
+  const promotionOperations = new Map<string, { id: string; revision: number }>();
+  let expiryTimer: ReturnType<typeof setTimeout> | undefined;
+  $effect(() => {
+    clearTimeout(expiryTimer);
+    const next = (findingItems ?? []).filter((item) => item.disposition === 'snoozed' && item.userState?.snoozedUntil)
+      .map((item) => Date.parse(item.userState!.snoozedUntil!)).filter(Number.isFinite).sort((a, b) => a - b)[0];
+    if (next !== undefined) {
+      const delay = Math.max(1000, next - Date.now() + 100);
+      expiryTimer = setTimeout(loadInsights, Math.min(delay, 2147483647));
+    }
+    return () => clearTimeout(expiryTimer);
+  });
+
+  function refreshFindingViews() {
+    loadInsights();
+    void fetchSession().then((view) => { session = view; }).catch((failure) => { findingError = String(failure); });
+  }
+  async function changeFinding(item: FindingItem, disposition: 'untouched' | 'dismissed_local' | 'snoozed', until?: string) {
+    if (findingPending) return;
+    findingPending = item.finding.id; findingError = null;
+    try {
+      await setFindingState(item.finding.id, item.userState?.revision ?? 0, disposition, until);
+      refreshFindingViews();
+    } catch (failure) {
+      findingError = failure instanceof ApiError && failure.status === 409 ? 'Finding changed. Showing the latest state; try again.' : String(failure);
+      refreshFindingViews();
+    } finally { findingPending = null; }
+  }
+  async function promote(item: FindingItem) {
+    if (findingPending) return;
+    const id = item.finding.id;
+    const operation = promotionOperations.get(id) ?? { id: crypto.randomUUID(), revision: item.userState?.revision ?? 0 };
+    promotionOperations.set(id, operation);
+    findingPending = id; findingError = null;
+    try {
+      const result = await promoteFinding(id, operation.revision, operation.id);
+      session = await fetchSession();
+      promotionOperations.delete(id);
+      loadInsights();
+      openFindingDraft(session.threads.find((thread) => thread.id === result.thread.id));
+    } catch (failure) {
+      const rejected = failure instanceof ApiError && failure.status >= 400 && failure.status < 500;
+      if (rejected) promotionOperations.delete(id);
+      findingError = rejected ? String(failure) : `Promotion outcome uncertain. Retry uses the same operation ID. ${String(failure)}`;
+      refreshFindingViews();
+    } finally { findingPending = null; }
+  }
+  function openPromotedDraft(item: FindingItem) {
+    openFindingDraft(allThreads.find((entry) => entry.findingId === item.finding.id));
+  }
+  function openFindingDraft(thread: ConversationThread | undefined) {
+    const target = session?.files.find((entry) => entry.id === thread?.fileId || entry.path === thread?.path);
+    if (!thread?.reviewComment || !target) {
+      findingError = 'The draft is no longer in the current file view.';
+      return;
+    }
+    const prior = conversationDrafts[thread.id];
+    if (!prior?.editing && !thread.reviewComment.locked) {
+      conversationDrafts[thread.id] = { reply: prior?.reply ?? '', outgoing: thread.reviewComment.body, editing: true };
+    }
+    openConversation(target.id, thread.id);
+  }
   let feedbackThreads = $state<FeedbackThread[]>([]);
   let feedbackRecords = $state<NativeFeedbackRecord[]>([]);
   let feedbackThreadPage = $state<Page<FeedbackThread> | null>(null);
@@ -152,13 +219,16 @@
   function loadInsights() {
     const request = ++insightsRequest;
     insightsLoading = true;
-    void Promise.allSettled([fetchQueue(), fetchFindings()]).then(([q, f]) => {
+    void Promise.allSettled([fetchQueue(), fetchFindings(includeHistorical)]).then(([q, f]) => {
       if (request !== insightsRequest) return;
       insightsLoading = false;
       if (q.status === 'fulfilled') queue = q.value;
       if (f.status === 'fulfilled') {
         findingItems = f.value.items;
         findingsSnapshotId = f.value.last.snapshotId;
+        findingsLoadError = null;
+      } else {
+        findingsLoadError = f.reason instanceof Error ? f.reason.message : String(f.reason);
       }
       const failed = [q, f].find((r) => r.status === 'rejected') as PromiseRejectedResult | undefined;
       insightsError = failed ? (failed.reason instanceof Error ? failed.reason.message : String(failed.reason)) : null;
@@ -166,10 +236,13 @@
   }
 
   onMount(() => {
-    return watchSession(
+    const stop = watchSession(
       (view) => { session = view; error = null; loadInsights(); loadFeedback(); loadPreferences(); },
       (failure) => { error = String(failure); },
     );
+    const onVisible = () => { if (!document.hidden) loadInsights(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { stop(); document.removeEventListener('visibilitychange', onVisible); };
   });
 
   const file = $derived(session?.files.find((item) => item.id === selectedId) ?? session?.files[0]);
@@ -180,6 +253,8 @@
     .map((state) => session?.files.find((item) => item.id === state.fileId)?.path)
     .filter((path): path is string => !!path) ?? []));
   const allThreads = $derived((session?.threads ?? []) as ConversationThread[]);
+  const findingsWithDrafts = $derived(new Set(allThreads.flatMap((thread) =>
+    thread.findingId && thread.reviewComment ? [thread.findingId] : [])));
   const threads = $derived(allThreads.filter((thread) => thread.fileId === file?.id || thread.path === file?.path));
   const sortedThreads = $derived(orderThreads(threads));
   const totals = $derived(
@@ -231,7 +306,8 @@
     void showThread(threadId);
   }
 
-  const fileFindings = $derived((findingItems ?? []).filter((item) =>
+  const currentFindings = $derived(findingItems?.filter((item) => item.label === 'current') ?? null);
+  const fileFindings = $derived((currentFindings ?? []).filter((item) =>
     item.finding.anchor.fileId === file?.id || item.finding.anchor.currentPath === file?.path));
   const callouts = $derived(placeCallouts(fileFindings, file ? [file] : [],
     findingsSnapshotId === session?.analysis.snapshotId ? session.analysis.snapshotId : '', 'all', session?.threads ?? []));
@@ -506,8 +582,11 @@
 
       <main class="workspace-main">
         <section id="workspace-prep" hidden={activeView !== 'prep'} aria-label="Review prep">
-          <ReviewPrep {session} {queue} findings={findingsSnapshotId === session.analysis.snapshotId ? findingItems : null}
+          <ReviewPrep {session} {queue} findings={findingsSnapshotId === session.analysis.snapshotId ? currentFindings : null}
             threads={session.threads} {insightsError} onOpenFile={openPrepFinding} onOpenThread={openPrepThread} onStart={startReview} />
+          <FindingBrowser findings={findingsSnapshotId === session.analysis.snapshotId ? findingItems : null} loading={insightsLoading} {includeHistorical} {findingsWithDrafts} onHistorical={(enabled) => { includeHistorical = enabled; loadInsights(); }}
+            pending={findingPending} error={findingError} loadError={findingsLoadError} onRetry={loadInsights} onState={(item, disposition, until) => void changeFinding(item, disposition, until)}
+            onPromote={(item) => void promote(item)} onOpenDraft={openPromotedDraft} />
         </section>
         <section id="workspace-files" hidden={activeView !== 'files'} aria-label="Files changed">
           <div class="workspace-view-heading">

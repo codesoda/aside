@@ -3,10 +3,8 @@ import type { FindingId } from "./FindingId";
 import type { UserDisposition } from "./UserDisposition";
 
 /**
- * Local, per-session triage overlay for one finding. Separate from the
- * finding (which is immutable) and from review acknowledgements.
- *
- * `deny_unknown_fields` makes payloads like `{"reviewed": true}` fail to parse.
- * Updates use optimistic `revision` (CAS); TODO(#18) persists it.
+ * Durable local triage for one finding, independent of review acknowledgements.
+ * `session_id` identifies the saved PR review, not the running server.
+ * Updates use optimistic `revision` checks.
  */
 export type FindingUserState = { findingId: FindingId, sessionId: string, disposition: UserDisposition, snoozedUntil: string | null, note: string | null, promotedDraftId: string | null, updatedAt: string, revision: number, };

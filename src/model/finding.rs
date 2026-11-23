@@ -517,11 +517,9 @@ pub enum RelationTarget {
     Entity(String),
 }
 
-/// Local, per-session triage overlay for one finding. Separate from the
-/// finding (which is immutable) and from review acknowledgements.
-///
-/// `deny_unknown_fields` makes payloads like `{"reviewed": true}` fail to parse.
-/// Updates use optimistic `revision` (CAS); TODO(#18) persists it.
+/// Durable local triage for one finding, independent of review acknowledgements.
+/// `session_id` identifies the saved PR review, not the running server.
+/// Updates use optimistic `revision` checks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[ts(export)]
@@ -538,6 +536,26 @@ pub struct FindingUserState {
 }
 
 impl FindingUserState {
+    /// Read-only triage view. An expired snooze resumes as untouched without
+    /// changing the stored disposition, deadline, or revision.
+    pub fn effective_disposition(&self, now: &str) -> UserDisposition {
+        if self.disposition == UserDisposition::Snoozed
+            && self.snoozed_until.as_deref().is_some_and(|until| {
+                match (
+                    chrono::DateTime::parse_from_rfc3339(until),
+                    chrono::DateTime::parse_from_rfc3339(now),
+                ) {
+                    (Ok(until), Ok(now)) => until <= now,
+                    _ => false,
+                }
+            })
+        {
+            UserDisposition::Untouched
+        } else {
+            self.disposition
+        }
+    }
+
     pub fn untouched(finding_id: FindingId, session_id: impl Into<String>, now: &str) -> Self {
         Self {
             finding_id,

@@ -553,6 +553,7 @@ fn presentation_never_turns_partial_scans_into_all_clear() {
             relations: &[],
             threads: &[],
             user_states: &[],
+            now: "2026-01-01T00:00:00Z",
             coverage: &sources,
         };
         let counts = priority::scope_counts(&input);
@@ -667,6 +668,7 @@ fn absent_or_moved_tests_are_never_asserted_as_defects() {
             relations: &[],
             threads: &[],
             user_states: &[],
+            now: "2026-01-01T00:00:00Z",
             coverage: &sources,
         });
         for item in &queue.items {
