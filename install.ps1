@@ -1,4 +1,4 @@
-param([switch] $FromSource)
+param([switch] $FromSource, [switch] $WithInspect)
 
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Net.Http
@@ -6,6 +6,10 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 $Repo = 'https://github.com/codesoda/aside'
 $InstallDir = Join-Path $HOME '.aside/bin'
 $Binary = Join-Path $InstallDir 'aside.exe'
+$InspectBinary = Join-Path $InstallDir 'inspect.exe'
+$InspectVersion = 'v0.1.1'
+$InspectAsset = 'inspect-windows-x86_64.exe'
+$InspectSHA256 = '29b26dd277c373f74f5aea9bef5661a42fe9f4c0fce72dd75c353ad796f2f1b1'
 
 function Get-Target {
     $Arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
@@ -124,6 +128,41 @@ function Install-FromRelease([string] $StagingDir) {
     } finally { Remove-Item -LiteralPath $TempDir -Recurse -Force }
 }
 
+function Install-Inspect {
+    Assert-SafeDestination $InspectBinary
+    Write-Host 'Inspect is licensed under FSL-1.1-ALv2: https://github.com/Ataraxy-Labs/inspect/blob/v0.1.1/LICENSE.md'
+    if (Test-Path -LiteralPath $InspectBinary -PathType Leaf) {
+        if ((Get-FileHash -LiteralPath $InspectBinary -Algorithm SHA256).Hash -ine $InspectSHA256) {
+            throw "Refusing to replace a different Inspect executable at $InspectBinary"
+        }
+        Write-Host "Inspect $InspectVersion is already installed at $InspectBinary."
+        return
+    }
+    $TempDir = Join-Path ([IO.Path]::GetTempPath()) ("aside-inspect-" + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $TempDir | Out-Null
+    try {
+        $Source = Join-Path $TempDir $InspectAsset
+        Invoke-WebRequest -Uri "https://github.com/Ataraxy-Labs/inspect/releases/download/$InspectVersion/$InspectAsset" -OutFile $Source -UseBasicParsing -TimeoutSec 30
+        if (-not (Test-Path -LiteralPath $Source -PathType Leaf) -or (Get-Item -LiteralPath $Source).Length -le 0 -or
+            (Get-FileHash -LiteralPath $Source -Algorithm SHA256).Hash -ine $InspectSHA256) {
+            throw "SHA256 mismatch or empty download for $InspectAsset; refusing to install"
+        }
+        Assert-SafeDestination $InspectBinary
+        # Stage beside the destination, then publish without overwriting an existing file.
+        $Staged = Join-Path $InstallDir (".inspect-" + [guid]::NewGuid().ToString('N'))
+        try {
+            [IO.File]::Copy($Source, $Staged)
+            [IO.File]::Move($Staged, $InspectBinary)
+        } finally {
+            if (Test-Path -LiteralPath $Staged -PathType Leaf) { Remove-Item -LiteralPath $Staged -Force }
+        }
+        Write-Host "Installed Inspect $InspectVersion at $InspectBinary."
+    } finally {
+        try { Remove-Item -LiteralPath $TempDir -Recurse -Force }
+        catch { Write-Warning "Could not clean up temporary Inspect installer files: $_" }
+    }
+}
+
 try {
     # Keep the existing Windows x64-only installer scope, including source mode.
     $Target = Get-Target
@@ -180,6 +219,10 @@ try {
     # User PATH changes do not update this PowerShell process or agents launched from it.
     $env:Path = "$InstallDir;$env:Path"
     Write-Host "Installed aside at $Binary."
+    if ($WithInspect) {
+        try { Install-Inspect }
+        catch { Write-Warning "Inspect installation failed; Aside remains installed: $_" }
+    }
     if (-not [Console]::IsInputRedirected) {
         $Answer = Read-Host 'Run a live Aside review example with an agent? [y/N]'
         if ($Answer -match '^(?i:y|yes)$') {

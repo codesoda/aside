@@ -28,13 +28,23 @@ class InstallTests(unittest.TestCase):
         self.asset = 'aside-v1.2.3-x86_64-unknown-linux-gnu.tar.gz'
         self.binary = b'#!/bin/sh\nprintf "%s\\n" "$1" >> "$HOME/calls"\n'
         self.fixture(self.binary)
+        self.inspect_binary = b'#!/bin/sh\nprintf invoked > "$HOME/inspect-ran"\n'
+        (self.fixtures / 'inspect').write_bytes(self.inspect_binary)
         self.mock('shasum', '#!/bin/sh\n/usr/bin/shasum "$@"\n')
         self.mock('sha256sum', '#!/bin/sh\nshasum -a 256 "$1"\n')
         self.mock('uname', '#!/bin/sh\ncase "$1" in -s) echo Linux ;; -m) echo x86_64 ;; esac\n')
         self.mock('inspect', '#!/bin/sh\nprintf invoked > "$HOME/inspect-ran"\nexit 97\n')
         self.mock('curl', '''#!/bin/sh
 case " $* " in
-  *[Aa]taraxy-*|*inspect-*) printf attempted > "$HOME/inspect-requested"; exit 98 ;;
+  *inspect-linux-x86_64*)
+    printf attempted > "$HOME/inspect-requested"
+    [ "${INSPECT_UNAVAILABLE:-}" != 1 ] || { printf 404; exit 0; }
+    for arg do
+      if [ "$prev" = '-o' ]; then dest=$arg; fi
+      prev=$arg
+    done
+    cp "$FIXTURES/inspect" "$dest"
+    printf 200 ;;
   *releases/latest*) printf '%s' 'https://github.com/codesoda/aside/releases/tag/v1.2.3' ;;
   *)
     for arg do
@@ -51,7 +61,6 @@ esac
 ''')
 
     def tearDown(self):
-        self.assertFalse((self.home / 'inspect-requested').exists(), 'Inspect download attempted')
         self.assertFalse((self.home / 'inspect-ran').exists(), 'Inspect executed')
 
     def mock(self, name, content):
@@ -140,6 +149,120 @@ esac
         self.assertFalse((self.home / '.local/bin/inspect').is_symlink())
         self.assertFalse((self.home / '.aside/bin/inspect').exists())
         self.assertNotIn('Inspect', result.stdout)
+        self.assertFalse((self.home / 'inspect-requested').exists())
+
+    def test_opted_in_installs_verified_inspect_without_executing_it(self):
+        # The official v0.1.1 Linux hash is pinned, not taken from a downloaded manifest.
+        official_hash = '99cf4ea2a2a1048d8e9369a6a5a11e5f84ee3f3c706e0bde072f9b2bd44e96ba'
+        self.mock('sha256sum', f'''#!/bin/sh
+case "$1" in *inspect-linux-x86_64) printf '{official_hash}  %s\\n' "$1" ;; *) shasum -a 256 "$1" ;; esac
+''')
+        result = self.run_installer('--with-inspect')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.home / 'inspect-requested').exists())
+        self.assertIn('FSL-1.1-ALv2', result.stdout)
+        self.assertLess(result.stdout.index('FSL-1.1-ALv2'), result.stdout.index('Installed Inspect'))
+        self.assertEqual((self.home / '.aside/bin/inspect').read_bytes(), self.inspect_binary)
+        self.assertEqual(os.readlink(self.home / '.local/bin/inspect'),
+                         str(self.home / '.aside/bin/inspect'))
+        self.assertEqual((self.home / 'calls').read_text(), '--version\nskill\n')
+
+    def test_opted_in_reuses_validated_binary_and_link_without_network(self):
+        managed = self.home / '.aside/bin'
+        links = self.home / '.local/bin'
+        managed.mkdir(parents=True)
+        links.mkdir(parents=True)
+        existing = managed / 'inspect'
+        existing.write_bytes(b'existing validated release')
+        existing.chmod(0o644)
+        (links / 'inspect').symlink_to(existing)
+        official_hash = '99cf4ea2a2a1048d8e9369a6a5a11e5f84ee3f3c706e0bde072f9b2bd44e96ba'
+        self.mock('sha256sum', f'''#!/bin/sh
+case "$1" in *bin/inspect) printf '{official_hash}  %s\\n' "$1" ;; *) shasum -a 256 "$1" ;; esac
+''')
+        result = self.run_installer('--with-inspect')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('existing Inspect binary is not executable', result.stderr)
+        self.assertFalse(os.access(existing, os.X_OK))
+        self.assertFalse((self.home / 'inspect-requested').exists())
+        existing.chmod(0o755)
+        result = self.run_installer('--with-inspect')
+        self.assertIn('Installed Inspect', result.stdout)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.home / 'inspect-requested').exists())
+        self.assertEqual(existing.read_bytes(), b'existing validated release')
+        self.assertEqual(os.readlink(links / 'inspect'), str(existing))
+
+    def test_opted_in_hash_mismatch_preserves_existing_inspect(self):
+        managed = self.home / '.aside/bin'
+        links = self.home / '.local/bin'
+        managed.mkdir(parents=True)
+        links.mkdir(parents=True)
+        (managed / 'inspect').write_bytes(b'previous inspect')
+        (links / 'inspect').symlink_to(managed / 'inspect')
+        result = self.run_installer('--with-inspect')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('refusing to replace unrecognized Inspect binary', result.stderr)
+        self.assertFalse((self.home / 'inspect-requested').exists())
+        self.assertEqual((managed / 'inspect').read_bytes(), b'previous inspect')
+        self.assertEqual(os.readlink(links / 'inspect'), str(managed / 'inspect'))
+        self.assertEqual((self.home / 'calls').read_text(), '--version\nskill\n')
+
+    def test_opted_in_hash_mismatch_without_existing_binary(self):
+        result = self.run_installer('--with-inspect')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('SHA256 mismatch', result.stderr)
+        self.assertFalse((self.home / '.aside/bin/inspect').exists())
+
+    def test_opted_in_link_failure_removes_new_binary(self):
+        official_hash = '99cf4ea2a2a1048d8e9369a6a5a11e5f84ee3f3c706e0bde072f9b2bd44e96ba'
+        self.mock('sha256sum', f'''#!/bin/sh
+case "$1" in *inspect-linux-x86_64) printf '{official_hash}  %s\\n' "$1" ;; *) shasum -a 256 "$1" ;; esac
+''')
+        self.mock('ln', '''#!/bin/sh
+case "$*" in *inspect*) exit 42 ;; *) /bin/ln "$@" ;; esac
+''')
+        result = self.run_installer('--with-inspect')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('optional Inspect installation failed', result.stderr)
+        self.assertFalse((self.home / '.aside/bin/inspect').exists())
+        self.assertFalse((self.home / '.local/bin/inspect').is_symlink())
+        self.assertEqual((self.home / 'calls').read_text(), '--version\nskill\n')
+
+    def test_opted_in_race_at_link_does_not_remove_new_unrelated_link(self):
+        official_hash = '99cf4ea2a2a1048d8e9369a6a5a11e5f84ee3f3c706e0bde072f9b2bd44e96ba'
+        self.mock('sha256sum', f'''#!/bin/sh
+case "$1" in *inspect-linux-x86_64) printf '{official_hash}  %s\\n' "$1" ;; *) shasum -a 256 "$1" ;; esac
+''')
+        self.mock('ln', '''#!/bin/sh
+if [ "$1" = -s ] && [ "$3" = "$HOME/.local/bin/inspect" ]; then
+  printf 'other' > "$HOME/.local/bin/inspect"
+  exit 42
+fi
+/bin/ln "$@"
+''')
+        result = self.run_installer('--with-inspect')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.home / '.local/bin/inspect').read_text(), 'other')
+        self.assertFalse((self.home / '.aside/bin/inspect').exists())
+
+    def test_opted_in_unavailable_is_nonfatal(self):
+        result = self.run_installer('--with-inspect', INSPECT_UNAVAILABLE='1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('HTTP 404', result.stderr)
+        self.assertFalse((self.home / '.aside/bin/inspect').exists())
+        self.assertEqual((self.home / 'calls').read_text(), '--version\nskill\n')
+
+    def test_opted_in_unrelated_link_preflight_skips_download(self):
+        link = self.home / '.local/bin/inspect'
+        link.parent.mkdir(parents=True)
+        link.write_text('unrelated')
+        result = self.run_installer('--with-inspect')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('refusing to replace unrelated', result.stderr)
+        self.assertEqual(link.read_text(), 'unrelated')
+        self.assertFalse((self.home / 'inspect-requested').exists())
+        self.assertEqual((self.home / 'calls').read_text(), '--version\nskill\n')
 
     def test_checksum_mismatch_never_installs(self):
         self.fixture(self.binary, checksum='0' * 64)

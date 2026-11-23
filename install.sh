@@ -6,6 +6,11 @@ INSTALL_DIR="${HOME}/.aside/bin"
 LINK_DIR="${HOME}/.local/bin"
 BINARY="${INSTALL_DIR}/aside"
 LINK="${LINK_DIR}/aside"
+INSPECT_BINARY="${INSTALL_DIR}/inspect"
+INSPECT_LINK="${LINK_DIR}/inspect"
+# Inspect v0.1.1 is licensed FSL-1.1-ALv2.
+INSPECT_RELEASE=https://github.com/Ataraxy-Labs/inspect/releases/download/v0.1.1
+INSPECT_LICENSE=https://github.com/Ataraxy-Labs/inspect/blob/v0.1.1/LICENSE.md
 TMP_DIR=
 
 transaction=0
@@ -98,6 +103,64 @@ install_verified() {
   ln -s "$BINARY" "$LINK"
 }
 
+install_inspect() (
+  inspect_target() {
+    case "$(uname -s):$(uname -m)" in
+      Darwin:arm64|Darwin:aarch64)
+        inspect_asset=inspect-macos-aarch64
+        inspect_hash=e7fed5722af6e14dc668279dd7854109f9778484d48b1a42ead5d2c71b8bb90d ;;
+      Linux:x86_64|Linux:amd64)
+        inspect_asset=inspect-linux-x86_64
+        inspect_hash=99cf4ea2a2a1048d8e9369a6a5a11e5f84ee3f3c706e0bde072f9b2bd44e96ba ;;
+      *) fail 'unsupported Inspect target' ;;
+    esac
+  }
+  inspect_target
+  preflight_inspect() {
+    for dir in "$HOME/.aside" "$INSTALL_DIR" "$HOME/.local" "$LINK_DIR"; do
+      [ ! -L "$dir" ] || fail "refusing to install through symlink $dir"
+      [ ! -e "$dir" ] || [ -d "$dir" ] || fail "refusing to install through non-directory $dir"
+    done
+    preflight_binary "$INSPECT_BINARY" "$INSPECT_LINK"
+    if [ -f "$INSPECT_BINARY" ]; then
+      existing=$(hash_file "$INSPECT_BINARY") || fail 'cannot hash existing Inspect binary'
+      [ "$existing" = "$inspect_hash" ] || fail "refusing to replace unrecognized Inspect binary $INSPECT_BINARY"
+      [ -x "$INSPECT_BINARY" ] || fail "existing Inspect binary is not executable: $INSPECT_BINARY"
+    fi
+  }
+  # Reuse a validated installed binary. A correct link needs no changes at all.
+  preflight_inspect
+  if [ -f "$INSPECT_BINARY" ] && [ -L "$INSPECT_LINK" ]; then
+    exit 0
+  fi
+  if [ ! -f "$INSPECT_BINARY" ]; then
+    download "$INSPECT_RELEASE/$inspect_asset" "$TMP_DIR/$inspect_asset"
+    actual=$(hash_file "$TMP_DIR/$inspect_asset") || fail 'cannot hash Inspect binary'
+    [ "$actual" = "$inspect_hash" ] || fail "SHA256 mismatch for $inspect_asset; refusing to install"
+  fi
+  preflight_inspect
+  written=0
+  if [ ! -f "$INSPECT_BINARY" ]; then
+    # Publish from the same filesystem without replacing an existing file.
+    staged=$(mktemp "$INSTALL_DIR/.inspect.XXXXXXXX") || exit 1
+    install -m 0755 "$TMP_DIR/$inspect_asset" "$staged" || { rm -f "$staged"; exit 1; }
+    ln "$staged" "$INSPECT_BINARY" || { rm -f "$staged"; exit 1; }
+    written=1
+    if ! rm -f "$staged"; then
+      rm -f "$INSPECT_BINARY" || :
+      exit 1
+    fi
+  fi
+  # A previously validated link already points at the installed binary.
+  if [ -L "$INSPECT_LINK" ] && [ "$(readlink "$INSPECT_LINK")" = "$INSPECT_BINARY" ]; then
+    exit 0
+  fi
+  if ! ln -s "$INSPECT_BINARY" "$INSPECT_LINK"; then
+    [ "$written" = 0 ] || rm -f "$INSPECT_BINARY" || :
+    exit 1
+  fi
+)
+
 sample_review() {
   ( : < /dev/tty ) 2>/dev/null || return 0
   printf 'Start an optional live sample review? [y/N] ' > /dev/tty
@@ -122,11 +185,15 @@ sample_review() {
   PATH="$INSTALL_DIR:$PATH" "$agent" "$prompt" < /dev/tty
 }
 
-case "$#" in
-  0) ;;
-  1) [ "$1" = --from-source ] || fail 'usage: install.sh [--from-source]' ;;
-  *) fail 'usage: install.sh [--from-source]' ;;
-esac
+from_source=0
+with_inspect=0
+for option do
+  case "$option" in
+    --from-source) [ "$from_source" = 0 ] || fail 'duplicate --from-source'; from_source=1 ;;
+    --with-inspect) [ "$with_inspect" = 0 ] || fail 'duplicate --with-inspect'; with_inspect=1 ;;
+    *) fail 'usage: install.sh [--from-source] [--with-inspect]' ;;
+  esac
+done
 
 require uname
 require install
@@ -144,7 +211,7 @@ TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/aside-install.XXXXXXXX") || fail 'cannot cr
 
 # Download the latest verified release by default, even from inside a checkout.
 # Building from source requires an explicit choice and the complete Aside tree.
-if [ "${1:-}" = --from-source ]; then
+if [ "$from_source" = 1 ]; then
   [ -f "$0" ] || fail 'source install requires install.sh from the Aside checkout'
   root=$(CDPATH='' cd "$(dirname "$0")" && pwd -P)
   [ -f "$root/Cargo.toml" ] && [ -f "$root/skills/aside/SKILL.md" ] && [ -f "$root/app/package.json" ] \
@@ -181,5 +248,13 @@ install_verified "$aside_source"
 "$BINARY" skill || fail 'embedded skill installation failed'
 transaction=0
 printf 'Installed aside at %s (linked at %s).\n' "$BINARY" "$LINK"
+if [ "$with_inspect" = 1 ]; then
+  printf 'Inspect v0.1.1 is licensed FSL-1.1-ALv2: %s\n' "$INSPECT_LICENSE"
+  if install_inspect; then
+    printf 'Installed Inspect at %s (linked at %s).\n' "$INSPECT_BINARY" "$INSPECT_LINK"
+  else
+    printf 'warning: optional Inspect installation failed; Aside remains installed.\n' >&2
+  fi
+fi
 case ":${PATH:-}:" in *":$LINK_DIR:"*) : ;; *) printf 'Add %s to PATH to use aside from a new terminal.\n' "$LINK_DIR" ;; esac
 sample_review
