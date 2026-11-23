@@ -27,21 +27,17 @@ try {
     if ($Process.ExitCode -ne 0) { throw "Installer exited $($Process.ExitCode): $Errors`n$Output" }
     if ($Output -notmatch 'Skipped live example \(noninteractive\)') { throw 'Installer did not confirm that the live example was skipped' }
 
-    foreach ($Path in @($Aside, $Inspect)) {
-        if (-not (Test-Path -LiteralPath $Path -PathType Leaf) -or (Get-Item -LiteralPath $Path).Length -le 0) { throw "Missing installed executable: $Path" }
-    }
+    if (-not (Test-Path -LiteralPath $Aside -PathType Leaf) -or (Get-Item -LiteralPath $Aside).Length -le 0) { throw "Missing installed executable: $Aside" }
+    if (Test-Path -LiteralPath $Inspect) { throw "Installer unexpectedly created Inspect: $Inspect" }
     $AsideVersion = & $Aside --version
     if ($LASTEXITCODE -ne 0 -or $AsideVersion -notmatch 'aside\s+\d+\.\d+\.\d+') { throw "Unexpected Aside version: $AsideVersion" }
-    # Inspect v0.1.1 does not support --version; the installer verifies its pinned SHA-256.
-    $InspectHelp = & $Inspect --help
-    if ($LASTEXITCODE -ne 0 -or ($InspectHelp -join ' ') -notmatch 'inspect.*pr') { throw 'Installed Inspect cannot show its PR command help' }
     foreach ($Skill in $Skills) {
         if (-not (Test-Path -LiteralPath (Join-Path $Skill 'SKILL.md') -PathType Leaf) -or
             -not (Test-Path -LiteralPath (Join-Path $Skill '.aside-managed') -PathType Leaf)) {
             throw "Missing managed Aside skill: $Skill"
         }
     }
-    Write-Host "Windows release install passed: $AsideVersion; Inspect PR help; $($Skills.Count) managed skills."
+    Write-Host "Windows release install passed: $AsideVersion; no Inspect executable; $($Skills.Count) managed skills."
 } finally {
     [Environment]::SetEnvironmentVariable('Path', $OriginalUserPath, 'User')
     Remove-Item -LiteralPath $Temp -Recurse -Force

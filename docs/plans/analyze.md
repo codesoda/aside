@@ -372,6 +372,8 @@ Detect changes to exported/public signatures, schema files, database migrations,
 
 ## 7. `ataraxy-labs/inspect` integration: exact intent and constraints
 
+**Evaluation decision (#37):** Aside does not install or invoke Inspect. Its pinned distribution is not cleared for this use. The native structural engine remains the shipping path. See the [evaluation record](../inspect-evaluation.md) for the licence, source contract, sandbox gaps and benchmark. The options and command shapes below describe a possible future integration, not shipped behavior.
+
 Repository: <https://github.com/ataraxy-labs/inspect>. The upstream documentation describes Rust/Tree-sitter-based **entity-level classification, dependency graphs, blast-radius scoring, independent change grouping, JSON output, six MCP tools and optional LLM-powered review**. These are different capabilities and must remain separate in Aside's user settings and provenance.
 
 ### 7.1 What we want from `inspect`
@@ -1803,7 +1805,7 @@ These are suggested work packages to merge with the parent's existing Milestones
 
 - Safe matching repo acquisition/cache, fixed comparison baseline, Git churn/recency and temporal coupling.
 - Tree-sitter/native entity interfaces and metrics; related context and change grouping.
-- `inspect` subprocess prototype with pinned version, exact input validation, output mapping and licensing decision.
+- Evaluate the pinned Inspect contract and licence offline. Do not ship a subprocess without clearance and verified exact-input binding. Record the native structural benchmark and the no-ship decision in the [evaluation record](../inspect-evaluation.md).
 - In the release, use only legally cleared/distributable integration; support native/fallback engine.
 
 **Exit:** An ordinary PR can show measured hotspots, co-change candidates and bounded blast radius where supported, with tool/input/coverage provenance; failure is isolated.

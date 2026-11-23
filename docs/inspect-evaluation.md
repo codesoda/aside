@@ -1,0 +1,39 @@
+# Inspect evaluation gate (#37)
+
+**Decision: no shipment or invocation.** This is an engineering distribution gate, not a legal opinion. The [posted scope](https://github.com/codesoda/aside/issues/37#issuecomment-7098901208) requires native review without Inspect. This document records static source evidence and an offline mapping experiment; it does not establish runtime compatibility.
+
+## Pinned release and distribution
+
+The previously used release is [Ataraxy-Labs/inspect v0.1.1](https://github.com/Ataraxy-Labs/inspect/releases/tag/v0.1.1), tag commit [`90be7a3eca8ea5ee77e27d4df616aa2792d8ae4b`](https://github.com/Ataraxy-Labs/inspect/tree/90be7a3eca8ea5ee77e27d4df616aa2792d8ae4b). The three historical installer asset SHA-256 values agree with [GitHub release metadata](https://api.github.com/repos/Ataraxy-Labs/inspect/releases/tags/v0.1.1):
+
+| Asset | SHA-256 |
+| --- | --- |
+| `inspect-macos-aarch64` | `e7fed5722af6e14dc668279dd7854109f9778484d48b1a42ead5d2c71b8bb90d` |
+| `inspect-linux-x86_64` | `99cf4ea2a2a1048d8e9369a6a5a11e5f84ee3f3c706e0bde072f9b2bd44e96ba` |
+| `inspect-windows-x86_64.exe` | `29b26dd277c373f74f5aea9bef5661a42fe9f4c0fce72dd75c353ad796f2f1b1` |
+
+Release metadata and historical installer pins identify assets; checksum agreement does **not** attest a build, reproduce it from the tagged source, establish binary behavior, or grant redistribution permission. The tagged [release workflow](https://github.com/Ataraxy-Labs/inspect/blob/90be7a3eca8ea5ee77e27d4df616aa2792d8ae4b/.github/workflows/release.yml) does not build with `--locked`, and the audit found no published build attestation. This evaluation did not download or run an executable. The tagged [`LICENSE.md`](https://github.com/Ataraxy-Labs/inspect/blob/90be7a3eca8ea5ee77e27d4df616aa2792d8ae4b/LICENSE.md) is FSL-1.1-ALv2 with a Competing Use restriction and a later future-license grant. The README's “free, open source” description does not override those terms. Clearance for Aside's proposed distribution and use route has not been verified. The future licence is Apache-2.0 two years after the software is made available under the FSL; it does not clear the current release today. Do not download, bundle, install, invoke, require, or automatically probe Inspect as part of Aside. A pre-existing user executable remains user-owned and untouched; this evaluation does not depend on it.
+
+## Tagged static source contract (not observed binary output)
+
+At the tag, [`inspect diff`](https://github.com/Ataraxy-Labs/inspect/blob/90be7a3eca8ea5ee77e27d4df616aa2792d8ae4b/crates/inspect-cli/src/commands/diff.rs) and [`inspect pr`](https://github.com/Ataraxy-Labs/inspect/blob/90be7a3eca8ea5ee77e27d4df616aa2792d8ae4b/crates/inspect-cli/src/commands/pr.rs) offer `--format json`; their formatter serializes [`ReviewResult`](https://github.com/Ataraxy-Labs/inspect/blob/90be7a3eca8ea5ee77e27d4df616aa2792d8ae4b/crates/inspect-core/src/types.rs) with `entity_reviews`, `groups`, `stats`, and `timing`. `changes` is skipped. Each entity includes an ID, name, type, path, change type, classification, score/level, graph counts, public-API and structural flags, group and source spans, dependencies and optional source content. Stats include `total_entities` and a risk breakdown. The tagged [risk calculation](https://github.com/Ataraxy-Labs/inspect/blob/90be7a3eca8ea5ee77e27d4df616aa2792d8ae4b/crates/inspect-core/src/risk.rs) combines classification, change type, public-API status, blast radius and dependent count, then discounts cosmetic changes. It is a **heuristic attention signal**, not defect probability, validated finding, severity, or calibrated confidence. Source `start_line`/`end_line` are not proof of a current diff-side comment anchor. Neither the JSON nor a hash pin proves the analyzed revision matches Aside's snapshot.
+
+Static capabilities include entity-level diff and structural graph triage, grouping and risk ordering; `predict` addresses unchanged dependents. They do not establish a verified bug, accurate line anchor, complete repository coverage, or safe execution boundary. [`inspect review`](https://github.com/Ataraxy-Labs/inspect/blob/90be7a3eca8ea5ee77e27d4df616aa2792d8ae4b/crates/inspect-cli/src/commands/review.rs) is a **separate model-backed command**: provider default is Anthropic, and OpenAI-compatible/Ollama endpoints are options; it filters and truncates entities before calling a provider. It must never be mistaken for static triage or invoked by default. `inspect comment` is a separate GitHub posting path and out of scope. The tagged [analysis implementation](https://github.com/Ataraxy-Labs/inspect/blob/90be7a3eca8ea5ee77e27d4df616aa2792d8ae4b/crates/inspect-core/src/analyze.rs) builds its dependency graph across the selected source corpus, not just changed files, and can materialize a source snapshot on disk for commit comparisons. There is no verified process sandbox, memory or wall-time limit, or network confinement. A future subprocess would require explicit budgets and sandbox evaluation, even for static mode.
+
+## Offline mapping experiment
+
+Run `python3 -m unittest -v tests/inspect_contract_evaluation.py`. The sole script uses hand-authored JSON-shaped data, no upstream executable, model, network, copied scoring code, or integration path. It deliberately preserves the supplied score as `upstream_heuristic_unverified`, maps to an attention hint with `anchor: None` and `validation: unverified`, and rejects missing/incompatible fields, inconsistent risk counts, and a parseable but truncated entity list. Consistent metadata cannot prove that a producer omitted entities, filtered by `--min-risk`, or analyzed the intended revision; those cases remain unsupported, not accepted as verified. This is a narrow evaluation exercise, not a claimed adapter or general parser for arbitrary Inspect versions.
+
+A future adapter is **not authorized** by this prototype. It would require (1) verified written licence clearance for the exact version and distribution/use route, (2) an independently pinned and authenticated artifact/source chain, (3) an explicit opt-in static command with no model or posting path, (4) executable/version/schema compatibility tests and complete-output detection, (5) independently verified snapshot identity and diff anchors before any verified claim, (6) subprocess time, output, memory, filesystem and network isolation with clean native fallback, and (7) a separately approved privacy and rollout decision. Until all gates pass, native diff/history/structure and independent review remain the supported path.
+
+## Native performance baseline
+
+Run the opt-in native benchmark with an isolated data directory:
+
+```sh
+ASIDE_DATA_DIR="$(mktemp -d)" cargo test --locked benchmark_native_structure_pinned_fixture -- --ignored --nocapture
+```
+
+The harness creates a two-commit synthetic Git repository with a change to `target` and an unchanged `client → service → target` chain. It checks three scanned Rust files, five analyzed entities, one direct and two transitive-or-direct dependants of `target`, no fixture files or results omitted by caps, and the native provider's expected partial-coverage status. Timing includes the production structural scan, including pinned Git object reads, inventory, graph and evidence output. It excludes fixture setup, build, warm-up and result checks.
+
+On a Mac with Apple M3 Pro (arm64), macOS 26.2, Git 2.50.1 and Rust 1.95.0, using the unoptimized test profile with concurrent builds active, ten measured samples after one warm-up were `321248, 352454, 567688, 636388, 645165, 484328, 690342, 449663, 517520, 472699` µs. Median: **500.9 ms**; min–max: **321.2–690.3 ms**. This is a small-fixture, contended baseline, not a product latency target. Inspect runtime and comparative speed: **not measured**.

@@ -4,13 +4,13 @@ Aside is a local-first workspace for reviewing pull requests. This guide is for 
 
 ## Check the machine and ask first
 
-1. Confirm the OS and architecture. Supported quick-install targets are **macOS ARM**, **Linux x86-64**, and **Windows x86-64**. Windows ARM64 is unsupported because Inspect is not available for that target. For any other target, do not run a release installer; offer [building from source](https://github.com/codesoda/aside#install-from-source) and explain that Inspect may still be unavailable.
+1. Confirm the OS and architecture. Supported quick-install targets are **macOS ARM**, **Linux x86-64**, and **Windows x86-64**. For any other target, do not run a release installer; offer [building from source](https://github.com/codesoda/aside#install-from-source).
 2. Explain that the human quick-install commands below execute code from the network. Ask for explicit consent before downloading or running any script. Prefer downloading the official script to a local file, inspecting it with the person, and running it only after approval. **Never automatically run a remote script or pipe it into a shell as an agent.** Check redirects, downloads, destinations, permission changes, and integrity checks. Do not bypass local security policies.
 3. For a live PR, check [GitHub CLI (`gh`)](https://cli.github.com/) and `gh auth status`. Guide the person through `gh auth login` if needed; never request credentials. The separate bundled offline demo does not require `gh`.
 
 ## Install after consent
 
-The official [Unix script](https://raw.githubusercontent.com/codesoda/aside/main/install.sh) and [PowerShell script](https://raw.githubusercontent.com/codesoda/aside/main/install.ps1) resolve the latest stable Aside release and verify its SHA-256 checksum. They install Aside and its agent skill, and download [Inspect](https://github.com/Ataraxy-Labs/inspect) directly from upstream. Inspect is licensed under [FSL-1.1-ALv2](https://github.com/Ataraxy-Labs/inspect/blob/main/LICENSE.md). If no release or matching asset is available, stop and offer source-build instructions rather than another installer.
+The official [Unix script](https://raw.githubusercontent.com/codesoda/aside/main/install.sh) and [PowerShell script](https://raw.githubusercontent.com/codesoda/aside/main/install.ps1) resolve the latest stable Aside release and verify its SHA-256 checksum. They install Aside and its agent skill. They do not download Inspect. If no release or matching asset is available, stop and offer source-build instructions rather than another installer.
 
 For a human who trusts the source, the quick commands are:
 
