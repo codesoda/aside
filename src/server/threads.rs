@@ -310,90 +310,6 @@ pub(super) async fn update_thread(
     ))
 }
 
-#[cfg(test)]
-#[path = "threads_tests.rs"]
-mod conversation_tests;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::Arc;
-
-    #[tokio::test]
-    async fn human_thread_event_gives_host_the_message_and_code_context() {
-        let session = crate::session::Session::new(
-            crate::demo::snapshot(0),
-            crate::store::Store::open_in_memory().unwrap(),
-            None,
-            None,
-        )
-        .unwrap();
-        let (file_id, digest, side, line, path, text) = {
-            let snapshot = session.snapshot.read().unwrap();
-            let file = snapshot
-                .files
-                .iter()
-                .find(|file| {
-                    file.hunks.iter().any(|hunk| {
-                        hunk.lines
-                            .iter()
-                            .any(|line| line.new_line.is_some() && line.kind != LineKind::Meta)
-                    })
-                })
-                .unwrap();
-            let line = file
-                .hunks
-                .iter()
-                .flat_map(|hunk| &hunk.lines)
-                .find(|line| line.new_line.is_some() && line.kind != LineKind::Meta)
-                .unwrap();
-            (
-                file.id.clone(),
-                file.diff_digest.clone(),
-                Side::Right,
-                line.new_line.unwrap(),
-                file.path.clone(),
-                line.text.clone(),
-            )
-        };
-        let state = AppState::new(Arc::clone(&session), "ui".into(), "agent".into());
-        let mut events = session.events.subscribe();
-        let input = || ThreadInput {
-            file_id: file_id.clone(),
-            diff_digest: digest.clone(),
-            side,
-            line: Some(line),
-            start_line: None,
-            body: Some("  Could you check this?  ".into()),
-            subject: ThreadSubject::Line,
-            finding_id: None,
-        };
-        let _ = create_thread(
-            State(state.clone()),
-            axum::Extension(Actor::Human),
-            Json(input()),
-        )
-        .await
-        .unwrap();
-        let event = events.recv().await.unwrap();
-        assert_eq!(event.event_type, "thread.created");
-        assert_eq!(event.payload["path"], path);
-        assert_eq!(event.payload["lineText"], text);
-        assert_eq!(event.payload["line"], line);
-        assert_eq!(event.payload["body"], "Could you check this?");
-        assert!(event.payload["threadId"].as_str().is_some());
-
-        let _ = create_thread(State(state), axum::Extension(Actor::Agent), Json(input()))
-            .await
-            .unwrap();
-        let event = events.recv().await.unwrap();
-        assert_eq!(
-            event.payload.as_object().unwrap().len(),
-            1,
-            "agent drafts do not request a reply"
-        );
-    }
-}
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct ReviewCommentInput {
@@ -627,4 +543,169 @@ pub(super) async fn delete_comment(
         .session
         .notify("comment.deleted", json!({"commentId":id}));
     Ok(Json(json!({"sequence":event.sequence})))
+}
+
+#[cfg(test)]
+#[path = "threads_tests.rs"]
+mod conversation_tests;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn incomplete_patch_rejects_human_and_agent_anchored_threads_without_mutation() {
+        use axum::http::StatusCode;
+        use std::sync::atomic::Ordering;
+        use tokio::sync::broadcast::error::TryRecvError;
+
+        let mut snapshot = crate::demo::snapshot(0);
+        let file = snapshot
+            .files
+            .iter_mut()
+            .find(|file| {
+                file.hunks.iter().any(|hunk| {
+                    hunk.lines
+                        .iter()
+                        .any(|line| line.new_line.is_some() && line.kind != LineKind::Meta)
+                })
+            })
+            .unwrap();
+        let line = file
+            .hunks
+            .iter()
+            .flat_map(|hunk| &hunk.lines)
+            .find_map(|line| line.new_line.filter(|_| line.kind != LineKind::Meta))
+            .unwrap();
+        file.patch_complete = false;
+        let file_id = file.id.clone();
+        let diff_digest = file.diff_digest.clone();
+        let input = || ThreadInput {
+            file_id: file_id.clone(),
+            diff_digest: diff_digest.clone(),
+            side: Side::Right,
+            line: Some(line),
+            start_line: None,
+            body: Some("Valid anchored draft".into()),
+            subject: ThreadSubject::Line,
+            finding_id: None,
+        };
+        let session = crate::session::Session::new(
+            snapshot,
+            crate::store::Store::open_in_memory().unwrap(),
+            None,
+            None,
+        )
+        .unwrap();
+        let state = AppState::new(Arc::clone(&session), "ui".into(), "agent".into());
+        let mut events = session.events.subscribe();
+        let before = serde_json::to_value(
+            session
+                .store
+                .lock()
+                .unwrap()
+                .list_threads(&session.pr_id)
+                .unwrap(),
+        )
+        .unwrap();
+        let sequence = session.sequence.load(Ordering::SeqCst);
+
+        for actor in [Actor::Human, Actor::Agent] {
+            let error = create_thread(State(state.clone()), axum::Extension(actor), Json(input()))
+                .await
+                .unwrap_err();
+            assert_eq!(error.status, StatusCode::BAD_REQUEST, "{actor:?}");
+            assert_eq!(
+                serde_json::to_value(
+                    session
+                        .store
+                        .lock()
+                        .unwrap()
+                        .list_threads(&session.pr_id)
+                        .unwrap()
+                )
+                .unwrap(),
+                before,
+                "{actor:?} must not create a thread or comment"
+            );
+            assert_eq!(session.sequence.load(Ordering::SeqCst), sequence);
+            assert!(matches!(events.try_recv(), Err(TryRecvError::Empty)));
+        }
+    }
+
+    #[tokio::test]
+    async fn human_thread_event_gives_host_the_message_and_code_context() {
+        let session = crate::session::Session::new(
+            crate::demo::snapshot(0),
+            crate::store::Store::open_in_memory().unwrap(),
+            None,
+            None,
+        )
+        .unwrap();
+        let (file_id, digest, side, line, path, text) = {
+            let snapshot = session.snapshot.read().unwrap();
+            let file = snapshot
+                .files
+                .iter()
+                .find(|file| {
+                    file.hunks.iter().any(|hunk| {
+                        hunk.lines
+                            .iter()
+                            .any(|line| line.new_line.is_some() && line.kind != LineKind::Meta)
+                    })
+                })
+                .unwrap();
+            let line = file
+                .hunks
+                .iter()
+                .flat_map(|hunk| &hunk.lines)
+                .find(|line| line.new_line.is_some() && line.kind != LineKind::Meta)
+                .unwrap();
+            (
+                file.id.clone(),
+                file.diff_digest.clone(),
+                Side::Right,
+                line.new_line.unwrap(),
+                file.path.clone(),
+                line.text.clone(),
+            )
+        };
+        let state = AppState::new(Arc::clone(&session), "ui".into(), "agent".into());
+        let mut events = session.events.subscribe();
+        let input = || ThreadInput {
+            file_id: file_id.clone(),
+            diff_digest: digest.clone(),
+            side,
+            line: Some(line),
+            start_line: None,
+            body: Some("  Could you check this?  ".into()),
+            subject: ThreadSubject::Line,
+            finding_id: None,
+        };
+        let _ = create_thread(
+            State(state.clone()),
+            axum::Extension(Actor::Human),
+            Json(input()),
+        )
+        .await
+        .unwrap();
+        let event = events.recv().await.unwrap();
+        assert_eq!(event.event_type, "thread.created");
+        assert_eq!(event.payload["path"], path);
+        assert_eq!(event.payload["lineText"], text);
+        assert_eq!(event.payload["line"], line);
+        assert_eq!(event.payload["body"], "Could you check this?");
+        assert!(event.payload["threadId"].as_str().is_some());
+
+        let _ = create_thread(State(state), axum::Extension(Actor::Agent), Json(input()))
+            .await
+            .unwrap();
+        let event = events.recv().await.unwrap();
+        assert_eq!(
+            event.payload.as_object().unwrap().len(),
+            1,
+            "agent drafts do not request a reply"
+        );
+    }
 }
