@@ -143,17 +143,63 @@ fn names_pattern(n: Node<'_>, bytes: &[u8], name: &str) -> bool {
     n.named_children(&mut cursor)
         .any(|child| names_pattern(child, bytes, name))
 }
+fn condition_shadows(condition: Node<'_>, n: Node<'_>, bytes: &[u8], name: &str) -> bool {
+    let mut cursor = condition.walk();
+    let conditions: Vec<_> = if condition.kind() == "let_chain" {
+        condition.named_children(&mut cursor).collect()
+    } else {
+        vec![condition]
+    };
+    conditions.into_iter().any(|part| {
+        part.kind() == "let_condition"
+            && (n.start_byte() >= condition.end_byte() || n.start_byte() >= part.end_byte())
+            && part
+                .child_by_field_name("pattern")
+                .is_some_and(|p| names_pattern(p, bytes, name))
+    })
+}
 fn shadowed(n: Node<'_>, bytes: &[u8], name: &str) -> bool {
     if name.contains("::") || name.is_empty() {
         return false;
     }
     let mut parent = n.parent();
     while let Some(node) = parent {
+        if matches!(node.kind(), "for_expression" | "match_arm")
+            && node
+                .child_by_field_name("pattern")
+                .is_some_and(|p| names_pattern(p, bytes, name))
+        {
+            return true;
+        }
+        if matches!(node.kind(), "if_expression" | "while_expression")
+            && node
+                .child_by_field_name("condition")
+                .is_some_and(|condition| {
+                    // An if-let binding does not escape into the else arm. A binding
+                    // in a chain is available only after its own value expression.
+                    let in_scope = if node.kind() == "if_expression" {
+                        node.child_by_field_name("alternative")
+                            .is_none_or(|alternative| n.start_byte() < alternative.start_byte())
+                    } else {
+                        true
+                    };
+                    in_scope && condition_shadows(condition, n, bytes, name)
+                })
+        {
+            return true;
+        }
         if matches!(
             node.kind(),
-            "for_expression" | "match_arm" | "if_expression" | "while_expression"
+            "function_item"
+                | "closure_expression"
+                | "impl_item"
+                | "struct_item"
+                | "enum_item"
+                | "union_item"
+                | "type_item"
+                | "trait_item"
         ) && node
-            .child_by_field_name("pattern")
+            .child_by_field_name("type_parameters")
             .is_some_and(|p| names_pattern(p, bytes, name))
         {
             return true;
@@ -161,22 +207,19 @@ fn shadowed(n: Node<'_>, bytes: &[u8], name: &str) -> bool {
         if matches!(
             node.kind(),
             "function_item" | "closure_expression" | "impl_item"
-        ) {
-            if node
-                .child_by_field_name("type_parameters")
-                .is_some_and(|p| names_pattern(p, bytes, name))
-            {
-                return true;
-            }
-            if let Some(parameters) = node.child_by_field_name("parameters") {
-                let mut cursor = parameters.walk();
-                if parameters.named_children(&mut cursor).any(|parameter| {
+        ) && let Some(parameters) = node.child_by_field_name("parameters")
+        {
+            let mut cursor = parameters.walk();
+            if parameters.named_children(&mut cursor).any(|parameter| {
+                if parameter.kind() == "parameter" {
                     parameter
                         .child_by_field_name("pattern")
                         .is_some_and(|p| names_pattern(p, bytes, name))
-                }) {
-                    return true;
+                } else {
+                    node.kind() == "closure_expression" && names_pattern(parameter, bytes, name)
                 }
+            }) {
+                return true;
             }
         }
         if node.kind() == "block" {
@@ -370,6 +413,7 @@ impl Inventory {
             && n.parent().is_some_and(|p| {
                 p.child_by_field_name("value")
                     .is_some_and(|v| v.id() == n.id())
+                    || p.kind() == "arguments"
             })
         {
             let name = text(n, bytes);
@@ -384,6 +428,26 @@ impl Inventory {
                     "reference",
                 ));
             }
+        }
+        if kind == "identifier"
+            && owner.is_some()
+            && n.parent().is_some_and(|p| {
+                matches!(
+                    p.kind(),
+                    "binary_expression"
+                        | "unary_expression"
+                        | "return_expression"
+                        | "array_expression"
+                        | "tuple_expression"
+                        | "index_expression"
+                        | "field_expression"
+                        | "reference_expression"
+                        | "assignment_expression"
+                )
+            })
+        {
+            self.unresolved
+                .push(site(path, sha, n, "unsupported value reference position"));
         }
         if kind == "type_identifier"
             && owner.is_some()
@@ -426,7 +490,15 @@ impl Inventory {
         let impl_owner = n
             .child_by_field_name("type")
             .map(|x| format!("{module}::{}", text(x, bytes)));
-        let next_owner = if kind == "function_item" {
+        let next_owner = if matches!(
+            kind,
+            "function_item"
+                | "struct_item"
+                | "enum_item"
+                | "union_item"
+                | "type_item"
+                | "trait_item"
+        ) {
             Some(qualified.as_str())
         } else if kind == "impl_item" {
             impl_owner.as_deref()
@@ -708,6 +780,14 @@ pub fn analyze_with_corpus(
         Some(&layout.modules),
     );
     inv.skipped.extend(layout.skipped);
+    for file in &input.changed_files {
+        if !file.patch_complete {
+            inv.skipped.push(format!(
+                "{}: incomplete patch; omitted changed entities unknown",
+                file.path
+            ));
+        }
+    }
     if tree_paths.is_empty() {
         inv.skipped
             .push("full pinned tree path inventory unavailable".into());

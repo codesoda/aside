@@ -295,6 +295,86 @@ fn scan_supplies_full_pinned_head_tree_inventory() {
             .contains(&"comparison_base_unavailable".into())
     );
 
+    // A truncated changed-file listing cannot prove that no other changed
+    // entities were omitted, even when the retained tree and patch are useful.
+    let input = Arc::make_mut(&mut ctx.input);
+    let snapshot = Arc::make_mut(&mut input.snapshot);
+    let mut file = demo::snapshot(0).files[0].clone();
+    file.path = "src/lib.rs".into();
+    file.previous_path = None;
+    file.hunks[0].lines = vec![crate::model::DiffLine {
+        id: "local-added".into(),
+        kind: crate::model::LineKind::Addition,
+        text: "fn local() {}".into(),
+        old_line: None,
+        new_line: Some(1),
+        patch_position: 1,
+    }];
+    snapshot.files.push(file);
+    snapshot.complete = false;
+    let truncated = scan(ctx.clone(), &AtomicBool::new(false)).unwrap();
+    assert_eq!(truncated.status, RunStatus::Partial);
+    assert_eq!(truncated.coverage.completeness, Completeness::Partial);
+    assert!(
+        truncated
+            .coverage
+            .reason_codes
+            .contains(&"structure_changed_file_enumeration_incomplete".into())
+    );
+    assert!(
+        truncated.findings.len() > 1,
+        "retained entity evidence must survive"
+    );
+    let corpus = truncated.evidence[0].value().value.as_ref().unwrap();
+    assert!(
+        corpus["coverage"]["limitations"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!(
+                "structure_changed_file_enumeration_incomplete"
+            ))
+    );
+    assert!(corpus["coverage"]["omitted_results"].is_null());
+    assert!(truncated.evidence.iter().skip(1).all(|e| {
+        let item = e.value().value.as_ref().unwrap();
+        item["complete"] == false && item["resolved_dependants"].is_null()
+    }));
+    let snapshot = Arc::make_mut(&mut Arc::make_mut(&mut ctx.input).snapshot);
+    snapshot.complete = true;
+    snapshot.files[0].patch_complete = false;
+    let incomplete_patch = scan(ctx.clone(), &AtomicBool::new(false)).unwrap();
+    assert_eq!(incomplete_patch.status, RunStatus::Partial);
+    assert_eq!(
+        incomplete_patch.coverage.completeness,
+        Completeness::Partial
+    );
+    assert!(incomplete_patch.findings.len() > 1);
+    let corpus = incomplete_patch.evidence[0].value().value.as_ref().unwrap();
+    assert!(
+        corpus["coverage"]["skipped_files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s
+                .as_str()
+                .unwrap()
+                .contains("incomplete patch; omitted changed entities unknown"))
+    );
+    assert!(corpus["coverage"]["omitted_results"].is_null());
+    assert!(
+        incomplete_patch
+            .warnings
+            .iter()
+            .all(|warning| !warning.message.contains("\\\"omitted_results\\\":0"))
+    );
+    assert!(incomplete_patch.evidence.iter().skip(1).all(|e| {
+        let item = e.value().value.as_ref().unwrap();
+        item["complete"] == false && item["resolved_dependants"].is_null()
+    }));
+    Arc::make_mut(&mut Arc::make_mut(&mut ctx.input).snapshot)
+        .files
+        .clear();
+
     // A non-Rust path is never read as a blob by the adapter, but the complete
     // tree inventory still lets the engine report unsupported corpus exposure.
     std::fs::write(root.join("other.go"), "package fixture\n").unwrap();

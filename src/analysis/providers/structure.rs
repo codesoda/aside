@@ -321,9 +321,16 @@ fn scan_with_checkpoint(
             .limitations
             .push("structure_object_read_failed".into());
     }
+    if !ctx.input.snapshot.complete {
+        result
+            .coverage
+            .limitations
+            .push("structure_changed_file_enumeration_incomplete".into());
+    }
     if !result.coverage.skipped_files.is_empty()
         || result.coverage.omitted_files != Some(0)
         || !context.complete
+        || !ctx.input.snapshot.complete
         || base_tree.is_none()
     {
         result.coverage.complete = false;
@@ -379,6 +386,19 @@ fn anchor(
 fn present(ctx: &ProviderContext, result: StructureOutput) -> Result<ProviderOutput> {
     let at = now_rfc3339();
     let complete = result.coverage.complete;
+    let mut coverage_value = serde_json::to_value(&result.coverage)?;
+    if !ctx.input.snapshot.complete
+        || ctx
+            .input
+            .snapshot
+            .files
+            .iter()
+            .any(|file| !file.patch_complete)
+    {
+        // The engine can count omissions only among enumerated changed rows.
+        // A truncated file listing or patch cannot establish a zero for missing entities.
+        coverage_value["omitted_results"] = serde_json::Value::Null;
+    }
     let mut output = ProviderOutput {
         status: if complete {
             RunStatus::Succeeded
@@ -415,6 +435,7 @@ fn present(ctx: &ProviderContext, result: StructureOutput) -> Result<ProviderOut
                                 "comparison_base_unavailable"
                                     | "structure_base_tree_unavailable"
                                     | "structure_object_read_failed"
+                                    | "structure_changed_file_enumeration_incomplete"
                             )
                         })
                         .cloned(),
@@ -430,7 +451,7 @@ fn present(ctx: &ProviderContext, result: StructureOutput) -> Result<ProviderOut
     if !complete {
         output.warnings.push(RunWarning {
             code: "structure_corpus_incomplete".into(),
-            message: serde_json::to_string(&result.coverage)?,
+            message: serde_json::to_string(&coverage_value)?,
         });
     }
     for file in &ctx.input.snapshot.files {
@@ -477,7 +498,7 @@ fn present(ctx: &ProviderContext, result: StructureOutput) -> Result<ProviderOut
             },
         });
     }
-    let corpus = json!({"coverage": result.coverage, "limitsDigest": result.limits_digest, "baseSha":result.base_sha, "headSha":result.head_sha});
+    let corpus = json!({"coverage": coverage_value, "limitsDigest": result.limits_digest, "baseSha":result.base_sha, "headSha":result.head_sha});
     emit(
         ctx,
         &at,

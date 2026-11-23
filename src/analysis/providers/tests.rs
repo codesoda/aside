@@ -101,10 +101,11 @@ fn default_providers_register_the_diff_engine() {
             assert_eq!(d.mode, AnalysisMode::Static, "{} must be non-LLM", d.id);
             assert_eq!(
                 d.kind,
-                if d.id == facts::PROVIDER_ID {
-                    ProviderKind::Diff
-                } else {
-                    ProviderKind::History
+                match d.id.as_str() {
+                    facts::PROVIDER_ID => ProviderKind::Diff,
+                    super::history::ID => ProviderKind::History,
+                    super::structure::ID => ProviderKind::Structural,
+                    id => panic!("unexpected default provider: {id}"),
                 }
             );
             d.id.as_str()
@@ -112,7 +113,7 @@ fn default_providers_register_the_diff_engine() {
         .collect();
     assert_eq!(
         registry,
-        BTreeSet::from([facts::PROVIDER_ID, super::history::ID])
+        BTreeSet::from([facts::PROVIDER_ID, super::history::ID, super::structure::ID,])
     );
     let diff = providers
         .iter()
@@ -201,7 +202,7 @@ async fn default_analysis_credential_child() {
     };
     assert!(matches!(state.as_str(), "present" | "absent"));
     let session = session();
-    let ids = BTreeSet::from([facts::PROVIDER_ID, super::history::ID]);
+    let ids = BTreeSet::from([facts::PROVIDER_ID, super::history::ID, super::structure::ID]);
     let initial = session.start_analysis().unwrap();
     assert_eq!(
         initial
@@ -243,13 +244,13 @@ fn assert_default_runs(session: &Session, snapshot_id: &crate::model::SnapshotId
         .map(|r| r.value())
         .filter(|r| &r.snapshot_id == snapshot_id && r.provider_id.starts_with("aside."))
         .collect();
-    assert_eq!(current.len(), 2, "one run for each default provider");
+    assert_eq!(current.len(), 3, "one run for each default provider");
     assert_eq!(
         current
             .iter()
             .map(|r| r.provider_id.as_str())
             .collect::<BTreeSet<_>>(),
-        BTreeSet::from([facts::PROVIDER_ID, super::history::ID])
+        BTreeSet::from([facts::PROVIDER_ID, super::history::ID, super::structure::ID,])
     );
     for run in current {
         assert!(

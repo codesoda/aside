@@ -107,7 +107,7 @@ fn closure_and_generic_shadowing_remain_unresolved() {
     assert!(
         !r.edges
             .iter()
-            .any(|e| e.to == target.id && e.site.line == 2)
+            .any(|e| e.to == target.id && e.kind == "call" && e.site.line == 2)
     );
     assert!(
         r.coverage
@@ -327,7 +327,7 @@ fn inline_and_bin_target_module_paths_are_distinct() {
             ("src/lib.rs", "mod outer { mod inner; }\n"),
             ("src/outer/inner.rs", "fn lib_only() {}\n"),
             ("src/bin/tool.rs", "mod helper; fn entry() {}\n"),
-            ("src/bin/tool/helper.rs", "fn bin_only() {}\n"),
+            ("src/bin/helper.rs", "fn bin_only() {}\n"),
         ],
         "",
     );

@@ -80,24 +80,43 @@ pub(super) fn discover(blobs: &[Blob], max_blob_bytes: usize, abort: &impl Fn() 
             .push("explicit Cargo target configuration unsupported".into());
         return result;
     }
+    let Some(package) = config.get("package").and_then(toml::Value::as_table) else {
+        result.skipped.push("Cargo package table invalid".into());
+        return result;
+    };
+    let auto = |key: &str| -> Option<bool> {
+        match package.get(key) {
+            None => Some(true),
+            Some(value) => value.as_bool(),
+        }
+    };
+    let (Some(autolib), Some(autobins)) = (auto("autolib"), auto("autobins")) else {
+        result
+            .skipped
+            .push("invalid Cargo automatic target flags".into());
+        return result;
+    };
     let files: BTreeMap<_, _> = blobs
         .iter()
         .filter(|b| b.path.ends_with(".rs"))
         .map(|b| (b.path.as_str(), b.bytes.as_slice()))
         .collect();
-    let mut roots = Vec::new();
-    for root in ["src/lib.rs", "src/main.rs"] {
-        if files.contains_key(root) {
-            roots.push((root.to_owned(), root.to_owned()));
-        }
+    let mut roots: Vec<(String, String)> = Vec::new();
+    if autolib && files.contains_key("src/lib.rs") {
+        roots.push(("src/lib.rs".into(), "src/lib.rs".into()));
     }
-    for path in files.keys() {
-        if let Some(name) = path
-            .strip_prefix("src/bin/")
-            .and_then(|x| x.strip_suffix(".rs"))
-            && !name.contains('/')
-        {
-            roots.push(((*path).into(), (*path).into()));
+    if autobins {
+        if files.contains_key("src/main.rs") {
+            roots.push(("src/main.rs".into(), "src/main.rs".into()));
+        }
+        for path in files.keys() {
+            if let Some(name) = path
+                .strip_prefix("src/bin/")
+                .and_then(|x| x.strip_suffix(".rs"))
+                && !name.contains('/')
+            {
+                roots.push(((*path).into(), (*path).into()));
+            }
         }
     }
     let mut parser = Parser::new();
@@ -166,7 +185,9 @@ pub(super) fn discover(blobs: &[Blob], max_blob_bytes: usize, abort: &impl Fn() 
                     .trim_end_matches('/')
                     .to_owned()
             } else if path == root && path.starts_with("src/bin/") {
-                path.trim_end_matches(".rs").to_owned()
+                // A flat bin root's modules live beside the root (src/bin/helper.rs),
+                // not under a directory named after the binary.
+                "src/bin".into()
             } else if path == root {
                 "src".into()
             } else {
@@ -192,14 +213,20 @@ pub(super) fn discover(blobs: &[Blob], max_blob_bytes: usize, abort: &impl Fn() 
                     target.clone(),
                 ));
             }
-            if claims.get(&path).is_some_and(|owners| owners.len() == 1) {
+            if claims.get(&path).is_some_and(|owners| owners.len() == 1)
+                || (path.starts_with("src/bin/") && target != path)
+            {
                 result.modules.insert(path, module);
             }
         }
     }
     for (path, owners) in claims {
         if owners.len() > 1 {
-            result.modules.remove(&path);
+            // A sibling module file is also an automatic binary root. Keep its
+            // module identity for useful edges, but never claim full coverage.
+            if !(path.starts_with("src/bin/") && owners.contains(&path)) {
+                result.modules.remove(&path);
+            }
             result
                 .skipped
                 .push(format!("{path}: shared across targets"));

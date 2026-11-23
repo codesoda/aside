@@ -233,11 +233,11 @@ fn base_binary_child_deletion_keeps_target_scope() {
             bytes: b"mod child;\n".to_vec(),
         },
         Blob {
-            path: "src/bin/tool/child.rs".into(),
+            path: "src/bin/child.rs".into(),
             bytes: b"fn old() {}\n".to_vec(),
         },
     ];
-    input.changed_files = parse_unified("diff --git a/src/bin/tool/child.rs b/src/bin/tool/child.rs\n--- a/src/bin/tool/child.rs\n+++ /dev/null\n@@ -1 +0,0 @@\n-fn old() {}\n", "h", &Limits::default()).files;
+    input.changed_files = parse_unified("diff --git a/src/bin/child.rs b/src/bin/child.rs\n--- a/src/bin/child.rs\n+++ /dev/null\n@@ -1 +0,0 @@\n-fn old() {}\n", "h", &Limits::default()).files;
     let result = analyze(&input, &|| false);
     assert!(
         result
