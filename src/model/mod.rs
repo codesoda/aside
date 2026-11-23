@@ -15,6 +15,7 @@ mod lifecycle;
 mod review;
 mod rules;
 mod snapshot;
+pub mod structure;
 
 pub use review::{
     Acknowledgement, Actor, AgentPresence, AgentRequest, AgentState, AnchorState, Comment,

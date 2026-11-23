@@ -91,7 +91,7 @@ pub struct AnalysisInput {
     pub history_context: Option<crate::github::context::AnalysisContext>,
     pub history_objects: Option<crate::github::context::HistoryObjects>,
     /// Session-local retained-object revision; a replacement invalidates an
-    /// active history run even when context metadata remains unchanged.
+    /// active history or structural run even when context metadata remains unchanged.
     pub history_generation: u64,
 }
 
@@ -117,17 +117,21 @@ impl AnalysisInput {
         }
     }
 
-    /// History context is not an input to snapshot-dependent providers.
+    /// Retained Git context is an input to history and structural providers only.
     pub fn provider_digest(&self, kind: ProviderKind) -> String {
         let digest = self.input_digest();
-        if kind != ProviderKind::History {
+        if !matches!(kind, ProviderKind::History | ProviderKind::Structural) {
             return digest;
         }
         let context = self.history_context.as_ref();
         let history_count = context.map(|c| c.history_count.to_string());
         let generation = self.history_generation.to_string();
         stable_digest(
-            "aside-history-input/v1",
+            if kind == ProviderKind::Structural {
+                "aside-structure-input/v1"
+            } else {
+                "aside-history-input/v1"
+            },
             &[
                 Some(&digest),
                 context.and_then(|c| c.comparison_base.as_deref()),

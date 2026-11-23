@@ -55,7 +55,7 @@ export function placeCallouts(
       unplaced('diff_mismatch');
       continue;
     }
-    if (anchor.line === null && anchor.startLine === null && anchor.kind === 'file') {
+    if (anchor.line === null && anchor.startLine === null && (anchor.kind === 'file' || anchor.kind === 'entity')) {
       result.file.push({ ...callout, fileId: file.id });
       continue;
     }

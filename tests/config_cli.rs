@@ -48,6 +48,27 @@ fn repository_cli_roundtrips_and_does_not_change_global_defaults() {
         ],
     );
     assert_eq!(String::from_utf8(other.stdout).unwrap(), "true\n");
+    let structure = run(
+        config,
+        &[
+            "set",
+            "analysis.structure.enabled",
+            "false",
+            "--repo",
+            "github.com/owner/repo",
+        ],
+    );
+    assert!(structure.status.success(), "{structure:?}");
+    let structure = run(
+        config,
+        &[
+            "get",
+            "analysis.structure.enabled",
+            "--repo",
+            "github.com/owner/repo",
+        ],
+    );
+    assert_eq!(String::from_utf8(structure.stdout).unwrap(), "false\n");
     let global = run(config, &["get", "browser.auto_open"]);
     assert_eq!(String::from_utf8(global.stdout).unwrap(), "true\n");
     let all = run(config, &["get", "--repo", "github.com/owner/repo"]);
@@ -55,7 +76,7 @@ fn repository_cli_roundtrips_and_does_not_change_global_defaults() {
     assert!(
         String::from_utf8(all.stdout)
             .unwrap()
-            .contains("analysis.history.timeout_ms = default")
+            .contains("analysis.structure.timeout_ms = default")
     );
 }
 
@@ -68,6 +89,13 @@ fn invalid_cli_settings_never_write_or_echo_values() {
             "set",
             "analysis.history.timeout_ms",
             "0",
+            "--repo",
+            "github.com/o/r",
+        ],
+        vec![
+            "set",
+            "analysis.structure.token",
+            "credential-canary",
             "--repo",
             "github.com/o/r",
         ],

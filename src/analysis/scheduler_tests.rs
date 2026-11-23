@@ -115,6 +115,21 @@ fn run_count(session: &Session) -> usize {
 }
 
 #[test]
+fn structural_digest_tracks_context_without_invalidating_diff() {
+    let session = session();
+    let mut input = input(&session, 0);
+    let original = input.provider_digest(ProviderKind::Structural);
+    let diff = input.provider_digest(ProviderKind::Diff);
+    input.history_generation += 1;
+    assert_ne!(original, input.provider_digest(ProviderKind::Structural));
+    assert_ne!(
+        input.provider_digest(ProviderKind::History),
+        input.provider_digest(ProviderKind::Structural)
+    );
+    assert_eq!(diff, input.provider_digest(ProviderKind::Diff));
+}
+
+#[test]
 fn demo_input_pins_the_fixture_snapshot() {
     let session = session();
     let bundle = demo::intelligence::load(false);

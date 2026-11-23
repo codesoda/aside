@@ -561,13 +561,8 @@ impl Session {
     }
 
     fn resolve_history(&self) {
-        if !self
-            .analysis_settings
-            .read()
-            .expect("settings lock")
-            .history
-            .enabled
-        {
+        let settings = self.analysis_settings.read().expect("settings lock");
+        if !settings.history.enabled && !settings.structure.enabled {
             return;
         }
         let Some((checkout, fetch, cache)) = self
@@ -611,7 +606,7 @@ impl Session {
             bail!("history context does not match the captured revision");
         }
         let id = self.analysis_input(snapshot).snapshot_id;
-        self.invalidate_history_for_snapshot(&id)?;
+        self.invalidate_context_providers_for_snapshot(&id)?;
         *self.analysis_context.write().expect("context lock") = Some(context);
         *self.history_objects.write().expect("history lock") = objects;
         self.history_generation.fetch_add(1, Ordering::SeqCst);
@@ -622,14 +617,17 @@ impl Session {
         Ok(handles)
     }
 
-    fn invalidate_history_for_snapshot(&self, id: &SnapshotId) -> Result<()> {
+    fn invalidate_context_providers_for_snapshot(&self, id: &SnapshotId) -> Result<()> {
         // Active attempts are superseded by the scheduler at the new digest;
         // do not wait for old work before starting the replacement.
         let mut store = self.store.lock().expect("store lock");
         for raw in store.list_analysis_runs(&self.pr_id)? {
             let run = raw.value();
             if &run.snapshot_id == id
-                && run.provider_id == "aside.git-history"
+                && matches!(
+                    run.provider_id.as_str(),
+                    "aside.git-history" | "aside.structure"
+                )
                 && matches!(run.status, RunStatus::Succeeded | RunStatus::Partial)
             {
                 let mut historical = run.clone();
@@ -650,14 +648,14 @@ impl Session {
         .notify(event_type, payload)
     }
 
-    fn history_retry_needed(&self, snapshot: &PrSnapshot) -> Result<bool> {
+    fn context_retry_needed(&self, snapshot: &PrSnapshot, provider_id: &str) -> Result<bool> {
         let id = self.analysis_input(snapshot.clone()).snapshot_id;
         let store = self.store.lock().expect("store lock");
         let runs = store.list_analysis_runs(&self.pr_id)?;
         let latest = runs
             .iter()
             .map(Raw::value)
-            .filter(|r| r.snapshot_id == id && r.provider_id == "aside.git-history")
+            .filter(|r| r.snapshot_id == id && r.provider_id == provider_id)
             .max_by_key(|r| r.attempt);
         Ok(latest.is_some_and(|run| {
             (run.status == RunStatus::Failed
@@ -678,6 +676,15 @@ impl Session {
                                 | "history_context_stale"
                                 | "history_deadline"
                                 | "history_cancelled_or_deadline"
+                                | "structure_context_unavailable"
+                                | "structure_objects_unavailable"
+                                | "structure_base_unavailable"
+                                | "structure_context_stale"
+                                | "structure_head_tree_unavailable"
+                                | "structure_base_tree_unavailable"
+                                | "structure_object_read_failed"
+                                | "structure_deadline"
+                                | "structure_cancelled_or_deadline"
                         )
                     }))
         }))
@@ -711,7 +718,8 @@ impl Session {
         let changed_revision = prior_context.as_ref().is_some_and(|context| {
             context.base_sha != snapshot.pr.base_sha || context.head_sha != snapshot.pr.head_sha
         });
-        let needs_resolution = settings.history.enabled
+        let context_enabled = settings.history.enabled || settings.structure.enabled;
+        let needs_resolution = context_enabled
             && self
                 .history_config
                 .read()
@@ -719,7 +727,10 @@ impl Session {
                 .is_some()
             && (changed_revision
                 || self.history_objects.read().expect("history lock").is_none()
-                || self.history_retry_needed(&snapshot)?);
+                || (settings.history.enabled
+                    && self.context_retry_needed(&snapshot, "aside.git-history")?)
+                || (settings.structure.enabled
+                    && self.context_retry_needed(&snapshot, "aside.structure")?));
         let resolved = if needs_resolution {
             let config = self
                 .history_config
@@ -752,7 +763,7 @@ impl Session {
         } else {
             None
         };
-        let (replacement, replacement_objects) = if !settings.history.enabled {
+        let (replacement, replacement_objects) = if !context_enabled {
             (None, prior_context.is_some().then_some(None))
         } else {
             match resolved {
@@ -823,18 +834,30 @@ impl Session {
             let id = self
                 .analysis_input(self.snapshot.read().expect("snapshot lock").clone())
                 .snapshot_id;
-            self.invalidate_history_for_snapshot(&id)?;
+            self.invalidate_context_providers_for_snapshot(&id)?;
         }
-        *self.analysis_settings.write().expect("settings lock") = settings;
+        *self.analysis_settings.write().expect("settings lock") = settings.clone();
         let invalidation = match self.begin_analysis() {
             Ok((handles, invalidation)) => {
-                if needs_resolution && !handles.iter().any(|h| h.provider_id == "aside.git-history")
-                {
+                if needs_resolution {
                     let id = self
                         .analysis_input(self.snapshot.read().expect("snapshot lock").clone())
                         .snapshot_id;
-                    if let Err(error) = self.analysis.rerun(&id, "aside.git-history") {
-                        eprintln!("could not retry history analysis: {error:#}");
+                    for (enabled, provider_id) in [
+                        (settings.history.enabled, "aside.git-history"),
+                        (settings.structure.enabled, "aside.structure"),
+                    ] {
+                        if enabled
+                            && self
+                                .analysis
+                                .provider_ids()
+                                .iter()
+                                .any(|id| id == provider_id)
+                            && !handles.iter().any(|h| h.provider_id == provider_id)
+                            && let Err(error) = self.analysis.rerun(&id, provider_id)
+                        {
+                            eprintln!("could not retry {provider_id} analysis: {error:#}");
+                        }
                     }
                 }
                 invalidation
@@ -1758,15 +1781,24 @@ mod tests {
                 .reason_codes
                 .contains(&"history_read_incomplete".into())
         );
-        assert!(session.history_retry_needed(&snapshot).unwrap());
+        assert!(
+            session
+                .context_retry_needed(&snapshot, "aside.git-history")
+                .unwrap()
+        );
         let objects = github::context::HistoryObjects::fixture(temp, root.join(".git"));
         let recovered = session
             .replace_analysis_context(context, Some(objects))
             .await
             .unwrap();
-        assert_eq!(recovered.len(), 1);
-        let new_history = &recovered[0];
-        assert_eq!(new_history.provider_id, "aside.git-history");
+        let new_history = recovered
+            .iter()
+            .find(|handle| handle.provider_id == "aside.git-history")
+            .unwrap();
+        assert!(recovered.iter().all(|handle| matches!(
+            handle.provider_id.as_str(),
+            "aside.git-history" | "aside.structure"
+        )));
         assert_ne!(new_history.run_id, old_history.run_id);
         new_history.clone().wait().await;
         let store = session.store.lock().unwrap();
@@ -1795,6 +1827,44 @@ mod tests {
                 .status,
             RunStatus::Partial
         );
+    }
+
+    #[tokio::test]
+    async fn structure_enabled_resolves_context_with_history_disabled_without_fetch() {
+        let gh = Arc::new(github::fake::FakeGh::default());
+        gh.on(&["pr", "view"], Ok(r#"{"number":7,"title":"test","body":"","url":"https://github.com/o/r/pull/7","state":"OPEN","isDraft":false,"author":{"login":"alice"},"baseRefName":"main","baseRefOid":"base1","headRefName":"feat","headRefOid":"head1","changedFiles":1}"#));
+        gh.on(&["repo", "view"], Ok(r#"{"id":"R_1"}"#));
+        gh.on(
+            &["pr", "diff"],
+            Ok("diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-x\n+y\n"),
+        );
+        gh.on(&["api", "--paginate"], Ok(r#"[[{"filename":"a.rs","status":"modified","patch":null,"additions":1,"deletions":1}]]"#));
+        let reference = PrRef {
+            owner: "o".into(),
+            repo: "r".into(),
+            number: 7,
+        };
+        let snapshot = github::fetch_snapshot(gh.as_ref(), &reference, &Limits::default()).unwrap();
+        let session = Session::new(
+            snapshot,
+            Store::open_in_memory().unwrap(),
+            Some(gh),
+            Some(reference),
+        )
+        .unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("config.toml");
+        let mut config = config::Config::default();
+        config
+            .set_scoped("analysis.history.enabled", "false", Some("github.com/o/r"))
+            .unwrap();
+        config::save_to(&path, &config).unwrap();
+        session.configure_analysis(path).unwrap();
+        let cache = root.path().join("context-cache");
+        session.configure_history(None, false, cache);
+        assert!(session.analysis_context.read().unwrap().is_some());
+        assert!(!session.analysis_settings.read().unwrap().history.enabled);
+        assert!(session.analysis_settings.read().unwrap().structure.enabled);
     }
 
     #[tokio::test]
@@ -1827,6 +1897,13 @@ mod tests {
         let mut config = config::Config::default();
         config
             .set_scoped("analysis.history.enabled", "false", Some("github.com/o/r"))
+            .unwrap();
+        config
+            .set_scoped(
+                "analysis.structure.enabled",
+                "false",
+                Some("github.com/o/r"),
+            )
             .unwrap();
         config::save_to(&path, &config).unwrap();
         session.configure_analysis(path.clone()).unwrap();
@@ -1983,7 +2060,9 @@ mod tests {
             .record_analysis_run(&session.pr_id, &Raw::new(deadline.clone()).unwrap())
             .unwrap();
         assert!(
-            session.history_retry_needed(&snapshot).unwrap(),
+            session
+                .context_retry_needed(&snapshot, "aside.git-history")
+                .unwrap(),
             "deadline must be retryable"
         );
         let refreshed = session.refresh().await.unwrap();
@@ -2006,6 +2085,237 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn history_disabled_structure_read_failure_and_missing_base_recover_on_unchanged_refresh()
+    {
+        let repo = tempfile::tempdir().unwrap();
+        let root = repo.path();
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.name", "Fixture"]);
+        git(&["config", "user.email", "fixture@example.com"]);
+        git(&["remote", "add", "origin", "https://github.com/o/r.git"]);
+        std::fs::create_dir(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("src/lib.rs"), "pub fn example() {}\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        let base = git(&["rev-parse", "HEAD"]);
+        std::fs::write(
+            root.join("src/lib.rs"),
+            "pub fn example() { helper(); }\nfn helper() {}\n",
+        )
+        .unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "head"]);
+        let head = git(&["rev-parse", "HEAD"]);
+        let blob = git(&["rev-parse", "HEAD:src/lib.rs"]);
+        let gh = Arc::new(github::fake::FakeGh::default());
+        gh.on(&["pr", "view"], Ok(&format!(r#"{{"number":7,"title":"test","body":"","url":"https://github.com/o/r/pull/7","state":"OPEN","isDraft":false,"author":{{"login":"alice"}},"baseRefName":"main","baseRefOid":"{base}","headRefName":"feat","headRefOid":"{head}","changedFiles":1}}"#)));
+        gh.on(&["repo", "view"], Ok(r#"{"id":"R_1"}"#));
+        gh.on(
+            &["repo", "view", "o/r", "--json", "id"],
+            Ok(r#"{"id":"R_1"}"#),
+        );
+        gh.on(&["pr", "diff"], Ok("diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1,2 @@\n-pub fn example() {}\n+pub fn example() { helper(); }\n+fn helper() {}\n"));
+        gh.on(&["api", "--paginate"], Ok(r#"[[{"filename":"src/lib.rs","status":"modified","patch":null,"additions":2,"deletions":1}]]"#));
+        let reference = PrRef {
+            owner: "o".into(),
+            repo: "r".into(),
+            number: 7,
+        };
+        let snapshot = github::fetch_snapshot(gh.as_ref(), &reference, &Limits::default()).unwrap();
+        let session = Session::new(
+            snapshot,
+            Store::open_in_memory().unwrap(),
+            Some(gh),
+            Some(reference),
+        )
+        .unwrap();
+        let settings_dir = tempfile::tempdir().unwrap();
+        let config_path = settings_dir.path().join("config.toml");
+        let mut config = config::Config::default();
+        config
+            .set_scoped("analysis.history.enabled", "false", Some("github.com/o/r"))
+            .unwrap();
+        config
+            .set_scoped("analysis.structure.enabled", "true", Some("github.com/o/r"))
+            .unwrap();
+        config::save_to(&config_path, &config).unwrap();
+        session.configure_analysis(config_path).unwrap();
+        session.configure_history(
+            Some(root.to_owned()),
+            false,
+            settings_dir.path().join("cache"),
+        );
+        let objects = session.history_objects.read().unwrap().clone().unwrap();
+        let object = objects
+            .dir
+            .join("objects")
+            .join(&blob[..2])
+            .join(&blob[2..]);
+        assert!(object.exists(), "fixture must retain a loose source object");
+        std::fs::remove_file(&object).unwrap();
+        let initial = session.start_analysis().unwrap();
+        for handle in &initial {
+            handle.clone().wait().await;
+        }
+        let first = session
+            .store
+            .lock()
+            .unwrap()
+            .list_analysis_runs(&session.pr_id)
+            .unwrap();
+        let structure = first
+            .iter()
+            .filter(|r| r.value().provider_id == "aside.structure")
+            .max_by_key(|r| r.value().attempt)
+            .unwrap()
+            .value();
+        assert_eq!(structure.status, RunStatus::Partial);
+        assert!(
+            structure
+                .coverage
+                .reason_codes
+                .contains(&"structure_object_read_failed".into())
+        );
+        assert!(
+            session
+                .context_retry_needed(&session.snapshot.read().unwrap(), "aside.structure")
+                .unwrap()
+        );
+        let attempt = structure.attempt;
+        let refreshed = session.refresh().await.unwrap();
+        assert_eq!(refreshed.pr.head_sha, head);
+        let handles = session.start_analysis().unwrap();
+        for handle in &handles {
+            handle.clone().wait().await;
+        }
+        let runs = session
+            .store
+            .lock()
+            .unwrap()
+            .list_analysis_runs(&session.pr_id)
+            .unwrap();
+        let recovered = runs
+            .iter()
+            .filter(|r| r.value().provider_id == "aside.structure")
+            .max_by_key(|r| r.value().attempt)
+            .unwrap()
+            .value();
+        assert!(recovered.attempt > attempt);
+        assert!(
+            !recovered
+                .coverage
+                .reason_codes
+                .contains(&"structure_object_read_failed".into())
+        );
+        assert!(recovered.coverage.analyzed_entities != KnownCount::Known { value: 0 });
+        {
+            let store = session.store.lock().unwrap();
+            let findings = store.list_findings(&session.pr_id, true).unwrap();
+            assert!(
+                findings.iter().any(|f| {
+                    f.finding.value().source.run_id.as_ref() == Some(&recovered.id)
+                        && !store
+                            .list_finding_evidence(&f.finding.value().id)
+                            .unwrap()
+                            .is_empty()
+                }),
+                "refresh must persist recovered structural evidence"
+            );
+        }
+
+        // Simulate a retained HEAD whose base resolution was temporarily
+        // unavailable. History stays disabled; only structure can request the
+        // unchanged-SHA context retry.
+        let mut missing = session.analysis_context.read().unwrap().clone().unwrap();
+        missing.comparison_base = None;
+        let objects = session.history_objects.read().unwrap().clone();
+        let handles = session
+            .replace_analysis_context(missing, objects)
+            .await
+            .unwrap();
+        for handle in &handles {
+            handle.clone().wait().await;
+        }
+        let runs = session
+            .store
+            .lock()
+            .unwrap()
+            .list_analysis_runs(&session.pr_id)
+            .unwrap();
+        let incomplete = runs
+            .iter()
+            .filter(|r| r.value().provider_id == "aside.structure")
+            .max_by_key(|r| r.value().attempt)
+            .unwrap()
+            .value();
+        assert_eq!(incomplete.status, RunStatus::Partial);
+        assert!(
+            incomplete
+                .coverage
+                .reason_codes
+                .contains(&"comparison_base_unavailable".into())
+        );
+        assert!(
+            session
+                .context_retry_needed(&session.snapshot.read().unwrap(), "aside.structure")
+                .unwrap()
+        );
+        let attempt = incomplete.attempt;
+        let refreshed = session.refresh().await.unwrap();
+        assert_eq!(refreshed.pr.head_sha, head);
+        let handles = session.start_analysis().unwrap();
+        for handle in &handles {
+            handle.clone().wait().await;
+        }
+        let runs = session
+            .store
+            .lock()
+            .unwrap()
+            .list_analysis_runs(&session.pr_id)
+            .unwrap();
+        let restored = runs
+            .iter()
+            .filter(|r| r.value().provider_id == "aside.structure")
+            .max_by_key(|r| r.value().attempt)
+            .unwrap()
+            .value();
+        assert!(restored.attempt > attempt);
+        assert!(
+            !restored
+                .coverage
+                .reason_codes
+                .contains(&"comparison_base_unavailable".into())
+        );
+        assert_eq!(
+            session
+                .analysis_context
+                .read()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .comparison_base
+                .as_deref(),
+            Some(base.as_str())
+        );
+        assert!(restored.coverage.analyzed_entities != KnownCount::Known { value: 0 });
     }
 
     #[tokio::test]

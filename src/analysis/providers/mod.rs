@@ -9,9 +9,11 @@ mod history_cochange;
 mod history_cochange_tests;
 #[cfg(test)]
 mod history_tests;
+mod structure;
 
 pub use diff::DiffFactsProvider;
 pub use history::HistoryProvider;
+pub use structure::StructureProvider;
 
 #[cfg(test)]
 mod tests;

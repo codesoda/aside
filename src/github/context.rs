@@ -1237,27 +1237,74 @@ mod tests {
     #[test]
     fn disk_monitor_stops_writer_during_transfer() {
         let root = tempfile::tempdir().unwrap();
-        let mut command = Command::new("sh");
+        let mut command = Command::new("dd");
         command
-            .args([
-                "-c",
-                "dd if=/dev/zero of=payload bs=65536 count=10000 2>/dev/null; sleep 10",
-            ])
+            .args(["if=/dev/zero", "of=payload", "bs=65536", "count=10000"])
             .current_dir(root.path());
-        let result = run_git_bounded(
+        let error = run_git_bounded(
             command,
             4096,
             Instant::now() + Duration::from_secs(5),
             Some((root.path(), 1024 * 1024)),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Git storage limit reached during transfer"
         );
-        assert!(result.is_err());
         let size_after = size(root.path(), Instant::now() + DEADLINE).unwrap();
-        thread::sleep(Duration::from_millis(100));
+        assert!(size_after > 1024 * 1024);
         assert_eq!(
             size(root.path(), Instant::now() + DEADLINE).unwrap(),
-            size_after,
-            "writer survived cancellation"
+            size_after
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn disk_monitor_cancels_descendant_writer() {
+        let root = tempfile::tempdir().unwrap();
+        let mut command = Command::new("sh");
+        command
+            .args([
+                "-c",
+                "dd if=/dev/zero of=payload bs=65536 count=10000 2>/dev/null & echo $! > writer.pid; wait",
+            ])
+            .current_dir(root.path());
+        let error = run_git_bounded(
+            command,
+            4096,
+            Instant::now() + Duration::from_secs(5),
+            Some((root.path(), 1024 * 1024)),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Git storage limit reached during transfer"
+        );
+        let pid = fs::read_to_string(root.path().join("writer.pid")).unwrap();
+        let pid = pid.trim();
+        assert!(size(root.path(), Instant::now() + DEADLINE).unwrap() > 1024 * 1024);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let observed = Command::new("ps")
+                .args(["-o", "stat=", "-p", pid])
+                .output()
+                .unwrap();
+            let state = String::from_utf8(observed.stdout).unwrap();
+            // An orphan can remain as a zombie until PID 1 reaps it.
+            if !observed.status.success()
+                || state.is_empty()
+                || matches!(state.trim().chars().next(), Some('Z' | 'X'))
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "descendant writer survived cancellation"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[cfg(unix)]

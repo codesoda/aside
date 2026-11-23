@@ -55,6 +55,32 @@ test('projections and historical items are excluded; related anchors do not relo
   assert.equal(result.unplaced[0].reason, 'missing_row');
 });
 
+test('entity-only anchors on a PR file become file callouts without inventing a line', () => {
+  const entity = item('entity', { anchor: { ...anchor, kind: 'entity', entityId: 'crate::Thing', line: null, startLine: null, side: null } });
+  const result = place([entity]);
+  assert.deepEqual(result.inline, []);
+  assert.deepEqual(result.unplaced, []);
+  assert.equal(result.file[0].fileId, 'f');
+  assert.equal(result.file[0].anchor, entity.finding.anchor);
+});
+
+test('entity findings with LEFT diff anchors retain their original side', () => {
+  const deleted = item('deleted', { anchor: { ...anchor, side: 'LEFT', line: 5, entityId: 'crate::Old' } });
+  const result = place([deleted]);
+  assert.deepEqual(result.file, []);
+  assert.deepEqual(result.inline.map(({ side, line }) => [side, line]), [['LEFT', 5]]);
+  assert.equal(result.inline[0].anchor, deleted.finding.anchor);
+});
+
+test('related context outside the PR is never placed on a diff', () => {
+  const outside = item('outside', { anchor: { ...anchor, kind: 'related_context', fileId: null, currentPath: 'src/outside.rs', line: null, startLine: null }, relatedAnchors: [{ ...anchor }] });
+  const entity = item('entity', { anchor: { ...anchor, kind: 'entity', fileId: 'other', currentPath: 'src/outside.rs', line: null, startLine: null }, relatedAnchors: [{ ...anchor }] });
+  const result = place([outside, entity]);
+  assert.deepEqual(result.file, []);
+  assert.deepEqual(result.inline, []);
+  assert.deepEqual(result.unplaced.map(({ item, reason }) => [item.finding.id, reason]), [['outside', 'no_file'], ['entity', 'anchor_mismatch']]);
+});
+
 test('insight class filtering retains server order', () => {
   const suggestion = item('suggestion', { assertionKind: 'informational' });
   const result = place([item('a'), suggestion, item('b')], [file], 's', 'measured');
