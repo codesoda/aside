@@ -151,6 +151,108 @@ async fn explanations_require_human_and_matching_origin_and_never_mutate_review(
     );
 }
 
+/// Each child gets a missing config and a PATH containing only a counting fake CLI.
+/// Default configuration rejects all three provider requests; the fake CLI
+/// call count stays zero. This does not establish endpoint reachability.
+#[cfg(unix)]
+#[tokio::test]
+async fn default_explain_paths_do_not_invoke_cli_with_or_without_credentials() {
+    const CHILD: &str = "ASIDE_EXPLAIN_DEFAULT_CHILD";
+    const TEST: &str = "server::explain_tests::default_explain_paths_do_not_invoke_cli_with_or_without_credentials";
+    if let Ok(expected) = std::env::var(CHILD) {
+        let configured = crate::config::load().unwrap();
+        assert_eq!(configured.ai, AiConfig::default());
+        assert_eq!(
+            std::env::var_os("ANTHROPIC_API_KEY").is_some(),
+            expected == "present"
+        );
+        assert_eq!(
+            std::env::var_os("OPENAI_API_KEY").is_some(),
+            expected == "present"
+        );
+        let (state, body) = fixture();
+        assert_eq!(state.explanations.config, configured.ai);
+        let app = router(state);
+        let discovery = Request::builder()
+            .uri("/api/v1/explain/providers")
+            .header(header::HOST, "127.0.0.1:1234")
+            .header(header::COOKIE, "aside_ui=ui-test")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(discovery).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let listed = payload(response).await;
+        let providers = listed["providers"].as_array().unwrap();
+        assert_eq!(providers.len(), 3);
+        for (id, available) in [("local", false), ("claude", false), ("codex", false)] {
+            let provider = providers.iter().find(|p| p["id"] == id).unwrap();
+            assert_eq!(provider["available"], available, "{id}");
+        }
+        for provider in ["local", "claude", "codex"] {
+            let mut question = body.clone();
+            question["provider"] = json!(provider);
+            let response = request(
+                app.clone(),
+                "/api/v1/explain/questions",
+                "aside_ui=ui-test",
+                Some("http://127.0.0.1:1234"),
+                question,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{provider}");
+            assert_eq!(
+                payload(response).await["error"],
+                "invalid_explanation",
+                "{provider}"
+            );
+        }
+        return;
+    }
+
+    use std::{os::unix::fs::PermissionsExt, process::Command};
+    for credentials in ["absent", "present"] {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = dir.path().join("claude");
+        let calls = dir.path().join("cli-calls");
+        std::fs::write(
+            &cli,
+            "#!/bin/sh\nprintf 'called\\n' >> \"$ASIDE_FAKE_CLI_CALLS\"\nexit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut child = Command::new(std::env::current_exe().unwrap());
+        child
+            .arg("--exact")
+            .arg(TEST)
+            .arg("--nocapture")
+            .env_clear()
+            .env("PATH", dir.path())
+            .env("HOME", dir.path())
+            .env("ASIDE_CONFIG_DIR", dir.path())
+            .env("ASIDE_FAKE_CLI_CALLS", &calls)
+            .env(CHILD, credentials);
+        if credentials == "present" {
+            child
+                .env("ANTHROPIC_API_KEY", "synthetic-not-a-secret")
+                .env("OPENAI_API_KEY", "synthetic-not-a-secret");
+        }
+        let output = child.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{credentials}: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "child test was not selected: {credentials}"
+        );
+        assert!(
+            !calls.exists(),
+            "default Explain invoked the fake CLI with {credentials} credentials"
+        );
+    }
+}
+
 #[tokio::test]
 async fn complete_http_flow_and_refresh_during_inference_are_revision_bound() {
     use axum::routing::post;

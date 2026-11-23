@@ -1,5 +1,9 @@
 # Repository analysis controls
 
+For the deferred, default-off optional review-analysis LLM decision and future
+consent/budget requirements, see [LLM provider decision](llm-provider-decision.md).
+This does not change the existing on-demand Explain feature.
+
 Analysis preferences live in Aside's OS-local `config.toml` (or the directory
 selected by `ASIDE_CONFIG_DIR`). They are not read from an untrusted checkout,
 posted to GitHub, or copied into PR snapshots/SQLite. Run identities store only a
