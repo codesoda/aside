@@ -120,6 +120,33 @@ fn incomplete_binary_and_large_selections_are_explicit_errors() {
 }
 
 #[tokio::test]
+async fn default_explain_discovery_is_opt_in_and_codex_is_unavailable() {
+    let config = AiConfig::default();
+    assert!(config.local_model.is_empty());
+    assert!(!config.claude_enabled);
+    let providers = providers::list(&config).await;
+    assert_eq!(providers.len(), 3);
+    assert_eq!(providers[0].id, "local");
+    assert_eq!(providers[0].processing, "local");
+    assert!(!providers[0].available);
+    assert_eq!(providers[1].id, "claude");
+    assert_eq!(providers[1].processing, "hosted");
+    assert!(!providers[1].available);
+    assert_eq!(providers[2].id, "codex");
+    assert!(!providers[2].available);
+    assert_eq!(
+        providers::answer(&config, "claude", "synthetic context").await,
+        Err(ExplainError::Invalid(
+            "Claude is disabled or lacks the required tool-free CLI options. Check setup and restart Aside."
+        ))
+    );
+    assert!(matches!(
+        providers::answer(&config, "codex", "synthetic context").await,
+        Err(ExplainError::Invalid(_))
+    ));
+}
+
+#[tokio::test]
 async fn cancellation_before_and_during_request_and_timeout_release_slot() {
     let service = Explanations::default();
     service.cancel("before-start").unwrap();
