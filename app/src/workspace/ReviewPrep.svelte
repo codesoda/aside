@@ -1,13 +1,19 @@
 <script lang="ts">
-  import type { QueueView, SessionView } from '../api';
-  import { reasonText, verdictMessage } from '../insights';
+  import type { FindingItem, QueueView, SessionView } from '../api';
+  import type { ReviewFinding } from '../generated/ReviewFinding';
+  import type { ReviewThread } from '../generated/ReviewThread';
+  import { describeReason, emptyFindingsMessage, isThreadProjection, verdictMessage } from '../insights';
   import AnalysisStatus from '../insights/AnalysisStatus.svelte';
 
-  let { session, queue, insightsError, onOpenFile, onStart }: {
+  let { session, queue, findings = null, threads = [], insightsError, onOpenFile, onOpenThread, onStart }: {
     session: SessionView;
     queue: QueueView | null;
+    /** Null until findings load; omitted by older callers. */
+    findings?: FindingItem[] | null;
+    threads?: ReviewThread[];
     insightsError: string | null;
-    onOpenFile: (id: string) => void;
+    onOpenFile: (id: string, findingId?: string) => void;
+    onOpenThread?: (fileId: string, threadId: string) => void;
     onStart: () => void;
   } = $props();
 
@@ -15,6 +21,7 @@
     .filter((state) => !state.scope.ignored && state.reviewStatus !== 'reviewed-current')
     .map((state) => state.fileId)));
   const suggested = $derived(queue?.queue.items.filter((item) => candidates.has(item.fileId)).slice(0, 3) ?? []);
+  const byId = $derived(new Map<string, ReviewFinding>((findings ?? []).filter((item) => item.label === 'current').map((item) => [item.finding.id, item.finding])));
 </script>
 
 <div class="workspace-view-heading">
@@ -36,14 +43,44 @@
 {#if suggested.length}
   <ul class="space-y-2">
     {#each suggested as item (item.fileId)}
+      {@const reasons = item.reasons.map((reason) => describeReason(reason, byId, threads))}
+      {@const attention = item.findings.filter((entry) => entry.current && entry.attention !== 'none' && entry.disposition !== 'dismissed_local' && entry.disposition !== 'snoozed' && byId.has(entry.id))}
       <li>
-        <button type="button" class="workspace-preview-card" aria-label={`Review suggested file ${item.path}`} onclick={() => onOpenFile(item.fileId)}>
-          <span class="preview-mark" class:attention={item.attention === 'high'} aria-hidden="true">↗</span>
-          <span class="min-w-0">
-            <span class="block wrap-anywhere font-mono font-semibold">{item.path}</span>
-            <span class="preview-description">{[...new Set(item.reasons.map((r) => reasonText(r.code)))].join(' · ')}</span>
-          </span>
-        </button>
+        <article class="workspace-preview-card block" aria-label={`Suggested file ${item.path}`}>
+          <div class="flex items-start gap-2">
+            <span class="preview-mark" class:attention={item.attention === 'high'} aria-hidden="true">↗</span>
+            <div class="min-w-0">
+              <button type="button" class="wrap-anywhere font-mono font-semibold text-left hover:underline focus-visible:outline-2 focus-visible:outline-accent" aria-label={`Review suggested file ${item.path}`} onclick={() => onOpenFile(item.fileId)}>{item.path}</button>
+              <ul class="preview-description list-disc pl-4" aria-label={`Reasons for ${item.path}`}>
+                {#each reasons as reason, i (i)}<li>{reason.text}{#if reason.cites.length}{` — ${reason.cites.join(' · ')}`}{/if}</li>{/each}
+              </ul>
+              {#if findings === null}
+                <p class="preview-description">{insightsError ? 'Findings unavailable.' : 'Loading findings…'}</p>
+              {:else if attention.length}
+                <ul class="mt-2 space-y-1" aria-label={`Attention findings for ${item.path}`}>
+                  {#each attention.slice(0, 3) as entry (entry.id)}
+                    {@const finding = byId.get(entry.id)!}
+                    {@const projection = isThreadProjection(finding, threads) ? threads.find((thread) => thread.githubThreadId === finding.anchor.githubThreadId) : undefined}
+                    <li>
+                      {#if !projection || onOpenThread}
+                        <button type="button" class="text-left hover:underline focus-visible:outline-2 focus-visible:outline-accent"
+                          onclick={() => projection ? onOpenThread?.(item.fileId, projection.id) : onOpenFile(item.fileId, entry.id)}
+                          aria-label={projection ? `Open thread for finding ${finding.title} in ${item.path}` : `Review finding ${finding.title} in ${item.path}`}>
+                          <span class="font-semibold">{finding.anchor.line === null ? 'File' : finding.anchor.startLine && finding.anchor.startLine !== finding.anchor.line ? `L${finding.anchor.startLine}–${finding.anchor.line}` : `L${finding.anchor.line}`}</span> — {finding.title}
+                        </button>
+                      {:else}
+                        <span class="font-semibold">{finding.anchor.line === null ? 'File' : `L${finding.anchor.startLine ?? finding.anchor.line}`}</span> — {finding.title} · Native thread
+                      {/if}
+                    </li>
+                  {/each}
+                </ul>
+                {#if attention.length > 3}<p class="text-xs text-muted">+{attention.length - 3} more</p>{/if}
+              {:else}
+                <p class="preview-description">{emptyFindingsMessage(session.analysis, 'attention findings in this file')}</p>
+              {/if}
+            </div>
+          </div>
+        </article>
       </li>
     {/each}
   </ul>

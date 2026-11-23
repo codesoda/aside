@@ -135,7 +135,28 @@ pub(super) fn output_stdout(out: std::process::Output, graphql: bool) -> Result<
 }
 
 /// Turn `gh` stderr into a clear, token-free error.
+#[derive(Debug)]
+pub struct RejectedWrite(pub u16);
+impl std::fmt::Display for RejectedWrite {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "GitHub rejected request (HTTP {})", self.0)
+    }
+}
+impl std::error::Error for RejectedWrite {}
+
 pub(super) fn classify_error(stderr: &str) -> anyhow::Error {
+    // Only an explicit HTTP 4xx from gh proves the write was rejected.
+    let words: Vec<_> = stderr.split_whitespace().collect();
+    for pair in words.windows(2) {
+        if pair[0].eq_ignore_ascii_case("HTTP")
+            && let Ok(code) = pair[1]
+                .trim_matches(|c: char| !c.is_ascii_digit())
+                .parse::<u16>()
+            && (400..500).contains(&code)
+        {
+            return RejectedWrite(code).into();
+        }
+    }
     let lower = stderr.to_lowercase();
     let first_line = stderr
         .lines()

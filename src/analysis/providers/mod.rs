@@ -3,8 +3,15 @@
 //! contract.
 
 mod diff;
+mod history;
+mod history_cochange;
+#[cfg(test)]
+mod history_cochange_tests;
+#[cfg(test)]
+mod history_tests;
 
 pub use diff::DiffFactsProvider;
+pub use history::HistoryProvider;
 
 #[cfg(test)]
 mod tests;

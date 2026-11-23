@@ -1,7 +1,9 @@
 //! Review-intelligence analysis: the provider contract and the scheduler
 //! that runs providers in the background without blocking review (#22).
 
+mod policy;
 mod provider;
+pub use policy::ProviderPolicy;
 mod providers;
 mod scheduler;
 
@@ -26,5 +28,8 @@ use std::sync::Arc;
 /// Diff facts (#19). TODO(#23, #24, #25): GitHub feedback/CI imports.
 /// TODO(#28): history. TODO(#31, #32): structural.
 pub fn default_providers() -> Vec<Arc<dyn AnalysisProvider>> {
-    vec![Arc::new(providers::DiffFactsProvider::default())]
+    vec![
+        Arc::new(providers::DiffFactsProvider::default()),
+        Arc::new(providers::HistoryProvider::default()),
+    ]
 }

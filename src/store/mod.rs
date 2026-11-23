@@ -4,6 +4,7 @@
 //! Set `ASIDE_DATA_DIR` to override. Demo sessions use an in-memory database.
 
 mod analysis;
+mod conversations;
 mod publication;
 mod repositories;
 mod review;
@@ -396,12 +397,32 @@ mod tests {
         let mut s = store();
         let repo = s.resolve_repository("github.com", "o", "r", None).unwrap();
         let pr = s.upsert_pull_request(&repo.id, 1, "t", "u").unwrap();
-        s.start_publication(&pr, "original", "{}", "head", &[])
+        s.start_publication(&pr, "original", r#"{"attemptOrdinal":1}"#, "head", &[])
             .unwrap();
         assert!(
-            s.start_publication(&pr, "edited", "{}", "head", &[])
+            s.start_publication(&pr, "edited", r#"{"attemptOrdinal":2}"#, "head", &[])
                 .is_err()
         );
+    }
+
+    #[test]
+    fn stale_reconciliation_cannot_clear_a_new_claim() {
+        let mut s = store();
+        let repo = s.resolve_repository("github.com", "o", "r", None).unwrap();
+        let pr = s.upsert_pull_request(&repo.id, 1, "t", "u").unwrap();
+        let old = s
+            .start_publication(&pr, "old", r#"{"attemptOrdinal":1}"#, "head", &[])
+            .unwrap();
+        s.reconcile_publication(&pr, &old, false).unwrap();
+        let current = s
+            .start_publication(&pr, "current", r#"{"attemptOrdinal":2}"#, "head", &[])
+            .unwrap();
+        assert!(s.reconcile_publication(&pr, &old, false).is_err());
+        assert!(s.reconcile_publication(&pr, &old, true).is_err());
+        assert_eq!(s.active_publication(&pr).unwrap().unwrap().0, current);
+        // Only an explicitly reconciled partial attempt may release this claim.
+        s.reconcile_publication(&pr, &current, false).unwrap();
+        assert!(s.active_publication(&pr).unwrap().is_none());
     }
 
     #[test]
@@ -421,7 +442,13 @@ mod tests {
                     let mut store = Store::open(&path).unwrap();
                     barrier.wait();
                     store
-                        .start_publication(&pr, &format!("plan-{i}"), "{}", "head", &[])
+                        .start_publication(
+                            &pr,
+                            &format!("plan-{i}"),
+                            r#"{"attemptOrdinal":1}"#,
+                            "head",
+                            &[],
+                        )
                         .is_ok()
                 })
             })
@@ -458,6 +485,8 @@ mod tests {
                 anchor_reason: None,
                 resolved: false,
                 created_at: None,
+                subject: crate::model::ThreadSubject::Line,
+                finding_id: None,
             },
         )
         .unwrap();
@@ -477,23 +506,46 @@ mod tests {
             None,
         )
         .unwrap();
+        let draft = s
+            .upsert_review_comment(&pr, "t", "original", Some("c"))
+            .unwrap();
         assert!(
-            s.start_publication(&pr, "wrong", "{}", "head", &[("c", "edited")])
+            s.start_publication(
+                &pr,
+                "wrong",
+                r#"{"attemptOrdinal":1}"#,
+                "head",
+                &[(draft.id.as_str(), "edited")]
+            )
+            .is_err()
+        );
+        // Failed reservation rolls back; only the explicit prepared draft is claimed.
+        let attempt = s
+            .start_publication(
+                &pr,
+                "correct",
+                r#"{"attemptOrdinal":1}"#,
+                "head",
+                &[(draft.id.as_str(), "original")],
+            )
+            .unwrap();
+        assert!(s.upsert_review_comment(&pr, "t", "edited", None).is_err());
+        assert!(s.clear_review_comment(&pr, "t").is_err());
+        assert_eq!(s.get_comment("c").unwrap().body, "original");
+        s.mark_prepared_published(&draft.id, &attempt, Some(42), 7, "head")
+            .unwrap();
+        assert!(
+            s.mark_prepared_published(&draft.id, &attempt, Some(43), 7, "head")
                 .is_err()
         );
-        // The successful claim below proves the failed reservation rolled back the claim.
-        s.start_publication(&pr, "correct", "{}", "head", &[("c", "original")])
-            .unwrap();
-        assert!(s.update_comment_body("c", "edited").is_err());
-        assert!(s.delete_comment("c").is_err());
-        assert_eq!(s.get_comment("c").unwrap().body, "original");
-        s.mark_comment_published("c", Some(42)).unwrap();
-        assert!(s.mark_comment_published("c", Some(43)).is_err());
-        assert_eq!(s.get_comment("c").unwrap().github_comment_id, Some(42));
+        assert_eq!(
+            s.list_threads(&pr).unwrap()[0].published_comments[0].github_comment_id,
+            Some(42)
+        );
     }
 
     #[test]
-    fn deleting_last_comment_removes_thread() {
+    fn deleting_last_private_comment_removes_thread() {
         let mut s = store();
         let repo = s.resolve_repository("github.com", "o", "r", None).unwrap();
         let pr = s.upsert_pull_request(&repo.id, 1, "t", "u").unwrap();
@@ -514,6 +566,8 @@ mod tests {
                 anchor_reason: None,
                 resolved: false,
                 created_at: None,
+                subject: crate::model::ThreadSubject::Line,
+                finding_id: None,
             },
         )
         .unwrap();
@@ -527,7 +581,7 @@ mod tests {
                 body: "hi".into(),
                 created_at: now.clone(),
                 updated_at: now,
-                publish_state: PublishState::Draft,
+                publish_state: PublishState::Private,
                 github_comment_id: None,
             },
             None,

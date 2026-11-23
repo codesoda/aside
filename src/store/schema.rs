@@ -366,7 +366,13 @@ pub(super) const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX IF NOT EXISTS idx_imported_source_prs_pr ON imported_source_prs(pr_id, source_record_id);
     INSERT OR IGNORE INTO imported_source_prs (source_record_id, pr_id, available, first_seen_at, last_seen_at)
-    SELECT id, pr_id, available, first_seen_at, last_seen_at FROM imported_source_records;"
+    SELECT id, pr_id, available, first_seen_at, last_seen_at FROM imported_source_records;",
+    // v7: PR lifetime and repository extension preferences.
+    include_str!("review_rules.sql"),
+    // v8: unified conversation drafts and read/agent state.
+    include_str!("conversations.sql"),
+    // v9: monotonic comment sequence and request deduplication across turns.
+    include_str!("conversations_v9.sql"),
 ];
 
 pub(super) const GITHUB_METADATA: &[(&str, &str, &str)] = &[

@@ -36,6 +36,7 @@ use tokio::{
     time::Instant,
 };
 
+use super::ProviderPolicy;
 use super::provider::{
     AnalysisInput, AnalysisProvider, ProviderContext, ProviderLimits, ProviderOutput,
 };
@@ -50,6 +51,8 @@ use crate::{
 
 /// Reason codes recorded in `coverage.reasonCodes` and `warnings[].code`.
 pub mod reason {
+    pub const DISABLED_BY_CONFIGURATION: &str = "disabled_by_configuration";
+    pub const CONFIGURATION_CHANGED: &str = "configuration_changed";
     pub const INPUT_LIMIT_EXCEEDED: &str = "input_limit_exceeded";
     pub const SNAPSHOT_SUPERSEDED: &str = "snapshot_superseded";
     pub const TIME_LIMIT_EXCEEDED: &str = "time_limit_exceeded";
@@ -176,6 +179,7 @@ struct Inner {
     store: Arc<Mutex<Store>>,
     providers: Vec<Arc<dyn AnalysisProvider>>,
     config: SchedulerConfig,
+    policies: Mutex<HashMap<String, ProviderPolicy>>,
     clock: Arc<dyn Clock>,
     slots: Arc<Semaphore>,
     /// Queued or running runs. Lock order: `active` before `store`.
@@ -210,6 +214,7 @@ impl Scheduler {
                 store,
                 providers,
                 config,
+                policies: Mutex::new(HashMap::new()),
                 clock,
                 slots,
                 active: Mutex::new(HashMap::new()),
@@ -238,13 +243,15 @@ impl Scheduler {
     /// Changes whenever any provider would produce a new run ID for the same
     /// input (analyze.md §4.3). Exclusion rules are not part of it.
     pub fn config_digest(&self) -> String {
+        let policies = self.inner.policies.lock().expect("policy lock");
         let mut parts: Vec<String> = self
             .inner
             .providers
             .iter()
             .map(|p| {
                 let d = p.descriptor();
-                format!("{}\0{}\0{}", d.id, d.engine_version, d.configuration_digest)
+                let (_, _, digest) = self.configuration_for(p.as_ref(), &policies);
+                format!("{}\0{}\0{}", d.id, d.engine_version, digest)
             })
             .collect();
         parts.sort();
@@ -258,10 +265,72 @@ impl Scheduler {
     /// flight for older snapshots keep going and land as `stale`.
     ///
     /// Must be called inside a Tokio runtime.
+    #[cfg(test)]
     pub fn begin_snapshot(&self, input: AnalysisInput) -> Result<Vec<RunHandle>> {
+        self.begin_snapshot_configured(input, None)
+    }
+
+    /// Apply validated policy and reconcile runs under the same scheduling lock.
+    /// A human rerun cannot slip between a policy change and its invalidation.
+    pub fn begin_snapshot_configured(
+        &self,
+        input: AnalysisInput,
+        policies: Option<HashMap<String, ProviderPolicy>>,
+    ) -> Result<Vec<RunHandle>> {
+        if let Some(policies) = &policies {
+            for policy in policies.values() {
+                policy.validate()?;
+            }
+        }
         let input = Arc::new(input);
         let mut active = lock(&self.inner.active)?;
-        let existing = {
+        if let Some(policies) = policies {
+            let old = {
+                let mut current = lock(&self.inner.policies)?;
+                std::mem::replace(&mut *current, policies.clone())
+            };
+            let changed: Vec<_> = self
+                .inner
+                .providers
+                .iter()
+                .filter(|p| {
+                    self.configuration_for(p.as_ref(), &old).2
+                        != self.configuration_for(p.as_ref(), &policies).2
+                })
+                .map(|p| p.descriptor().id.clone())
+                .collect();
+            // Old snapshots usually finish as historical. A policy change is
+            // different: stop their affected work too, including queued tasks.
+            let revoked: Vec<_> = active
+                .keys()
+                .filter(|(snapshot, provider)| {
+                    *snapshot != input.snapshot_id && changed.contains(provider)
+                })
+                .cloned()
+                .collect();
+            let mut store = lock(&self.inner.store)?;
+            for key in revoked {
+                // Revoke ownership as well as sending cancellation: a driver
+                // may already be waiting to write Running or commit output.
+                let mut run = active.remove(&key).expect("selected active run");
+                if let Some(tx) = run.cancel.take() {
+                    let _ = tx.send(());
+                }
+                let stored = store.get_analysis_run(&run.handle.run_id)?;
+                if !stored.value().status.is_terminal() {
+                    let cancelled = terminal(
+                        stored.value(),
+                        RunStatus::Cancelled,
+                        reason::CONFIGURATION_CHANGED,
+                        "analysis policy changed",
+                        self.inner.clock.now_rfc3339(),
+                        None,
+                    );
+                    store.record_analysis_run(&input.pr_id, &Raw::new(cancelled)?)?;
+                }
+            }
+        }
+        let mut existing = {
             let mut store = lock(&self.inner.store)?;
             store.register_analysis_snapshot(
                 &input.pr_id,
@@ -296,24 +365,71 @@ impl Scheduler {
             inputs.retain(|id, _| active.keys().any(|(s, _)| s == id));
             inputs.insert(input.snapshot_id.clone(), Arc::clone(&input));
         }
-        let digest = input.input_digest();
         let mut handles = Vec::new();
         for provider in &self.inner.providers {
             let d = provider.descriptor();
             let key = (input.snapshot_id.clone(), d.id.clone());
-            if let Some(run) = active.get(&key) {
+            let digest = input.provider_digest(d.kind);
+            let (_, _, configuration_digest) =
+                self.configuration_for(provider.as_ref(), &*lock(&self.inner.policies)?);
+            if let Some(run) = active.get(&key)
+                && existing.iter().any(|raw| {
+                    let stored = raw.value();
+                    stored.id == run.handle.run_id
+                        && !stored.status.is_terminal()
+                        && stored.engine_version == d.engine_version
+                        && stored.configuration_digest == configuration_digest
+                        && stored.input_digest == digest
+                })
+            {
                 handles.push(run.handle.clone());
                 continue;
+            }
+            // A context-only change keeps the snapshot ID. Invalidate old
+            // occurrences and cancel a mismatched active attempt before the
+            // replacement is queued; the store rejects its late batch.
+            if let Some(mut old) = active.remove(&key)
+                && let Some(tx) = old.cancel.take()
+            {
+                let _ = tx.send(());
+            }
+            for raw in &mut existing {
+                let old = raw.value();
+                if old.snapshot_id != input.snapshot_id
+                    || old.provider_id != d.id
+                    || (old.input_digest == digest
+                        && old.engine_version == d.engine_version
+                        && old.configuration_digest == configuration_digest)
+                {
+                    continue;
+                }
+                let mut revised = old.clone();
+                revised.status = if old.status.is_terminal() {
+                    RunStatus::Stale
+                } else {
+                    RunStatus::Cancelled
+                };
+                if revised.status == old.status {
+                    continue;
+                }
+                let revised = Raw::new(revised)?;
+                lock(&self.inner.store)?.record_analysis_run(&input.pr_id, &revised)?;
+                *raw = revised;
             }
             let already_ran = existing.iter().any(|raw| {
                 let r = raw.value();
                 r.snapshot_id == input.snapshot_id
                     && r.provider_id == d.id
                     && r.engine_version == d.engine_version
-                    && r.configuration_digest == d.configuration_digest
+                    && r.configuration_digest == configuration_digest
                     && r.input_digest == digest
-                    // Unfinished rows were just closed as interrupted; retry them.
                     && r.status.is_terminal()
+                    && !matches!(r.status, RunStatus::Stale | RunStatus::Cancelled)
+                    && !r
+                        .coverage
+                        .reason_codes
+                        .iter()
+                        .any(|c| c == reason::INTERRUPTED)
             });
             if already_ran {
                 continue;
@@ -391,7 +507,48 @@ impl Scheduler {
             .unwrap_or(self.inner.config.default_limits)
     }
 
-    /// Records the run as queued (or skipped, if its input is over budget)
+    fn configuration_for(
+        &self,
+        provider: &dyn AnalysisProvider,
+        policies: &HashMap<String, ProviderPolicy>,
+    ) -> (bool, ProviderLimits, String) {
+        let d = provider.descriptor();
+        let policy = policies.get(&d.id).cloned().unwrap_or_default();
+        let limits = policy.limits(self.limits_for(provider));
+        let digest = policy.digest(&d.configuration_digest, limits);
+        (policy.enabled, limits, digest)
+    }
+
+    /// Safe capability disclosure only; no paths, config contents or credentials.
+    pub fn capability_notice(&self, id: &str) -> String {
+        let provider = self
+            .inner
+            .providers
+            .iter()
+            .find(|p| p.descriptor().id == id)
+            .expect("registered provider");
+        let policies = self.inner.policies.lock().expect("policy lock");
+        let (enabled, limits, _) = self.configuration_for(provider.as_ref(), &policies);
+        let capability = if provider.descriptor().kind == super::ProviderKind::History {
+            "local Git subprocesses; history fetch requires separate --fetch-analysis-context consent"
+        } else {
+            "in-process snapshot analysis"
+        };
+        format!(
+            "{}; {capability}; no model execution or hosted analysis; limits: {} ms, {} diff bytes, {} changed files, {} findings",
+            if enabled {
+                "Enabled"
+            } else {
+                "Disabled by configuration"
+            },
+            limits.timeout.as_millis(),
+            limits.max_input_bytes,
+            limits.max_input_files,
+            limits.max_findings
+        )
+    }
+
+    /// Records the run as queued (or skipped, if disabled or over budget)
     /// and spawns its driver. Caller holds the `active` lock.
     fn launch(
         &self,
@@ -401,14 +558,15 @@ impl Scheduler {
         attempt: u32,
     ) -> Result<RunHandle> {
         let d = provider.descriptor();
-        let limits = self.limits_for(provider.as_ref());
-        let digest = input.input_digest();
+        let (enabled, limits, configuration_digest) =
+            self.configuration_for(provider.as_ref(), &*lock(&self.inner.policies)?);
+        let digest = input.provider_digest(d.kind);
         let queued = AnalysisRun::queued(
             &RunKeyInput {
                 snapshot_id: &input.snapshot_id,
                 provider_id: &d.id,
                 engine_version: &d.engine_version,
-                configuration_digest: &d.configuration_digest,
+                configuration_digest: &configuration_digest,
                 input_digest: &digest,
                 attempt,
             },
@@ -423,22 +581,31 @@ impl Scheduler {
         };
 
         let (bytes, files) = (input.input_bytes(), input.input_files());
-        if bytes > limits.max_input_bytes || files > limits.max_input_files {
-            let message = format!(
-                "input of {files} files / {bytes} bytes exceeds the limit of {} files / {} bytes",
-                limits.max_input_files, limits.max_input_bytes
-            );
+        if !enabled || bytes > limits.max_input_bytes || files > limits.max_input_files {
+            let (code, message) = if !enabled {
+                (
+                    reason::DISABLED_BY_CONFIGURATION,
+                    "provider disabled by repository configuration; no analysis executed"
+                        .to_owned(),
+                )
+            } else {
+                (
+                    reason::INPUT_LIMIT_EXCEEDED,
+                    format!(
+                        "input of {files} files / {bytes} bytes exceeds the limit of {} files / {} bytes",
+                        limits.max_input_files, limits.max_input_bytes
+                    ),
+                )
+            };
             let skipped = terminal(
                 &queued,
                 RunStatus::Skipped,
-                reason::INPUT_LIMIT_EXCEEDED,
+                code,
                 &message,
                 self.inner.clock.now_rfc3339(),
                 None,
             );
-            let report = self
-                .inner
-                .write(&input.pr_id, skipped, reason::INPUT_LIMIT_EXCEEDED);
+            let report = self.inner.write(&input.pr_id, skipped, code);
             if let Some(error) = &report.write_error {
                 bail!("could not record skipped run: {error}");
             }
@@ -566,7 +733,30 @@ impl Inner {
         let mut running = queued.clone();
         running.status = RunStatus::Running;
         running.started_at = Some(self.clock.now_rfc3339());
-        let report = self.write(pr_id, running.clone(), "");
+        let report = {
+            let active = match lock(&self.active) {
+                Ok(active) => active,
+                Err(error) => {
+                    return self.fail(
+                        pr_id,
+                        &queued,
+                        reason::PROVIDER_ERROR,
+                        &error.to_string(),
+                        None,
+                    );
+                }
+            };
+            let key = (queued.snapshot_id.clone(), queued.provider_id.clone());
+            if active
+                .get(&key)
+                .is_none_or(|run| run.handle.run_id != queued.id)
+            {
+                return self.cancelled(pr_id, &queued, None);
+            }
+            let report = self.write(pr_id, running.clone(), "");
+            drop(active);
+            report
+        };
         if report.write_error.is_some() {
             return report;
         }
@@ -603,7 +793,28 @@ impl Inner {
 
         match outcome {
             Outcome::Cancelled => self.cancelled(pr_id, &running, elapsed),
-            Outcome::Failed(code, message) => self.fail(pr_id, &running, code, &message, elapsed),
+            Outcome::Failed(code, message) => {
+                let active = match lock(&self.active) {
+                    Ok(active) => active,
+                    Err(error) => {
+                        return self.fail(
+                            pr_id,
+                            &running,
+                            reason::PROVIDER_ERROR,
+                            &error.to_string(),
+                            elapsed,
+                        );
+                    }
+                };
+                let key = (running.snapshot_id.clone(), running.provider_id.clone());
+                if active
+                    .get(&key)
+                    .is_none_or(|run| run.handle.run_id != running.id)
+                {
+                    return self.cancelled(pr_id, &running, elapsed);
+                }
+                self.fail(pr_id, &running, code, &message, elapsed)
+            }
             Outcome::Output(output) => self.commit(pr_id, &running, limits, output, elapsed),
         }
     }
@@ -616,6 +827,41 @@ impl Inner {
         output: ProviderOutput,
         elapsed: Option<u64>,
     ) -> RunReport {
+        // Serialize a same-snapshot input replacement against the batch
+        // write. Once a newer attempt owns the key, this run may not publish.
+        let active = match lock(&self.active) {
+            Ok(active) => active,
+            Err(error) => {
+                return self.fail(
+                    pr_id,
+                    running,
+                    reason::PROVIDER_ERROR,
+                    &error.to_string(),
+                    elapsed,
+                );
+            }
+        };
+        let key = (running.snapshot_id.clone(), running.provider_id.clone());
+        if active
+            .get(&key)
+            .is_none_or(|a| a.handle.run_id != running.id)
+        {
+            let stored = lock(&self.store).and_then(|s| s.get_analysis_run(&running.id));
+            if let Ok(stored) = stored
+                && stored.value().status == RunStatus::Cancelled
+            {
+                return RunReport {
+                    run_id: running.id.clone(),
+                    provider_id: running.provider_id.clone(),
+                    snapshot_id: running.snapshot_id.clone(),
+                    stored_status: RunStatus::Cancelled,
+                    reported_status: RunStatus::Cancelled,
+                    reason: Some(reason::CANCELLED.into()),
+                    write_error: None,
+                };
+            }
+            return self.cancelled(pr_id, running, elapsed);
+        }
         if !matches!(output.status, RunStatus::Succeeded | RunStatus::Partial) {
             let message = format!(
                 "provider reported {:?}; expected succeeded or partial",
