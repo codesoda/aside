@@ -4,4 +4,4 @@ import type { PlannedInline } from "./PlannedInline";
 import type { PlannedReply } from "./PlannedReply";
 import type { Verdict } from "./Verdict";
 
-export type PublishPlan = { planId: string, selectionRevision: number, headSha: string, baseSha: string, verdict: Verdict, summary: string, inline: Array<PlannedInline>, replies: Array<PlannedReply>, omitted: Array<OmittedDraft>, };
+export type PublishPlan = { planId: string, selectionRevision: number, headSha: string, baseSha: string, verdict: Verdict, summary: string, inline: Array<PlannedInline>, replies: Array<PlannedReply>, omitted: Array<OmittedDraft>, openCount: number, resolvedCount: number, preparedCount: number, attemptOrdinal: bigint, };

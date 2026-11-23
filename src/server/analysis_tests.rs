@@ -160,13 +160,35 @@ async fn some_finding(app: &Router) -> (String, String) {
 async fn routes(app: &Router) -> Vec<String> {
     let (id, _) = some_finding(app).await;
     vec![
+        "/api/v1/session".into(),
         "/api/v1/analysis/summary".into(),
         "/api/v1/analysis/queue".into(),
         "/api/v1/analysis/runs".into(),
         "/api/v1/analysis/findings".into(),
         format!("/api/v1/analysis/findings/{id}/evidence"),
         "/api/v1/github-feedback/threads".into(),
+        "/api/v1/github-feedback/records".into(),
+        "/api/v1/github-feedback/checks".into(),
     ]
+}
+
+/// Compare complete JSON bodies; session alone identifies the requesting actor.
+async fn parity(app: &Router, path: &str) -> Value {
+    let (agent_status, mut agent) = get(app, path, Some(AGENT)).await;
+    let (browser_status, mut browser) = get(app, path, Some(BROWSER)).await;
+    assert_eq!(
+        (agent_status, browser_status),
+        (StatusCode::OK, StatusCode::OK),
+        "{path}"
+    );
+    if path == "/api/v1/session" {
+        assert_eq!(agent["actor"], "agent");
+        assert_eq!(browser["actor"], "human");
+        agent.as_object_mut().unwrap().remove("actor");
+        browser.as_object_mut().unwrap().remove("actor");
+    }
+    assert_eq!(agent, browser, "{path}");
+    agent
 }
 
 #[tokio::test]
@@ -194,12 +216,20 @@ async fn agent_and_browser_get_identical_responses() {
     let session = fixture_session().await;
     let app = app(&session);
     for path in routes(&app).await {
-        for path in [path.clone(), format!("{path}?limit=1")] {
-            let (a, agent) = get(&app, &path, Some(AGENT)).await;
-            let (b, browser) = get(&app, &path, Some(BROWSER)).await;
-            assert_eq!((a, b), (StatusCode::OK, StatusCode::OK), "{path}");
-            assert_eq!(agent, browser, "{path}");
-        }
+        parity(&app, &path).await;
+    }
+    let (id, _) = some_finding(&app).await;
+    // Browser fetchFindings/fetchEvidence use these exact query flags and
+    // fetchAllPages adds limit=200. Historical findings are diagnostic opt-in.
+    for path in [
+        "/api/v1/analysis/findings?includeIgnored=true&limit=200".to_string(),
+        format!("/api/v1/analysis/findings/{id}/evidence?includeIgnored=true&limit=200"),
+        "/api/v1/analysis/findings?includeHistorical=true&limit=1".to_string(),
+        "/api/v1/analysis/runs?limit=1".to_string(),
+        "/api/v1/github-feedback/threads?limit=1".to_string(),
+        "/api/v1/github-feedback/checks?limit=1".to_string(),
+    ] {
+        parity(&app, &path).await;
     }
 }
 
@@ -210,7 +240,7 @@ async fn walk(app: &Router, path: &str, limit: usize) -> (Vec<Value>, usize) {
     let mut items = Vec::new();
     let mut pages = 0;
     loop {
-        let page = ok(app, &url).await;
+        let page = parity(app, &url).await;
         pages += 1;
         let batch = page["items"].as_array().unwrap();
         assert!(batch.len() <= limit);
@@ -233,8 +263,22 @@ async fn walk(app: &Router, path: &str, limit: usize) -> (Vec<Value>, usize) {
 async fn pagination_returns_every_item_exactly_once() {
     let session = fixture_session().await;
     let app = app(&session);
+    let (finding_id, _) = some_finding(&app).await;
+    // Evidence and checks may contain only one item in this fixture, but
+    // their page envelope and cursor-bearing requests still have JSON parity.
+    walk(
+        &app,
+        &format!("/api/v1/analysis/findings/{finding_id}/evidence?includeIgnored=true"),
+        1,
+    )
+    .await;
+    walk(&app, "/api/v1/github-feedback/checks", 1).await;
     for (path, id) in [
         ("/api/v1/analysis/findings", "/finding/id"),
+        (
+            "/api/v1/analysis/findings?includeIgnored=true",
+            "/finding/id",
+        ),
         (
             "/api/v1/analysis/findings?includeHistorical=true",
             "/finding/id",
@@ -319,6 +363,13 @@ async fn stale_cursor_after_snapshot_change_is_a_recoverable_conflict() {
     assert_recoverable_conflict(status, &body, "snapshot_changed");
     assert_eq!(body["details"]["expectedSnapshotId"], pinned);
     assert_ne!(body["details"]["snapshotId"], pinned);
+    let (browser_status, browser_body) = get(
+        &app,
+        &format!("/api/v1/analysis/findings?limit=1&cursor={cursor}"),
+        Some(BROWSER),
+    )
+    .await;
+    assert_eq!((browser_status, browser_body), (status, body));
     // An explicit snapshot pin behaves the same.
     let (status, body) = get(
         &app,
@@ -327,8 +378,68 @@ async fn stale_cursor_after_snapshot_change_is_a_recoverable_conflict() {
     )
     .await;
     assert_recoverable_conflict(status, &body, "snapshot_changed");
-    // Resync recovery: restarting without a cursor succeeds.
-    ok(&app, "/api/v1/analysis/findings?limit=1").await;
+    // Resync restarts without a cursor.
+    parity(&app, "/api/v1/session").await;
+    parity(&app, "/api/v1/analysis/findings?limit=1").await;
+}
+
+#[tokio::test]
+async fn refreshed_findings_keep_historical_diagnostics_separate_from_current_browser_reads() {
+    let session = fixture_session().await;
+    let app = app(&session);
+    // The fixture repeats its normal findings. Add one that the refreshed run
+    // will not reproduce, so the historical branch has a deterministic item.
+    append_finding(&session, "history_only");
+    let before = parity(
+        &app,
+        "/api/v1/analysis/findings?includeIgnored=true&limit=200",
+    )
+    .await;
+    assert!(before["items"].as_array().unwrap().iter().any(|item| {
+        item["finding"]["id"] == "append_history_only" && item["label"] == "current"
+    }));
+    let old_snapshot = before["snapshotId"].clone();
+    session.refresh().await.unwrap();
+    for handle in session.analysis.in_flight() {
+        handle.wait().await;
+    }
+    let current = parity(
+        &app,
+        "/api/v1/analysis/findings?includeIgnored=true&limit=200",
+    )
+    .await;
+    let historical = parity(
+        &app,
+        "/api/v1/analysis/findings?includeIgnored=true&includeHistorical=true&limit=200",
+    )
+    .await;
+    assert_ne!(current["snapshotId"], old_snapshot);
+    assert_eq!(current["snapshotId"], historical["snapshotId"]);
+    let current_items = current["items"].as_array().unwrap();
+    assert!(
+        !current_items.is_empty(),
+        "fixture must produce current findings"
+    );
+    assert!(current_items.iter().all(|item| item["label"] == "current"));
+    let historical_items = historical["items"].as_array().unwrap();
+    assert!(historical_items.iter().any(|item| {
+        item["finding"]["id"] == "append_history_only" && item["label"] == "historical"
+    }));
+    assert!(
+        current_items
+            .iter()
+            .all(|item| item["finding"]["id"] != "append_history_only")
+    );
+    assert!(
+        historical_items
+            .iter()
+            .all(|item| { item["label"] == "current" || item["label"] == "historical" })
+    );
+    assert!(historical["total"].as_u64().unwrap() > current["total"].as_u64().unwrap());
+    parity(&app, "/api/v1/session").await;
+    parity(&app, "/api/v1/analysis/summary").await;
+    parity(&app, "/api/v1/analysis/runs?limit=1").await;
+    parity(&app, "/api/v1/github-feedback/threads?limit=1").await;
 }
 
 #[tokio::test]
@@ -359,6 +470,15 @@ async fn cursor_over_a_changed_result_set_is_a_recoverable_conflict() {
     )
     .await;
     assert_recoverable_conflict(status, &body, "results_changed");
+    let (browser_status, browser_body) = get(
+        &app,
+        &format!("/api/v1/analysis/findings?limit=1&cursor={cursor}"),
+        Some(BROWSER),
+    )
+    .await;
+    assert_eq!((browser_status, browser_body), (status, body));
+    parity(&app, "/api/v1/session").await;
+    parity(&app, "/api/v1/analysis/findings?limit=1").await;
 }
 
 #[tokio::test]
@@ -590,9 +710,18 @@ async fn out_of_scope_findings_are_filtered_on_the_server() {
     .await;
     assert_eq!(all["includeIgnored"], true);
     assert_eq!(all["total"], before["total"]);
-    ok(
+    parity(&app, "/api/v1/session").await;
+    parity(&app, "/api/v1/analysis/summary").await;
+    parity(&app, "/api/v1/analysis/queue").await;
+    let ignored = parity(
         &app,
-        &format!("/api/v1/analysis/findings/{id}/evidence?includeIgnored=true"),
+        "/api/v1/analysis/findings?includeIgnored=true&limit=200",
+    )
+    .await;
+    assert_eq!(ignored["total"], before["total"]);
+    parity(
+        &app,
+        &format!("/api/v1/analysis/findings/{id}/evidence?includeIgnored=true&limit=200"),
     )
     .await;
 }
@@ -619,6 +748,17 @@ async fn empty_page_from_a_partial_run_is_distinguishable_from_a_clean_one() {
         Completeness::Complete,
     )])
     .await;
+    for state in [&partial, &clean] {
+        let app = app(state);
+        parity(&app, "/api/v1/session").await;
+        parity(&app, "/api/v1/analysis/summary").await;
+        parity(&app, "/api/v1/analysis/queue").await;
+        parity(
+            &app,
+            "/api/v1/analysis/findings?includeIgnored=true&limit=200",
+        )
+        .await;
+    }
     let partial = ok(&app(&partial), "/api/v1/analysis/findings").await;
     let clean = ok(&app(&clean), "/api/v1/analysis/findings").await;
     for page in [&partial, &clean] {
@@ -630,6 +770,154 @@ async fn empty_page_from_a_partial_run_is_distinguishable_from_a_clean_one() {
     assert_eq!(partial["coverage"]["sources"][0]["sourceId"], DIFF);
     assert_eq!(clean["coverage"]["complete"], true);
     assert_eq!(clean["coverage"]["sources"][0]["state"], "clean");
+}
+
+#[tokio::test]
+async fn native_records_cover_every_non_thread_source_across_pages_without_mutations() {
+    use crate::github::checks::Coverage;
+    use crate::model::{ImportedCheckAnnotation, ImportedCommitStatus, NativeSourceKey};
+    use std::collections::HashSet;
+
+    let mut snapshot = demo::snapshot(0);
+    let head = snapshot.pr.head_sha.clone();
+    let review = snapshot.reviews[0].clone();
+    snapshot.reviews = (0..205)
+        .map(|i| {
+            let mut r = review.clone();
+            r.node_id = Some(format!("review-{i}"));
+            if i == 203 {
+                r.node_id = None;
+                r.database_id = Some(987654321);
+            }
+            if i == 204 {
+                r.node_id = None;
+                r.database_id = None;
+            }
+            r
+        })
+        .collect();
+    snapshot.checks.sha = head.clone();
+    snapshot.checks.runs_coverage.completeness = Completeness::Complete;
+    snapshot.checks.statuses_coverage.completeness = Completeness::Complete;
+    snapshot.checks.runs.push(crate::model::ImportedCheckRun {
+        github_check_run_id: 42,
+        app_slug: Some("ci".into()),
+        name: "CI".into(),
+        status: "completed".into(),
+        conclusion: Some("failure".into()),
+        head_sha: head.clone(),
+        started_at: None,
+        completed_at: None,
+        details_url: Some("https://example.test/check".into()),
+        summary: None,
+        annotations_count: 1,
+        observed_at: "now".into(),
+    });
+    snapshot.checks.annotations.push(ImportedCheckAnnotation {
+        check_run_id: 42,
+        key: NativeSourceKey::ContentFingerprint("annotation-1".into()),
+        path: "src/a.rs".into(),
+        start_line: 1,
+        end_line: 1,
+        start_column: None,
+        end_column: None,
+        annotation_level: serde_json::from_str("\"warning\"").unwrap(),
+        title: None,
+        message: "native annotation".into(),
+        raw_details: None,
+        head_sha: head.clone(),
+        observed_at: "now".into(),
+    });
+    snapshot.checks.annotation_coverage.push((
+        42,
+        Coverage {
+            completeness: Completeness::Partial,
+            reasons: vec!["page_limit".into()],
+        },
+    ));
+    snapshot.checks.statuses.push(ImportedCommitStatus {
+        github_status_id: 7,
+        context: "ci".into(),
+        state: "success".into(),
+        description: None,
+        target_url: None,
+        sha: head,
+        updated_at: None,
+        observed_at: "now".into(),
+    });
+    let session = Session::new(snapshot, Store::open_in_memory().unwrap(), None, None).unwrap();
+    session.start_analysis().unwrap();
+    let app = app(&session);
+    let before = ok(&app, "/api/v1/session").await;
+    let findings_before = ok(&app, "/api/v1/analysis/findings").await;
+    let mut cursor: Option<String> = None;
+    let mut all = Vec::new();
+    loop {
+        let path = match &cursor {
+            Some(c) => format!("/api/v1/github-feedback/records?limit=37&cursor={c}"),
+            None => "/api/v1/github-feedback/records?limit=37".into(),
+        };
+        let page = ok(&app, &path).await;
+        assert_eq!(page["coverage"]["sources"].as_array().unwrap().len(), 5);
+        assert!(!page["coverage"]["complete"].as_bool().unwrap());
+        all.extend(page["items"].as_array().unwrap().iter().cloned());
+        cursor = page["nextCursor"].as_str().map(str::to_owned);
+        if cursor.is_none() {
+            break;
+        }
+    }
+    let kinds: HashSet<_> = all
+        .iter()
+        .filter_map(|r| r["resourceKind"].as_str())
+        .map(|s| s.split(':').next().unwrap())
+        .collect();
+    assert_eq!(
+        kinds,
+        HashSet::from([
+            "reviews",
+            "issue_comments",
+            "check_runs",
+            "check_annotations",
+            "commit_statuses"
+        ])
+    );
+    assert_eq!(
+        all.len(),
+        205 + before["issueComments"].as_array().unwrap().len() + 3
+    );
+    let ids: HashSet<_> = all
+        .iter()
+        .filter_map(|r| r["native"]["key"]["value"].as_str())
+        .collect();
+    assert_eq!(
+        ids.len(),
+        all.iter().filter(|r| !r["native"].is_null()).count()
+    );
+    assert!(
+        all.iter()
+            .filter(|r| r["native"].is_null())
+            .all(|r| r["nodeId"].is_null() && r["databaseId"].is_null())
+    );
+    assert!(
+        all.iter()
+            .any(|r| r["native"]["key"]["value"] == "987654321")
+    );
+    let run = all
+        .iter()
+        .find(|r| {
+            r["resourceKind"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with("check_runs:")
+        })
+        .unwrap();
+    assert_eq!(run["annotationCoverage"]["completeness"], "partial");
+    assert_eq!(run["currentHead"], true);
+    assert_eq!(run["native"]["externalUrl"], "https://example.test/check");
+    assert_eq!(ok(&app, "/api/v1/session").await, before);
+    assert_eq!(ok(&app, "/api/v1/analysis/findings").await, findings_before);
+    let checks = ok(&app, "/api/v1/github-feedback/checks").await;
+    assert_eq!(checks["total"], 3);
 }
 
 #[tokio::test]
@@ -657,7 +945,7 @@ async fn checks_are_persisted_and_served_separately_from_review_threads() {
     let session = Session::new(snapshot, Store::open_in_memory().unwrap(), None, None).unwrap();
     session.start_analysis().unwrap();
     let app = app(&session);
-    let checks = ok(&app, "/api/v1/github-feedback/checks").await;
+    let checks = parity(&app, "/api/v1/github-feedback/checks?limit=1").await;
     assert_eq!(checks["items"].as_array().unwrap().len(), 1);
     assert_eq!(checks["items"][0]["githubCheckRunId"], 42);
     assert_eq!(checks["items"][0]["currentHead"], true);
@@ -689,11 +977,158 @@ async fn checks_are_persisted_and_served_separately_from_review_threads() {
 }
 
 #[tokio::test]
+async fn feedback_joins_native_metadata_and_rejects_changed_payload_cursor() {
+    let mut snapshot = demo::snapshot(0);
+    assert!(snapshot.github_threads.len() >= 3);
+    let first_id = snapshot.github_threads[0].node_id.clone();
+    let rest_id = snapshot.github_threads[1].node_id.clone();
+    let missing_id = snapshot.github_threads[2].node_id.clone();
+    let native = &mut snapshot.github_threads[0];
+    native.url = Some("https://github.com/acme/pr/pull/1#discussion_r1".into());
+    native.comments[0].url = Some("https://github.com/acme/pr/pull/1#discussion_r1".into());
+    native.comments[0].author_type = Some("Bot".into());
+    native.comments[0].outdated = Some(true);
+    native.comments[0].original_line = Some(19);
+    snapshot.github_threads[1].rest_only = true;
+    let session = Session::new(snapshot, Store::open_in_memory().unwrap(), None, None).unwrap();
+    let app = app(&session);
+    let before = ok(&app, "/api/v1/session").await;
+    // The stored thread remains, but current native metadata is missing.
+    session
+        .snapshot
+        .write()
+        .unwrap()
+        .github_threads
+        .retain(|t| t.node_id != missing_id);
+    let page = ok(
+        &app,
+        "/api/v1/github-feedback/threads?limit=1&includeIgnored=true",
+    )
+    .await;
+    let cursor = page["nextCursor"].as_str().unwrap();
+    let cursor_thread_id = page["items"][0]["githubThreadId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut all = page["items"].as_array().unwrap().clone();
+    let mut next = Some(cursor.to_string());
+    while let Some(cursor) = next {
+        let page = ok(
+            &app,
+            &format!("/api/v1/github-feedback/threads?limit=1&includeIgnored=true&cursor={cursor}"),
+        )
+        .await;
+        all.extend(page["items"].as_array().unwrap().iter().cloned());
+        next = page["nextCursor"].as_str().map(str::to_owned);
+    }
+    let find = |id: &str| all.iter().find(|t| t["githubThreadId"] == id).unwrap();
+    let first = find(&first_id);
+    assert_eq!(
+        first["github"]["url"],
+        "https://github.com/acme/pr/pull/1#discussion_r1"
+    );
+    assert_eq!(first["github"]["comments"][0]["authorType"], "Bot");
+    assert_eq!(first["github"]["comments"][0]["outdated"], true);
+    assert_eq!(first["github"]["comments"][0]["originalLine"], 19);
+    assert_eq!(first["resolutionKnown"], true);
+    assert_eq!(find(&rest_id)["resolutionKnown"], false);
+    assert_eq!(find(&missing_id)["github"], Value::Null);
+    assert_eq!(find(&missing_id)["resolutionKnown"], false);
+    // A field-level GraphQL error invalidates the resolution assertion.
+    session.snapshot.write().unwrap().github_threads[0]
+        .unavailable_fields
+        .push("isResolved".into());
+    let after = ok(&app, "/api/v1/github-feedback/threads?includeIgnored=true").await;
+    let changed = after["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["githubThreadId"] == first_id)
+        .unwrap();
+    assert_eq!(changed["resolutionKnown"], false);
+    let cursor_native = session
+        .snapshot
+        .read()
+        .unwrap()
+        .github_threads
+        .iter()
+        .find(|t| t.node_id == cursor_thread_id)
+        .cloned()
+        .unwrap();
+    session
+        .snapshot
+        .write()
+        .unwrap()
+        .github_threads
+        .iter_mut()
+        .find(|t| t.node_id == cursor_thread_id)
+        .unwrap()
+        .comments[0]
+        .author_type = Some(format!(
+        "changed-from-{:?}",
+        cursor_native.comments[0].author_type
+    ));
+    let (status, body) = get(
+        &app,
+        &format!("/api/v1/github-feedback/threads?limit=1&includeIgnored=true&cursor={cursor}"),
+        Some(AGENT),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_recoverable_conflict(status, &body, "results_changed");
+    assert_eq!(
+        before["threads"],
+        ok(&app, "/api/v1/session").await["threads"]
+    );
+}
+
+#[tokio::test]
+async fn feedback_serves_persisted_node_id_for_comment_without_database_id() {
+    let mut snapshot = demo::snapshot(0);
+    let comment = &mut snapshot.github_threads[0].comments[0];
+    comment.database_id = None;
+    comment.node_id = "node-only-comment".into();
+    comment.url = Some("https://github.com/acme/pr/pull/1#discussion_node".into());
+    comment.author_type = Some("Bot".into());
+    comment.original_line = Some(19);
+    let session = Session::new(snapshot, Store::open_in_memory().unwrap(), None, None).unwrap();
+    let page = ok(
+        &app(&session),
+        "/api/v1/github-feedback/threads?includeIgnored=true",
+    )
+    .await;
+    let thread = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| {
+            item["github"]["comments"]
+                .as_array()
+                .is_some_and(|comments| {
+                    comments
+                        .iter()
+                        .any(|comment| comment["nodeId"] == "node-only-comment")
+                })
+        })
+        .unwrap();
+    let native = &thread["github"]["comments"][0];
+    assert_eq!(native["databaseId"], Value::Null);
+    assert_eq!(
+        native["url"],
+        "https://github.com/acme/pr/pull/1#discussion_node"
+    );
+    assert_eq!(native["authorType"], "Bot");
+    assert_eq!(native["originalLine"], 19);
+    assert_eq!(thread["comments"][0]["githubCommentId"], Value::Null);
+    assert_eq!(thread["comments"][0]["githubNodeId"], "node-only-comment");
+}
+
+#[tokio::test]
 async fn feedback_reports_thread_import_coverage() {
     let mut snapshot = demo::snapshot(0);
     snapshot.github_threads_completeness = Completeness::Partial;
     let session = Session::new(snapshot, Store::open_in_memory().unwrap(), None, None).unwrap();
-    let page = ok(&app(&session), "/api/v1/github-feedback/threads").await;
+    let page = parity(&app(&session), "/api/v1/github-feedback/threads?limit=200").await;
     assert_eq!(page["coverage"]["complete"], false);
     let sources = page["coverage"]["sources"].as_array().unwrap();
     assert_eq!(sources.len(), 1);
@@ -763,6 +1198,14 @@ async fn feedback_coverage_survives_refresh_and_api_reload() {
     );
     assert_eq!(feedback(&refreshed)["completeness"], "complete");
     assert_eq!(feedback(&refreshed)["status"], "succeeded");
+    for path in [
+        "/api/v1/session",
+        "/api/v1/analysis/summary",
+        "/api/v1/analysis/queue",
+        "/api/v1/github-feedback/threads?limit=1",
+    ] {
+        parity(&app, path).await;
+    }
 }
 
 #[test]

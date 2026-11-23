@@ -37,11 +37,11 @@ pub(super) fn recover(
     recover_from_remote(&remote, base_sha, head_sha, limits)
 }
 
-pub(super) fn valid_sha(sha: &str) -> bool {
+pub(crate) fn valid_sha(sha: &str) -> bool {
     sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-pub(super) fn git(git_dir: &Path) -> Command {
+pub(crate) fn git(git_dir: &Path) -> Command {
     let mut command = Command::new("git");
     for (key, _) in std::env::vars_os() {
         if key.to_string_lossy().starts_with("GIT_") {
@@ -64,7 +64,7 @@ pub(super) fn git(git_dir: &Path) -> Command {
 
 // Read in a worker so a stalled pipe cannot hold the caller past the deadline.
 // On every error, including timeout and oversized output, kill Git and its helpers.
-pub(super) fn run_git(
+pub(crate) fn run_git(
     command: Command,
     cap: usize,
     deadline: Instant,

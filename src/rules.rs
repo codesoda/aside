@@ -43,6 +43,9 @@ pub fn normalize(kind: RuleKind, expression: &str) -> Result<String> {
             Ok(path)
         }
         RuleKind::Glob => {
+            if expr.starts_with("@extension:") {
+                bail!("reserved extension preference expression");
+            }
             Glob::compile(expr)?;
             Ok(expr.to_string())
         }
@@ -72,7 +75,42 @@ pub fn matches(kind: RuleKind, expression: &str, path: &str) -> bool {
         RuleKind::Directory => path
             .strip_prefix(expression)
             .is_some_and(|rest| rest.starts_with('/')),
-        RuleKind::Glob => Glob::compile(expression).is_ok_and(|g| g.matches(path)),
+        RuleKind::Glob => expression.strip_prefix("@extension:").map_or_else(
+            || Glob::compile(expression).is_ok_and(|g| g.matches(path)),
+            |category| extension_category(path) == category,
+        ),
+    }
+}
+
+/// Allowed categories are `.ext`, `no-extension`, and `dotfile`.
+/// Extension suffixes are ASCII-safe basename suffixes; leading-dot filenames
+/// are their own category and cannot accidentally match `.ext`.
+pub fn extension_expression(category: &str) -> Result<String> {
+    if category == "no-extension" || category == "dotfile" {
+        return Ok(format!("@extension:{category}"));
+    }
+    let Some(suffix) = category.strip_prefix('.') else {
+        bail!("extension must start with a dot");
+    };
+    if suffix.is_empty()
+        || suffix.len() > 32
+        || !suffix
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+    {
+        bail!("invalid extension suffix");
+    }
+    Ok(format!("@extension:{category}"))
+}
+
+fn extension_category(path: &str) -> &str {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    if name.starts_with('.') {
+        return "dotfile";
+    }
+    match name.rfind('.') {
+        Some(index) if index > 0 && index + 1 < name.len() => &name[index..],
+        _ => "no-extension",
     }
 }
 
@@ -335,6 +373,28 @@ mod tests {
         assert!(glob("a\\*b", "a*b"));
         assert!(!glob("a\\*b", "axb"));
         assert!(!glob("Readme.md", "README.md"));
+    }
+
+    #[test]
+    fn extension_categories_are_safe_and_disjoint() {
+        assert!(extension_expression(".rs").is_ok());
+        for invalid in ["rs", ".", ".a/b", ".a*", ".é", ".\n"] {
+            assert!(extension_expression(invalid).is_err(), "{invalid}");
+        }
+        assert!(normalize(RuleKind::Glob, "@extension:.rs").is_err());
+        assert!(matches(RuleKind::Glob, "@extension:.rs", "src/lib.rs"));
+        assert!(!matches(RuleKind::Glob, "@extension:.rs", "src/.rs"));
+        assert!(matches(RuleKind::Glob, "@extension:dotfile", "src/.env"));
+        assert!(matches(
+            RuleKind::Glob,
+            "@extension:no-extension",
+            "src/Makefile"
+        ));
+        assert!(!matches(
+            RuleKind::Glob,
+            "@extension:no-extension",
+            "src/.env"
+        ));
     }
 
     #[test]

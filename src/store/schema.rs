@@ -367,9 +367,16 @@ pub(super) const MIGRATIONS: &[&str] = &[
     CREATE INDEX IF NOT EXISTS idx_imported_source_prs_pr ON imported_source_prs(pr_id, source_record_id);
     INSERT OR IGNORE INTO imported_source_prs (source_record_id, pr_id, available, first_seen_at, last_seen_at)
     SELECT id, pr_id, available, first_seen_at, last_seen_at FROM imported_source_records;",
-    // v7: durable per-draft selection and PR-scoped plan revision.
-    "ALTER TABLE review_comments ADD COLUMN publish_selected INTEGER NOT NULL DEFAULT 1;
-     ALTER TABLE review_sessions ADD COLUMN selection_revision INTEGER NOT NULL DEFAULT 0;"
+    // v7: PR lifetime and repository extension preferences.
+    include_str!("review_rules.sql"),
+    // v8: unified conversation drafts and read/agent state.
+    include_str!("conversations.sql"),
+    // v9: monotonic comment sequence and request deduplication across turns.
+    include_str!("conversations_v9.sql"),
+    // v10: selection belongs to prepared drafts, not private conversation messages.
+    "ALTER TABLE review_comment_drafts ADD COLUMN publish_selected INTEGER NOT NULL DEFAULT 1;
+     ALTER TABLE review_sessions ADD COLUMN selection_revision INTEGER NOT NULL DEFAULT 0;
+     ALTER TABLE review_threads ADD COLUMN legacy_reply_seq INTEGER;",
 ];
 
 pub(super) const GITHUB_METADATA: &[(&str, &str, &str)] = &[

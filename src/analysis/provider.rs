@@ -88,6 +88,11 @@ pub struct AnalysisInput {
     pub base_sha: String,
     pub head_sha: String,
     pub snapshot: Arc<PrSnapshot>,
+    pub history_context: Option<crate::github::context::AnalysisContext>,
+    pub history_objects: Option<crate::github::context::HistoryObjects>,
+    /// Session-local retained-object revision; a replacement invalidates an
+    /// active history run even when context metadata remains unchanged.
+    pub history_generation: u64,
 }
 
 impl AnalysisInput {
@@ -106,7 +111,41 @@ impl AnalysisInput {
             base_sha: snapshot.pr.base_sha.clone(),
             head_sha: snapshot.pr.head_sha.clone(),
             snapshot: Arc::new(snapshot),
+            history_context: None,
+            history_objects: None,
+            history_generation: 0,
         }
+    }
+
+    /// History context is not an input to snapshot-dependent providers.
+    pub fn provider_digest(&self, kind: ProviderKind) -> String {
+        let digest = self.input_digest();
+        if kind != ProviderKind::History {
+            return digest;
+        }
+        let context = self.history_context.as_ref();
+        let history_count = context.map(|c| c.history_count.to_string());
+        let generation = self.history_generation.to_string();
+        stable_digest(
+            "aside-history-input/v1",
+            &[
+                Some(&digest),
+                context.and_then(|c| c.comparison_base.as_deref()),
+                context.map(|c| c.base_sha.as_str()),
+                context.map(|c| c.head_sha.as_str()),
+                history_count.as_deref(),
+                Some(&generation),
+                context.map(|c| if c.shallow { "shallow" } else { "full" }),
+                context.map(|c| c.source.as_str()),
+                context.map(|c| if c.complete { "complete" } else { "incomplete" }),
+                context.and_then(|c| c.reason.as_deref()),
+                Some(if self.history_objects.is_some() {
+                    "objects"
+                } else {
+                    "no_objects"
+                }),
+            ],
+        )
     }
 
     /// Bytes of diff text handed to providers.

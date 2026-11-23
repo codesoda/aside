@@ -42,8 +42,9 @@ use ts_rs::TS;
 use super::{ApiError, ApiResult, AppState, db_error};
 use crate::{
     model::{
-        AnalysisMode, AnalysisSummary, FindingId, LIFECYCLE_EVENT_VERSION, SourceCoverage,
-        SourceState, ThreadSource, stable_digest,
+        AnalysisMode, AnalysisSummary, Completeness, FindingId, KnownCount,
+        LIFECYCLE_EVENT_VERSION, NativeSourceKey, NativeSourceRef, RunStatus, SourceCoverage,
+        SourceKind, SourceState, ThreadSource, stable_digest,
     },
     priority::{self, ObservedFinding, QueueInput, ReviewQueue, ScopeCounts},
     rules,
@@ -522,51 +523,171 @@ pub(super) async fn evidence(
     Ok(Json(page.map_err(db_error)??))
 }
 
-/// Read-only native check and status records, never review threads.
+/// Read-only non-thread GitHub imports, with source-specific coverage.
+/// Reviews and PR comments live in the snapshot; checks live in the imported
+/// source store. Neither is converted into a finding or modified on read.
+pub(super) async fn records(
+    State(state): State<AppState>,
+    Query(query): Query<ListQuery>,
+) -> ApiResult<Json<Page<Value>>> {
+    let repository_id = state.session.repository.id.clone();
+    let page = state.session.read_analysis(|read| {
+        Ok((|| {
+            let mut items = Vec::new();
+            for (kind, source_kind, records) in [
+                (
+                    "reviews",
+                    SourceKind::GithubReviewSummary,
+                    read.reviews
+                        .iter()
+                        .map(serde_json::to_value)
+                        .collect::<Result<Vec<_>, _>>(),
+                ),
+                (
+                    "issue_comments",
+                    SourceKind::GithubIssueComment,
+                    read.issue_comments
+                        .iter()
+                        .map(serde_json::to_value)
+                        .collect::<Result<Vec<_>, _>>(),
+                ),
+            ] {
+                for (index, value) in records
+                    .map_err(|_| ApiError::internal())?
+                    .into_iter()
+                    .enumerate()
+                {
+                    let mut value = value;
+                    let native_id = value
+                        .get("nodeId")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                        .or_else(|| {
+                            value
+                                .get("databaseId")
+                                .and_then(Value::as_u64)
+                                .map(|id| id.to_string())
+                        });
+                    let url = value.get("url").and_then(Value::as_str).map(str::to_owned);
+                    if let Value::Object(ref mut object) = value {
+                        object.insert("resourceKind".into(), json!(kind));
+                        if native_id.is_none() {
+                            object.insert("native".into(), Value::Null);
+                        }
+                        if let Some(native_id) = native_id {
+                            object.insert(
+                                "native".into(),
+                                serde_json::to_value(NativeSourceRef {
+                                    host: "github.com".into(),
+                                    repository_id: repository_id.clone(),
+                                    source_kind,
+                                    key: NativeSourceKey::Upstream(native_id),
+                                    external_url: url,
+                                })
+                                .map_err(|_| ApiError::internal())?,
+                            );
+                        }
+                    }
+                    items.push((format!("{kind}:{index:020}"), value));
+                }
+            }
+            items.extend(imported_check_items(&read)?);
+            items.sort_by(|a, b| a.0.cmp(&b.0));
+            let mut coverage = PageCoverage::of(&read.summary, |s| {
+                matches!(
+                    s.source_id.as_str(),
+                    source::CHECK_RUNS | source::CHECK_ANNOTATIONS | source::COMMIT_STATUSES
+                )
+            });
+            if let Some(template) = read
+                .summary
+                .sources
+                .iter()
+                .find(|s| s.source_id == source::REVIEWS_AND_COMMENTS)
+            {
+                for (id, kind, count, completeness) in [
+                    (
+                        "github.reviews",
+                        "reviews",
+                        read.reviews.len(),
+                        read.reviews_completeness,
+                    ),
+                    (
+                        "github.issue_comments",
+                        "issue_comments",
+                        read.issue_comments.len(),
+                        read.issue_comments_completeness,
+                    ),
+                ] {
+                    let mut source = template.clone();
+                    source.source_id = id.into();
+                    source.item_kind = kind.into();
+                    source.completeness = completeness;
+                    source.status = Some(match completeness {
+                        Completeness::Complete => RunStatus::Succeeded,
+                        Completeness::Failed => RunStatus::Failed,
+                        _ => RunStatus::Partial,
+                    });
+                    source.items = if completeness == Completeness::Failed {
+                        KnownCount::Unknown
+                    } else {
+                        KnownCount::Known {
+                            value: count as u32,
+                        }
+                    };
+                    source.state = match completeness {
+                        Completeness::Complete if count == 0 => SourceState::Clean,
+                        Completeness::Complete => SourceState::HasResults,
+                        Completeness::Failed => SourceState::Failed,
+                        _ => SourceState::Incomplete,
+                    };
+                    // The combined source's limitations may concern the other
+                    // import; avoid misattributing them to this connection.
+                    source.reason_codes = if completeness == Completeness::Complete {
+                        vec![]
+                    } else {
+                        vec!["github_source_incomplete".into()]
+                    };
+                    source.limitations = if completeness == Completeness::Complete {
+                        vec![]
+                    } else {
+                        vec![format!(
+                            "{kind} import is {completeness:?}; coverage is not complete"
+                        )]
+                    };
+                    coverage.sources.push(source);
+                }
+            }
+            coverage.complete = !coverage.sources.is_empty()
+                && coverage
+                    .sources
+                    .iter()
+                    .all(|s| matches!(s.state, SourceState::Clean | SourceState::HasResults));
+            paginate(
+                &read,
+                Listing {
+                    kind: "records",
+                    query: &query,
+                    filters: vec![],
+                    include_ignored: true,
+                    excluded_by_scope: 0,
+                },
+                items,
+                coverage,
+            )
+        })())
+    });
+    Ok(Json(page.map_err(db_error)??))
+}
+
+/// Legacy checks-only listing; does not include reviews or PR comments.
 pub(super) async fn checks(
     State(state): State<AppState>,
     Query(query): Query<ListQuery>,
 ) -> ApiResult<Json<Page<Value>>> {
     let page = state.session.read_analysis(|read| {
         Ok((|| {
-            let mut items = Vec::new();
-            for record in read
-                .store
-                .list_imported_sources(read.pr_id, None)
-                .map_err(|_| ApiError::internal())?
-            {
-                if !record.available {
-                    continue;
-                }
-                let mut value: Value =
-                    serde_json::from_str(&record.raw_json).map_err(|_| ApiError::internal())?;
-                if let Value::Object(ref mut object) = value {
-                    if record.resource_kind.starts_with("check_runs:")
-                        && record.resource_kind.ends_with(&read.head_sha)
-                        && let Some(id) = object.get("githubCheckRunId").and_then(Value::as_u64)
-                        && let Some((_, coverage)) = read
-                            .annotation_coverage
-                            .iter()
-                            .find(|(run_id, _)| *run_id == id)
-                    {
-                        object.insert(
-                            "annotationCoverage".into(),
-                            serde_json::to_value(coverage).map_err(|_| ApiError::internal())?,
-                        );
-                    }
-                    object.insert("resourceKind".into(), json!(record.resource_kind));
-                    object.insert(
-                        "native".into(),
-                        serde_json::to_value(record.native.value())
-                            .map_err(|_| ApiError::internal())?,
-                    );
-                    object.insert(
-                        "currentHead".into(),
-                        json!(record.resource_kind.ends_with(&read.head_sha)),
-                    );
-                }
-                items.push((format!("imported:{:020}", record.id), value));
-            }
+            let items = imported_check_items(&read)?;
             let coverage = PageCoverage::of(&read.summary, |s| {
                 matches!(
                     s.source_id.as_str(),
@@ -590,6 +711,52 @@ pub(super) async fn checks(
     Ok(Json(page.map_err(db_error)??))
 }
 
+fn imported_check_items(read: &AnalysisRead<'_>) -> ApiResult<Vec<(String, Value)>> {
+    let mut items = Vec::new();
+    for record in read
+        .store
+        .list_imported_sources(read.pr_id, None)
+        .map_err(db_error)?
+    {
+        // The source table can contain other native imports; this listing
+        // claims only the three check-family coverage sources.
+        let kind = record.resource_kind.split(':').next().unwrap_or_default();
+        if !matches!(kind, "check_runs" | "check_annotations" | "commit_statuses") {
+            continue;
+        }
+        if !record.available {
+            continue;
+        }
+        let mut value: Value =
+            serde_json::from_str(&record.raw_json).map_err(|_| ApiError::internal())?;
+        if let Value::Object(ref mut object) = value {
+            if record.resource_kind.starts_with("check_runs:")
+                && record.resource_kind.ends_with(&read.head_sha)
+                && let Some(id) = object.get("githubCheckRunId").and_then(Value::as_u64)
+                && let Some((_, coverage)) = read
+                    .annotation_coverage
+                    .iter()
+                    .find(|(run_id, _)| *run_id == id)
+            {
+                object.insert(
+                    "annotationCoverage".into(),
+                    serde_json::to_value(coverage).map_err(|_| ApiError::internal())?,
+                );
+            }
+            object.insert("resourceKind".into(), json!(record.resource_kind));
+            object.insert(
+                "native".into(),
+                serde_json::to_value(record.native.value()).map_err(|_| ApiError::internal())?,
+            );
+            if let Some((_, sha)) = record.resource_kind.split_once(':') {
+                object.insert("currentHead".into(), json!(sha == read.head_sha));
+            }
+        }
+        items.push((format!("imported:{:020}", record.id), value));
+    }
+    Ok(items)
+}
+
 /// `GET /api/v1/github-feedback/threads`: imported GitHub review threads with
 /// every comment, scope-filtered, with the thread import's completeness.
 pub(super) async fn feedback(
@@ -601,6 +768,10 @@ pub(super) async fn feedback(
         Ok((|| {
             let mut items = Vec::new();
             let mut excluded = 0;
+            let comment_nodes = read
+                .store
+                .github_comment_node_ids(read.pr_id)
+                .map_err(db_error)?;
             for thread in read
                 .threads
                 .iter()
@@ -610,11 +781,48 @@ pub(super) async fn feedback(
                     excluded += 1;
                     continue;
                 }
-                let value = serde_json::to_value(thread).map_err(|_| ApiError::internal())?;
-                // Comment IDs and resolution are part of the key so an
-                // edited thread invalidates outstanding cursors.
-                let comments: Vec<&str> = thread.comments.iter().map(|c| c.id.as_str()).collect();
-                let key = format!("{}\0{}\0{}", thread.id, thread.resolved, comments.join(","));
+                let mut value = serde_json::to_value(thread).map_err(|_| ApiError::internal())?;
+                let native = read.github_threads.iter().find(|native| {
+                    thread.github_thread_id.as_deref() == Some(native.node_id.as_str())
+                });
+                if let Value::Object(ref mut object) = value {
+                    if let Some(Value::Array(comments)) = object.get_mut("comments") {
+                        for comment in comments {
+                            if let Value::Object(comment) = comment
+                                && let Some(id) = comment.get("id").and_then(Value::as_str)
+                                && let Some(node_id) = comment_nodes.get(id)
+                            {
+                                comment.insert("githubNodeId".into(), json!(node_id));
+                            }
+                        }
+                    }
+                    object.insert(
+                        "github".into(),
+                        native
+                            .map(serde_json::to_value)
+                            .transpose()
+                            .map_err(|_| ApiError::internal())?
+                            .unwrap_or(Value::Null),
+                    );
+                    object.insert(
+                        "resolutionKnown".into(),
+                        json!(native.is_some_and(|native| {
+                            !native.rest_only
+                                && !native
+                                    .unavailable_fields
+                                    .iter()
+                                    .any(|field| field == "*" || field == "isResolved")
+                        })),
+                    );
+                }
+                // Pin the cursor to the entire served payload: native edits,
+                // reply metadata, and resolution changes must stale an old walk.
+                let payload = serde_json::to_string(&value).map_err(|_| ApiError::internal())?;
+                let key = format!(
+                    "{}\0{}",
+                    thread.id,
+                    stable_digest("aside-feedback-item/v1", &[Some(&payload)])
+                );
                 items.push((key, value));
             }
             let coverage =

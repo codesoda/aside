@@ -5,7 +5,9 @@ mod config;
 mod demo;
 mod descriptor;
 mod diff;
+mod explain;
 mod github;
+mod history;
 mod model;
 // TODO(#33): consumed by the session view / findings API.
 #[allow(dead_code)]
@@ -63,10 +65,19 @@ enum Command {
         #[command(flatten)]
         serve: ServeOpts,
     },
-    /// Set a global config value.
-    Set { key: String, value: String },
-    /// Show one config value, or all values.
-    Get { key: Option<String> },
+    /// Set a config value (analysis settings require --repo HOST/OWNER/REPO).
+    Set {
+        key: String,
+        value: String,
+        #[arg(long)]
+        repo: Option<String>,
+    },
+    /// Show global values, or repository analysis settings with --repo.
+    Get {
+        key: Option<String>,
+        #[arg(long)]
+        repo: Option<String>,
+    },
     /// Install the embedded Aside skill for coding agents.
     Skill {
         #[command(flatten)]
@@ -213,31 +224,26 @@ async fn start_session(
         Store::open_in_memory()?
     };
     let session = Session::new(snapshot, store, gh, pr_ref)?;
-    if let (Some(gh), Some(reference)) = (&session.gh, &session.pr_ref) {
-        let snapshot = session.snapshot.read().expect("snapshot lock");
+    session.configure_analysis(config::path()?)?;
+    if session.pr_ref.is_some() {
         let cache_root = store::default_path()?
             .parent()
             .expect("data directory")
             .to_path_buf();
-        let context = github::context::resolve(
-            gh.as_ref(),
-            reference,
-            snapshot.provider_repository_id.as_deref(),
-            &snapshot.pr.base_sha,
-            &snapshot.pr.head_sha,
-            checkout,
+        session.configure_history(
+            checkout.map(std::path::Path::to_path_buf),
             fetch_analysis,
-            &cache_root,
+            cache_root,
         );
-        drop(snapshot);
-        session.set_analysis_context(context);
     }
     if let Err(error) = session.start_analysis() {
         eprintln!("could not start analysis: {error:#}");
     }
     let ui_token = util::random_hex(32);
     let agent_token = util::random_hex(32);
-    let state = server::AppState::new(Arc::clone(&session), ui_token.clone(), agent_token.clone());
+    let mut state =
+        server::AppState::new(Arc::clone(&session), ui_token.clone(), agent_token.clone());
+    state.explanations = Arc::new(explain::Explanations::new(config::load()?.ai));
     let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0))).await?;
     let url = format!("http://{}/", listener.local_addr()?);
     let pr = session
@@ -310,18 +316,42 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
     let (snapshot, pr_ref, gh, opts) = match (cli.command, cli.pr_url) {
-        (Some(Command::Set { key, value }), _) => {
+        (Some(Command::Set { key, value, repo }), _) => {
             let mut cfg = config::load()?;
-            cfg.set(&key, &value)?;
+            cfg.set_scoped(&key, &value, repo.as_deref())?;
             config::save(&cfg)?;
-            eprintln!("{key} = {} ({})", cfg.get(&key)?, config::path()?.display());
+            eprintln!(
+                "{key} = {} ({})",
+                cfg.get_scoped(&key, repo.as_deref())?,
+                config::path()?.display()
+            );
+            if repo.is_some() {
+                eprintln!("Refresh an existing session to apply analysis changes.");
+            }
             return Ok(());
         }
-        (Some(Command::Get { key }), _) => {
+        (Some(Command::Get { key, repo }), _) => {
             let cfg = config::load()?;
-            match key {
-                Some(key) => println!("{}", cfg.get(&key)?),
-                None => {
+            match (key, repo.as_deref()) {
+                (Some(key), repo) => println!("{}", cfg.get_scoped(&key, repo)?),
+                (None, Some(repo)) => {
+                    eprintln!(
+                        "# {} — {}",
+                        config::path()?.display(),
+                        config::repository_key(repo)?
+                    );
+                    for key in config::ANALYSIS_KEYS {
+                        println!("{key} = {}", cfg.get_scoped(key, Some(repo))?);
+                    }
+                    eprintln!("# default preserves the engine's limit; refresh to apply changes.");
+                    eprintln!(
+                        "# Built-ins run locally. History fetch requires separate --fetch-analysis-context consent."
+                    );
+                    eprintln!(
+                        "# No model execution, hosted analysis, or optional external tools are enabled."
+                    );
+                }
+                (None, None) => {
                     eprintln!("# {}", config::path()?.display());
                     for (key, help) in config::KEYS {
                         println!("{key} = {}  # {help}", cfg.get(key)?);

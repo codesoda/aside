@@ -4,6 +4,7 @@
 //! Set `ASIDE_DATA_DIR` to override. Demo sessions use an in-memory database.
 
 mod analysis;
+mod conversations;
 mod publication;
 mod repositories;
 mod review;
@@ -78,6 +79,26 @@ impl Store {
         }
         for (i, sql) in schema::MIGRATIONS.iter().enumerate().skip(version as usize) {
             let tx = self.conn.transaction()?;
+            // PR13's unpublished v7 used the same version number as main's
+            // released review-rules migration. Preserve its data and install
+            // the missing released schema before running conversations v8.
+            if i + 1 == 8 && version == 7 {
+                let has_rules: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'review_exclusion_rules')",
+                    [], |r| r.get(0),
+                )?;
+                if !has_rules {
+                    tx.execute_batch(schema::MIGRATIONS[6])?;
+                    // v8 normalizes only root drafts. Capture branch reply drafts
+                    // before its conversion of old draft rows to private history.
+                    tx.execute_batch("CREATE TABLE legacy_pending_replies (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, body TEXT NOT NULL, selected INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, reserved_attempt_id TEXT, original_seq INTEGER NOT NULL);
+                        INSERT INTO legacy_pending_replies SELECT c.id, c.thread_id, c.body, c.publish_selected, c.created_at, c.updated_at, r.attempt_id, c.seq
+                        FROM review_comments c JOIN review_threads t ON t.id = c.thread_id
+                        LEFT JOIN publication_reservations r ON r.comment_id = c.id
+                        WHERE c.author_kind = 'human' AND c.publish_state = 'draft' AND trim(c.body) != ''
+                        AND (t.source = 'github' OR c.seq > (SELECT MIN(root.seq) FROM review_comments root WHERE root.thread_id = c.thread_id));")?;
+                }
+            }
             if i + 1 == 4 {
                 // Both branches released a different v3. Inspect under the write
                 // transaction before applying only the missing half.
@@ -86,8 +107,39 @@ impl Store {
                 if i + 1 == 5 || i + 1 == 6 {
                     migrate_rest_columns(&tx)?;
                 }
-                tx.execute_batch(sql)
-                    .with_context(|| format!("migration v{} failed", i + 1))?;
+                if i + 1 == 10 {
+                    let mut stmt = tx.prepare("PRAGMA table_info(review_sessions)")?;
+                    let columns = stmt
+                        .query_map([], |r| r.get::<_, String>(1))?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    if !columns.iter().any(|c| c == "selection_revision") {
+                        tx.execute_batch(sql)?;
+                    } else {
+                        tx.execute_batch("ALTER TABLE review_comment_drafts ADD COLUMN publish_selected INTEGER NOT NULL DEFAULT 1;
+                            ALTER TABLE review_threads ADD COLUMN legacy_reply_seq INTEGER;")?;
+                    }
+                } else {
+                    tx.execute_batch(sql)
+                        .with_context(|| format!("migration v{} failed", i + 1))?;
+                }
+                if i + 1 == 10 {
+                    let mut stmt = tx.prepare("PRAGMA table_info(review_comments)")?;
+                    let columns = stmt
+                        .query_map([], |r| r.get::<_, String>(1))?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    if columns.iter().any(|c| c == "publish_selected") {
+                        tx.execute_batch("UPDATE review_comment_drafts SET publish_selected = (SELECT publish_selected FROM review_comments WHERE review_comments.id = review_comment_drafts.id) WHERE id IN (SELECT id FROM review_comments);")?;
+                    }
+                    let captured: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'legacy_pending_replies')", [], |r| r.get(0))?;
+                    if captured {
+                        tx.execute_batch("INSERT INTO review_threads (id, pr_id, source, path, side, line, start_line, line_text, diff_digest, head_sha, anchor_state, anchor_reason, resolved, created_at, updated_at, subject, linked_thread_id, legacy_reply_seq)
+                            SELECT 'legacy_reply_' || p.id, t.pr_id, 'local', t.path, t.side, t.line, t.start_line, t.line_text, t.diff_digest, t.head_sha, t.anchor_state, t.anchor_reason, t.resolved, p.created_at, p.updated_at, t.subject, t.id, p.original_seq
+                            FROM legacy_pending_replies p JOIN review_threads t ON t.id = p.thread_id;
+                            INSERT INTO review_comment_drafts (id, thread_id, body, state, created_at, updated_at, publish_selected, reserved_attempt_id)
+                            SELECT id, 'legacy_reply_' || id, body, 'draft', created_at, updated_at, selected, reserved_attempt_id FROM legacy_pending_replies;
+                            DROP TABLE legacy_pending_replies;")?;
+                    }
+                }
             }
             if i + 1 > schema::MIGRATION_TABLE_VERSION {
                 tx.execute(
@@ -396,12 +448,32 @@ mod tests {
         let mut s = store();
         let repo = s.resolve_repository("github.com", "o", "r", None).unwrap();
         let pr = s.upsert_pull_request(&repo.id, 1, "t", "u").unwrap();
-        s.start_publication(&pr, "original", "{}", "head", &[], 0)
+        s.start_publication(&pr, "original", r#"{"attemptOrdinal":1}"#, "head", &[])
             .unwrap();
         assert!(
-            s.start_publication(&pr, "edited", "{}", "head", &[], 0)
+            s.start_publication(&pr, "edited", r#"{"attemptOrdinal":2}"#, "head", &[])
                 .is_err()
         );
+    }
+
+    #[test]
+    fn stale_reconciliation_cannot_clear_a_new_claim() {
+        let mut s = store();
+        let repo = s.resolve_repository("github.com", "o", "r", None).unwrap();
+        let pr = s.upsert_pull_request(&repo.id, 1, "t", "u").unwrap();
+        let old = s
+            .start_publication(&pr, "old", r#"{"attemptOrdinal":1}"#, "head", &[])
+            .unwrap();
+        s.reconcile_publication(&pr, &old, false).unwrap();
+        let current = s
+            .start_publication(&pr, "current", r#"{"attemptOrdinal":2}"#, "head", &[])
+            .unwrap();
+        assert!(s.reconcile_publication(&pr, &old, false).is_err());
+        assert!(s.reconcile_publication(&pr, &old, true).is_err());
+        assert_eq!(s.active_publication(&pr).unwrap().unwrap().0, current);
+        // Only an explicitly reconciled partial attempt may release this claim.
+        s.reconcile_publication(&pr, &current, false).unwrap();
+        assert!(s.active_publication(&pr).unwrap().is_none());
     }
 
     #[test]
@@ -421,7 +493,13 @@ mod tests {
                     let mut store = Store::open(&path).unwrap();
                     barrier.wait();
                     store
-                        .start_publication(&pr, &format!("plan-{i}"), "{}", "head", &[], 0)
+                        .start_publication(
+                            &pr,
+                            &format!("plan-{i}"),
+                            r#"{"attemptOrdinal":1}"#,
+                            "head",
+                            &[],
+                        )
                         .is_ok()
                 })
             })
@@ -458,6 +536,8 @@ mod tests {
                 anchor_reason: None,
                 resolved: false,
                 created_at: None,
+                subject: crate::model::ThreadSubject::Line,
+                finding_id: None,
             },
         )
         .unwrap();
@@ -473,391 +553,50 @@ mod tests {
                 updated_at: now,
                 publish_state: PublishState::Draft,
                 github_comment_id: None,
-                publish_selected: true,
             },
             None,
         )
         .unwrap();
-        assert!(
-            s.start_publication(&pr, "wrong", "{}", "head", &[("c", "edited")], 1)
-                .is_err()
-        );
-        // The successful claim below proves the failed reservation rolled back the claim.
-        s.start_publication(&pr, "correct", "{}", "head", &[("c", "original")], 1)
+        let draft = s
+            .upsert_review_comment(&pr, "t", "original", Some("c"))
             .unwrap();
-        assert!(s.update_comment_body("c", "edited").is_err());
-        assert!(s.delete_comment("c").is_err());
+        assert!(
+            s.start_publication(
+                &pr,
+                "wrong",
+                r#"{"attemptOrdinal":1}"#,
+                "head",
+                &[(draft.id.as_str(), "edited")]
+            )
+            .is_err()
+        );
+        // Failed reservation rolls back; only the explicit prepared draft is claimed.
+        let attempt = s
+            .start_publication(
+                &pr,
+                "correct",
+                r#"{"attemptOrdinal":1}"#,
+                "head",
+                &[(draft.id.as_str(), "original")],
+            )
+            .unwrap();
+        assert!(s.upsert_review_comment(&pr, "t", "edited", None).is_err());
+        assert!(s.clear_review_comment(&pr, "t").is_err());
         assert_eq!(s.get_comment("c").unwrap().body, "original");
-        s.mark_comment_published("c", Some(42)).unwrap();
-        assert!(s.mark_comment_published("c", Some(43)).is_err());
-        assert_eq!(s.get_comment("c").unwrap().github_comment_id, Some(42));
-    }
-
-    #[test]
-    fn selection_changes_are_atomic_and_invalidate_claims_in_both_directions() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("selection.db");
-        let mut s = Store::open(&path).unwrap();
-        let repo = s.resolve_repository("github.com", "o", "r", None).unwrap();
-        let pr = s.upsert_pull_request(&repo.id, 1, "t", "u").unwrap();
-        s.insert_thread(
-            &pr,
-            &NewThread {
-                id: "t".into(),
-                source: ThreadSource::Local,
-                github_thread_id: None,
-                path: "a".into(),
-                side: Side::Right,
-                line: Some(1),
-                start_line: None,
-                line_text: None,
-                diff_digest: None,
-                head_sha: "h".into(),
-                anchor_state: AnchorState::Current,
-                anchor_reason: None,
-                resolved: false,
-                created_at: None,
-            },
-        )
-        .unwrap();
-        for id in ["a", "b"] {
-            s.insert_comment(
-                &Comment {
-                    id: id.into(),
-                    thread_id: "t".into(),
-                    author_kind: Actor::Human,
-                    author: "me".into(),
-                    body: id.into(),
-                    created_at: "now".into(),
-                    updated_at: "now".into(),
-                    publish_state: PublishState::Draft,
-                    github_comment_id: None,
-                    publish_selected: true,
-                },
-                None,
-            )
+        s.mark_prepared_published(&draft.id, &attempt, Some(42), 7, "head")
             .unwrap();
-        }
-        assert_eq!(
-            s.set_publish_selection(&pr, &["b".into()], false)
-                .unwrap()
-                .1,
-            3
-        );
-        assert_eq!(
-            s.set_publish_selection(&pr, &["b".into()], false)
-                .unwrap()
-                .1,
-            3
-        );
         assert!(
-            s.set_publish_selection(&pr, &["a".into(), "missing".into()], false)
+            s.mark_prepared_published(&draft.id, &attempt, Some(43), 7, "head")
                 .is_err()
         );
-        assert!(s.get_comment("a").unwrap().publish_selected);
-        let mut other = Store::open(&path).unwrap();
-        // Included -> omitted after preview; claim on another connection rolls back.
-        s.set_publish_selection(&pr, &["a".into()], false).unwrap();
-        assert!(
-            other
-                .start_publication(&pr, "one", "{}", "h", &[("a", "a")], 3)
-                .is_err()
-        );
-        // Omitted -> included after preview is equally invalid, even if the
-        // originally included draft is unchanged.
-        s.set_publish_selection(&pr, &["a".into()], true).unwrap();
-        s.set_publish_selection(&pr, &["b".into()], true).unwrap();
-        assert!(
-            other
-                .start_publication(&pr, "two", "{}", "h", &[("a", "a")], 5)
-                .is_err()
-        );
-        let count: i64 = s
-            .conn
-            .query_row("SELECT COUNT(*) FROM publication_attempts", [], |r| {
-                r.get(0)
-            })
-            .unwrap();
-        assert_eq!(count, 0);
-        let revision = s.review_state(&pr).unwrap().selection_revision;
-        let claim = other
-            .start_publication(&pr, "three", "{}", "h", &[("a", "a")], revision)
-            .unwrap();
-        assert!(s.set_publish_selection(&pr, &["a".into()], false).is_err());
-        assert!(s.set_publish_selection(&pr, &["b".into()], false).is_ok());
         assert_eq!(
-            s.unresolved_publication(&pr).unwrap().unwrap().attempt_id,
-            claim
-        );
-        let revision = s.review_state(&pr).unwrap().selection_revision;
-        drop(s);
-        drop(other);
-        let reopened = Store::open(&path).unwrap();
-        assert!(!reopened.get_comment("b").unwrap().publish_selected);
-        assert_eq!(
-            reopened.review_state(&pr).unwrap().selection_revision,
-            revision
-        );
-        assert_eq!(
-            reopened
-                .review_state(&pr)
-                .unwrap()
-                .unresolved_publication
-                .unwrap()
-                .attempt_id,
-            claim
+            s.list_threads(&pr).unwrap()[0].published_comments[0].github_comment_id,
+            Some(42)
         );
     }
 
     #[test]
-    fn thread_selection_batch_changes_each_draft_once_and_one_revision() {
-        let mut s = store();
-        let repo = s.resolve_repository("github.com", "o", "r", None).unwrap();
-        let pr = s.upsert_pull_request(&repo.id, 1, "t", "u").unwrap();
-        s.insert_thread(
-            &pr,
-            &NewThread {
-                id: "t".into(),
-                source: ThreadSource::Local,
-                github_thread_id: None,
-                path: "a".into(),
-                side: Side::Right,
-                line: None,
-                start_line: None,
-                line_text: None,
-                diff_digest: None,
-                head_sha: "h".into(),
-                anchor_state: AnchorState::Current,
-                anchor_reason: None,
-                resolved: false,
-                created_at: None,
-            },
-        )
-        .unwrap();
-        for id in ["root", "reply"] {
-            s.insert_comment(
-                &Comment {
-                    id: id.into(),
-                    thread_id: "t".into(),
-                    author_kind: Actor::Human,
-                    author: "me".into(),
-                    body: id.into(),
-                    created_at: "now".into(),
-                    updated_at: "now".into(),
-                    publish_state: PublishState::Draft,
-                    github_comment_id: None,
-                    publish_selected: true,
-                },
-                None,
-            )
-            .unwrap();
-        }
-        let (changed, revision) = s
-            .set_publish_selection(&pr, &["root".into(), "reply".into()], false)
-            .unwrap();
-        assert_eq!(changed, ["root", "reply"]);
-        assert_eq!(revision, 3);
-        assert!(
-            s.list_threads(&pr).unwrap()[0]
-                .comments
-                .iter()
-                .all(|c| !c.publish_selected)
-        );
-        assert_eq!(
-            s.set_publish_selection(&pr, &["root".into(), "reply".into()], false)
-                .unwrap()
-                .1,
-            3
-        );
-        s.conn
-            .execute(
-                "UPDATE review_comments SET publish_state = 'imported' WHERE id = 'root'",
-                [],
-            )
-            .unwrap();
-        assert!(
-            s.set_publish_selection(&pr, &["reply".into(), "root".into()], true)
-                .is_err()
-        );
-        assert!(!s.get_comment("reply").unwrap().publish_selected);
-        s.conn
-            .execute(
-                "UPDATE review_comments SET publish_state = 'published' WHERE id = 'root'",
-                [],
-            )
-            .unwrap();
-        assert!(
-            s.set_publish_selection(&pr, &["root".into()], true)
-                .is_err()
-        );
-        assert_eq!(s.review_state(&pr).unwrap().selection_revision, 3);
-    }
-
-    #[test]
-    fn concurrent_selection_setter_and_claim_serialize_across_connections() {
-        for flip_selected in [false, true] {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("race.db");
-            let mut setup = Store::open(&path).unwrap();
-            let repo = setup
-                .resolve_repository("github.com", "o", "r", None)
-                .unwrap();
-            let pr = setup.upsert_pull_request(&repo.id, 1, "t", "u").unwrap();
-            setup
-                .insert_thread(
-                    &pr,
-                    &NewThread {
-                        id: "t".into(),
-                        source: ThreadSource::Local,
-                        github_thread_id: None,
-                        path: "a".into(),
-                        side: Side::Right,
-                        line: Some(1),
-                        start_line: None,
-                        line_text: None,
-                        diff_digest: None,
-                        head_sha: "h".into(),
-                        anchor_state: AnchorState::Current,
-                        anchor_reason: None,
-                        resolved: false,
-                        created_at: None,
-                    },
-                )
-                .unwrap();
-            for id in ["a", "b"] {
-                setup
-                    .insert_comment(
-                        &Comment {
-                            id: id.into(),
-                            thread_id: "t".into(),
-                            author_kind: Actor::Human,
-                            author: "me".into(),
-                            body: id.into(),
-                            created_at: "now".into(),
-                            updated_at: "now".into(),
-                            publish_state: PublishState::Draft,
-                            github_comment_id: None,
-                            publish_selected: true,
-                        },
-                        None,
-                    )
-                    .unwrap();
-            }
-            if flip_selected {
-                setup
-                    .set_publish_selection(&pr, &["b".into()], false)
-                    .unwrap();
-            }
-            let revision = setup.review_state(&pr).unwrap().selection_revision;
-            drop(setup);
-            let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
-            let setter = {
-                let (path, pr, barrier) = (path.clone(), pr.clone(), barrier.clone());
-                std::thread::spawn(move || {
-                    let mut s = Store::open(&path).unwrap();
-                    barrier.wait();
-                    s.set_publish_selection(&pr, &["b".into()], flip_selected)
-                        .unwrap();
-                })
-            };
-            let claim = {
-                let (path, pr, barrier) = (path.clone(), pr.clone(), barrier.clone());
-                std::thread::spawn(move || {
-                    let mut s = Store::open(&path).unwrap();
-                    barrier.wait();
-                    s.start_publication(&pr, "plan", "{}", "h", &[("a", "a")], revision)
-                        .is_ok()
-                })
-            };
-            setter.join().unwrap();
-            let claimed = claim.join().unwrap();
-            let s = Store::open(&path).unwrap();
-            let count: i64 = s
-                .conn
-                .query_row("SELECT COUNT(*) FROM publication_attempts", [], |r| {
-                    r.get(0)
-                })
-                .unwrap();
-            let reservations: i64 = s
-                .conn
-                .query_row("SELECT COUNT(*) FROM publication_reservations", [], |r| {
-                    r.get(0)
-                })
-                .unwrap();
-            assert_eq!(count, i64::from(claimed));
-            assert_eq!(reservations, i64::from(claimed));
-            assert_eq!(
-                s.review_state(&pr).unwrap().selection_revision,
-                revision + 1
-            );
-            assert_eq!(s.get_comment("b").unwrap().publish_selected, flip_selected);
-        }
-    }
-
-    #[test]
-    fn draft_creation_and_deletion_invalidate_previous_selection_revision() {
-        let mut s = store();
-        let repo = s.resolve_repository("github.com", "o", "r", None).unwrap();
-        let pr = s.upsert_pull_request(&repo.id, 1, "t", "u").unwrap();
-        s.insert_thread(
-            &pr,
-            &NewThread {
-                id: "t".into(),
-                source: ThreadSource::Local,
-                github_thread_id: None,
-                path: "a".into(),
-                side: Side::Right,
-                line: None,
-                start_line: None,
-                line_text: None,
-                diff_digest: None,
-                head_sha: "h".into(),
-                anchor_state: AnchorState::Current,
-                anchor_reason: None,
-                resolved: false,
-                created_at: None,
-            },
-        )
-        .unwrap();
-        assert_eq!(s.review_state(&pr).unwrap().selection_revision, 0);
-        s.insert_comment(
-            &Comment {
-                id: "c".into(),
-                thread_id: "t".into(),
-                author_kind: Actor::Human,
-                author: "me".into(),
-                body: "body".into(),
-                created_at: "now".into(),
-                updated_at: "now".into(),
-                publish_state: PublishState::Draft,
-                github_comment_id: None,
-                publish_selected: true,
-            },
-            None,
-        )
-        .unwrap();
-        assert_eq!(s.review_state(&pr).unwrap().selection_revision, 1);
-        assert!(
-            s.start_publication(&pr, "stale", "{}", "h", &[], 0)
-                .is_err()
-        );
-        s.delete_comment("c").unwrap();
-        assert_eq!(s.review_state(&pr).unwrap().selection_revision, 2);
-        assert!(
-            s.start_publication(&pr, "stale-again", "{}", "h", &[], 1)
-                .is_err()
-        );
-        assert_eq!(
-            s.conn
-                .query_row("SELECT COUNT(*) FROM publication_attempts", [], |r| r
-                    .get::<_, i64>(0))
-                .unwrap(),
-            0
-        );
-    }
-
-    #[test]
-    fn deleting_last_comment_removes_thread() {
+    fn deleting_last_private_comment_removes_thread() {
         let mut s = store();
         let repo = s.resolve_repository("github.com", "o", "r", None).unwrap();
         let pr = s.upsert_pull_request(&repo.id, 1, "t", "u").unwrap();
@@ -878,6 +617,8 @@ mod tests {
                 anchor_reason: None,
                 resolved: false,
                 created_at: None,
+                subject: crate::model::ThreadSubject::Line,
+                finding_id: None,
             },
         )
         .unwrap();
@@ -891,9 +632,8 @@ mod tests {
                 body: "hi".into(),
                 created_at: now.clone(),
                 updated_at: now,
-                publish_state: PublishState::Draft,
+                publish_state: PublishState::Private,
                 github_comment_id: None,
-                publish_selected: true,
             },
             None,
         )

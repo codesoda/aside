@@ -3,12 +3,13 @@
 
 use std::{collections::BTreeSet, sync::Arc};
 
+use crate::model::AnalysisMode;
+
 use super::DiffFactsProvider;
 use crate::{
     analysis::{
         AnalysisInput, AnalysisProvider, ProviderKind, RunHandle, Scheduler, SchedulerConfig,
-        SystemClock, default_providers,
-        test_doubles::{Double, HISTORY},
+        SystemClock, default_providers, test_doubles::Double,
     },
     demo,
     diff::facts::{self, DiffFactsConfig, DiffFactsInput},
@@ -93,7 +94,26 @@ fn session_input(session: &Session) -> AnalysisInput {
 #[test]
 fn default_providers_register_the_diff_engine() {
     let providers = default_providers();
-    assert!(!providers.is_empty(), "no analysis engines registered");
+    let registry: BTreeSet<_> = providers
+        .iter()
+        .map(|p| {
+            let d = p.descriptor();
+            assert_eq!(d.mode, AnalysisMode::Static, "{} must be non-LLM", d.id);
+            assert_eq!(
+                d.kind,
+                if d.id == facts::PROVIDER_ID {
+                    ProviderKind::Diff
+                } else {
+                    ProviderKind::History
+                }
+            );
+            d.id.as_str()
+        })
+        .collect();
+    assert_eq!(
+        registry,
+        BTreeSet::from([facts::PROVIDER_ID, super::history::ID])
+    );
     let diff = providers
         .iter()
         .find(|p| p.descriptor().kind == ProviderKind::Diff)
@@ -102,6 +122,143 @@ fn default_providers_register_the_diff_engine() {
     assert_eq!(d.id, facts::PROVIDER_ID);
     assert_eq!(d.engine_version, facts::ENGINE_VERSION);
     assert_eq!(d.configuration_digest, DiffFactsConfig::default().digest());
+}
+
+/// Test each credential state in a fresh test process, without modifying the
+/// environment shared by other tests. The fake CLIs record any attempted model
+/// execution; this does not claim to audit arbitrary network traffic.
+#[cfg(unix)]
+#[test]
+fn default_analysis_never_invokes_model_clis_with_or_without_credentials() {
+    use std::{fs, os::unix::fs::PermissionsExt, process::Command};
+
+    let git_dir = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .find(|dir| dir.join("git").is_file())
+        .expect("system git must be available for history analysis");
+    for credentials in ["absent", "present"] {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        let calls = dir.path().join("model-calls");
+        for name in ["claude", "ollama", "codex"] {
+            let path = bin.join(name);
+            fs::write(
+                &path,
+                "#!/bin/sh\nprintf '%s\\n' called >> \"$ASIDE_TEST_MODEL_CALLS\"\nexit 97\n",
+            )
+            .unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let path = std::env::join_paths([bin.as_os_str(), git_dir.as_os_str()]).unwrap();
+        let mut child = Command::new(std::env::current_exe().unwrap());
+        child.args([
+            "--exact",
+            "analysis::providers::tests::default_analysis_credential_child",
+            "--nocapture",
+        ]);
+        child
+            .env_clear()
+            .env("HOME", dir.path())
+            .env("ASIDE_CONFIG_DIR", dir.path())
+            .env("ASIDE_TEST_DEFAULT_ANALYSIS_CHILD", credentials)
+            .env("ASIDE_TEST_MODEL_CALLS", &calls)
+            .env("PATH", path);
+        if credentials == "present" {
+            for key in [
+                "OPENAI_API_KEY",
+                "ANTHROPIC_API_KEY",
+                "CLAUDE_CODE_OAUTH_TOKEN",
+            ] {
+                child.env(key, "synthetic-test-credential-not-valid");
+            }
+        }
+        let output = child.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{credentials}: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "{credentials}: child test was not selected: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            !calls.exists(),
+            "{credentials}: a model CLI was invoked: {:?}",
+            fs::read_to_string(calls).unwrap()
+        );
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn default_analysis_credential_child() {
+    let Ok(state) = std::env::var("ASIDE_TEST_DEFAULT_ANALYSIS_CHILD") else {
+        return;
+    };
+    assert!(matches!(state.as_str(), "present" | "absent"));
+    let session = session();
+    let ids = BTreeSet::from([facts::PROVIDER_ID, super::history::ID]);
+    let initial = session.start_analysis().unwrap();
+    assert_eq!(
+        initial
+            .iter()
+            .map(|h| h.provider_id.as_str())
+            .collect::<BTreeSet<_>>(),
+        ids
+    );
+    for handle in initial {
+        let report = handle.wait().await;
+        assert!(matches!(
+            report.stored_status,
+            RunStatus::Succeeded | RunStatus::Partial
+        ));
+    }
+    let first = session_input(&session).snapshot_id;
+    assert_default_runs(&session, &first);
+
+    session.refresh().await.unwrap();
+    let refreshed = session_input(&session).snapshot_id;
+    assert_ne!(first, refreshed);
+    for handle in session.analysis.in_flight() {
+        let report = handle.wait().await;
+        assert!(matches!(
+            report.stored_status,
+            RunStatus::Succeeded | RunStatus::Partial
+        ));
+    }
+    // A fast provider may have left in_flight before the check above.
+    assert_default_runs(&session, &refreshed);
+}
+
+#[cfg(unix)]
+fn assert_default_runs(session: &Session, snapshot_id: &crate::model::SnapshotId) {
+    let store = session.store.lock().unwrap();
+    let runs = store.list_analysis_runs(&session.pr_id).unwrap();
+    let current: Vec<_> = runs
+        .iter()
+        .map(|r| r.value())
+        .filter(|r| &r.snapshot_id == snapshot_id && r.provider_id.starts_with("aside."))
+        .collect();
+    assert_eq!(current.len(), 2, "one run for each default provider");
+    assert_eq!(
+        current
+            .iter()
+            .map(|r| r.provider_id.as_str())
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([facts::PROVIDER_ID, super::history::ID])
+    );
+    for run in current {
+        assert!(
+            matches!(run.status, RunStatus::Succeeded | RunStatus::Partial),
+            "{}: {:?}",
+            run.provider_id,
+            run.status
+        );
+    }
 }
 
 #[tokio::test]
@@ -145,18 +302,25 @@ async fn demo_findings_flow_from_scan_to_the_store() {
 async fn refresh_reruns_the_diff_engine_and_labels_old_findings_historical() {
     let session = session();
     let first = expected_ids(&session_input(&session));
-    diff_handle(&session.start_analysis().unwrap()).wait().await;
+    for handle in session.start_analysis().unwrap() {
+        let report = handle.wait().await;
+        assert!(matches!(
+            report.stored_status,
+            RunStatus::Succeeded | RunStatus::Partial
+        ));
+    }
 
     session.refresh().await.unwrap();
     let second = expected_ids(&session_input(&session));
     assert_ne!(first, second, "the refresh fixture changes a line");
     // refresh() starts analysis itself; wait for that run.
     let in_flight = session.analysis.in_flight();
-    if let Some(h) = in_flight
-        .iter()
-        .find(|h| h.provider_id == facts::PROVIDER_ID)
-    {
-        h.clone().wait().await;
+    for handle in in_flight {
+        let report = handle.wait().await;
+        assert!(matches!(
+            report.stored_status,
+            RunStatus::Succeeded | RunStatus::Partial
+        ));
     }
 
     assert!(
@@ -272,7 +436,8 @@ async fn generated_skip_makes_the_run_partial_with_a_reason() {
 async fn review_stays_usable_with_the_real_diff_engine_registered() {
     let session = session();
     let before = session.view(Actor::Human).unwrap();
-    let (slow, gate, started) = Double::gated(HISTORY, ProviderKind::History);
+    let slow_id = "aside.slow-history-test";
+    let (slow, gate, started) = Double::gated(slow_id, ProviderKind::History);
     let mut providers: Vec<Arc<dyn AnalysisProvider>> = default_providers();
     providers.push(slow);
     let analysis = Scheduler::new(
@@ -291,7 +456,7 @@ async fn review_stays_usable_with_the_real_diff_engine_registered() {
         status_for(&expected(&session_input(&session)))
     );
 
-    let slow_handle = handles.iter().find(|h| h.provider_id == HISTORY).unwrap();
+    let slow_handle = handles.iter().find(|h| h.provider_id == slow_id).unwrap();
     assert!(
         slow_handle.report().is_none(),
         "slow provider still running"

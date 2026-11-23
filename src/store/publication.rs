@@ -1,10 +1,8 @@
+use crate::model::UnresolvedPublication;
 use anyhow::{Context, Result, bail};
 use rusqlite::{OptionalExtension, params};
 
-use crate::{
-    model::UnresolvedPublication,
-    util::{new_id, now_rfc3339},
-};
+use crate::util::{new_id, now_rfc3339};
 
 use super::Store;
 
@@ -20,27 +18,21 @@ impl std::fmt::Display for ReservedDraft {
 impl std::error::Error for ReservedDraft {}
 
 impl Store {
-    pub fn plan_attempted(&self, pr_id: &str, plan_id: &str) -> Result<bool> {
-        Ok(self.conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM publication_attempts WHERE pr_id = ?1 AND plan_id = ?2)",
-            params![pr_id, plan_id],
-            |r| r.get(0),
-        )?)
-    }
-
     pub fn unresolved_publication(&self, pr_id: &str) -> Result<Option<UnresolvedPublication>> {
-        type AttemptRow = (String, String, Option<i64>, Option<String>, String);
-        let row: Option<AttemptRow> = self.conn.query_row(
-            "SELECT a.id, a.status, a.github_review_id, a.error, a.created_at FROM publication_attempts a WHERE a.pr_id = ?1 AND a.status != 'succeeded' ORDER BY a.created_at DESC LIMIT 1",
-            [pr_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        let row = self.conn.query_row(
+            "SELECT a.id, a.status, a.github_review_id, a.error, a.created_at FROM publication_attempts a JOIN publication_claims c ON c.attempt_id = a.id WHERE c.pr_id = ?1",
+            [pr_id], |r| Ok((r.get::<_, String>(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         ).optional()?;
         let Some((attempt_id, status, github_review_id, error, created_at)) = row else {
             return Ok(None);
         };
-        let mut stmt = self.conn.prepare("SELECT comment_id FROM publication_reservations WHERE attempt_id = ?1 ORDER BY comment_id")?;
-        let reserved_comment_ids = stmt
+        let reserved_comment_ids = self
+            .conn
+            .prepare(
+                "SELECT id FROM review_comment_drafts WHERE reserved_attempt_id = ?1 ORDER BY id",
+            )?
             .query_map([&attempt_id], |r| r.get(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+            .collect::<rusqlite::Result<Vec<String>>>()?;
         Ok(Some(UnresolvedPublication {
             attempt_id,
             status,
@@ -51,7 +43,176 @@ impl Store {
         }))
     }
 
+    pub fn plan_attempted(&self, pr_id: &str, plan_id: &str) -> Result<bool> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM publication_attempts WHERE pr_id = ?1 AND plan_id = ?2)",
+            params![pr_id, plan_id],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// All-or-nothing selection. A no-op leaves the plan revision unchanged.
+    pub fn set_publish_selection(
+        &mut self,
+        pr_id: &str,
+        ids: &[String],
+        selected: bool,
+    ) -> Result<(Vec<String>, u64)> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let mut changed = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for id in ids {
+            if !seen.insert(id) {
+                bail!("duplicate draft ID");
+            }
+            let row: Option<(bool, Option<String>)> = tx.query_row(
+                "SELECT d.publish_selected, d.reserved_attempt_id FROM review_comment_drafts d JOIN review_threads t ON t.id = d.thread_id WHERE d.id = ?1 AND t.pr_id = ?2 AND d.state = 'draft'",
+                params![id, pr_id], |r| Ok((r.get(0)?, r.get(1)?)),
+            ).optional()?;
+            let Some((current, reservation)) = row else {
+                bail!("comment is not selectable");
+            };
+            if reservation.is_some() {
+                bail!("comment is not selectable");
+            }
+            if current != selected {
+                changed.push(id.clone());
+            }
+        }
+        for id in &changed {
+            tx.execute(
+                "UPDATE review_comment_drafts SET publish_selected = ?2 WHERE id = ?1",
+                params![id, selected],
+            )?;
+        }
+        if !changed.is_empty() {
+            tx.execute("UPDATE review_sessions SET selection_revision = selection_revision + 1 WHERE pr_id = ?1", [pr_id])?;
+        }
+        let revision: i64 = tx.query_row(
+            "SELECT selection_revision FROM review_sessions WHERE pr_id = ?1",
+            [pr_id],
+            |r| r.get(0),
+        )?;
+        tx.commit()?;
+        Ok((changed, revision as u64))
+    }
+
+    /// Only the active claim for this PR can identify an unresolved publication.
+    pub fn active_publication(&self, pr_id: &str) -> Result<Option<(String, Vec<String>)>> {
+        let mut claims = self
+            .conn
+            .prepare("SELECT attempt_id FROM publication_claims WHERE pr_id = ?1")?;
+        let mut rows = claims.query([pr_id])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        let attempt_id: String = row.get(0)?;
+        let mut drafts = self.conn.prepare(
+            "SELECT id FROM review_comment_drafts WHERE reserved_attempt_id = ?1 ORDER BY id",
+        )?;
+        let ids = drafts
+            .query_map([&attempt_id], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+        Ok(Some((attempt_id, ids)))
+    }
+
+    pub fn next_publication_ordinal(&self, pr_id: &str) -> Result<i64> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) + 1 FROM publication_attempts WHERE pr_id = ?1",
+            [pr_id],
+            |r| r.get(0),
+        )?)
+    }
+
+    pub fn mark_prepared_published(
+        &mut self,
+        id: &str,
+        attempt_id: &str,
+        github_comment_id: Option<i64>,
+        github_review_id: i64,
+        head_sha: &str,
+    ) -> Result<()> {
+        let n = self.conn.execute("UPDATE review_comment_drafts SET state = 'published', github_comment_id = ?3, github_review_id = ?4, published_head_sha = ?5, published_at = ?6, updated_at = ?6 WHERE id = ?1 AND reserved_attempt_id = ?2 AND state = 'draft'", params![id, attempt_id, github_comment_id, github_review_id, head_sha, now_rfc3339()])?;
+        if n != 1 {
+            bail!("prepared draft reservation changed");
+        }
+        Ok(())
+    }
+
+    pub fn reconcile_publication(
+        &mut self,
+        pr_id: &str,
+        attempt_id: &str,
+        posted: bool,
+    ) -> Result<()> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        // Check claim and status in the same write transaction that releases drafts.
+        // A stale attempt must not clear a newer attempt's claim or reservations.
+        let status: String = tx.query_row(
+            "SELECT a.status FROM publication_attempts a
+             JOIN publication_claims c ON c.pr_id = a.pr_id AND c.attempt_id = a.id
+             WHERE a.id = ?1 AND a.pr_id = ?2",
+            params![attempt_id, pr_id],
+            |r| r.get(0),
+        )?;
+        if status != "partial" {
+            bail!("attempt is not unresolved");
+        }
+        if posted {
+            // Keep unknown portions locked: acknowledgement is not a GitHub ID mapping.
+            tx.execute("UPDATE publication_attempts SET status = 'reconciled', finished_at = ?2 WHERE id = ?1", params![attempt_id, now_rfc3339()])?;
+        } else {
+            let has_remote: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM publication_attempts WHERE id = ?1 AND github_review_id IS NOT NULL) OR EXISTS(SELECT 1 FROM review_comment_drafts WHERE reserved_attempt_id = ?1 AND state = 'published')", [attempt_id], |r| r.get(0))?;
+            if has_remote {
+                bail!("review or comment already posted; cannot mark entire attempt not_posted");
+            }
+            tx.execute("UPDATE review_comment_drafts SET reserved_attempt_id = NULL WHERE reserved_attempt_id = ?1 AND state = 'draft'", [attempt_id])?;
+            tx.execute("UPDATE publication_attempts SET status = 'rejected', finished_at = ?2 WHERE id = ?1", params![attempt_id, now_rfc3339()])?;
+        }
+        tx.execute(
+            "DELETE FROM publication_claims WHERE attempt_id = ?1",
+            [attempt_id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// A typed HTTP rejection proves the review operation did not post.
+    pub fn reject_publication(&mut self, attempt_id: &str) -> Result<()> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute("UPDATE review_comment_drafts SET reserved_attempt_id = NULL WHERE reserved_attempt_id = ?1 AND state = 'draft'", [attempt_id])?;
+        let n = tx.execute("UPDATE publication_attempts SET status = 'rejected', finished_at = ?2 WHERE id = ?1 AND status = 'partial' AND github_review_id IS NULL", params![attempt_id, now_rfc3339()])?;
+        if n != 1 {
+            bail!("attempt was not safely rejectable");
+        }
+        tx.execute(
+            "DELETE FROM publication_claims WHERE attempt_id = ?1",
+            [attempt_id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    #[cfg(test)]
     pub fn start_publication(
+        &mut self,
+        pr_id: &str,
+        plan_id: &str,
+        plan_json: &str,
+        head_sha: &str,
+        drafts: &[(&str, &str)],
+    ) -> Result<String> {
+        let revision = self.review_state(pr_id)?.selection_revision;
+        self.start_publication_checked(pr_id, plan_id, plan_json, head_sha, drafts, revision)
+    }
+
+    pub fn start_publication_checked(
         &mut self,
         pr_id: &str,
         plan_id: &str,
@@ -73,13 +234,14 @@ impl Store {
         if revision != expected_selection_revision as i64 {
             bail!("publication plan changed; preview again");
         }
-        let attempted: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM publication_attempts WHERE pr_id = ?1 AND plan_id = ?2",
-            params![pr_id, plan_id],
+        let ordinal: i64 = tx.query_row(
+            "SELECT COUNT(*) + 1 FROM publication_attempts WHERE pr_id = ?1",
+            [pr_id],
             |r| r.get(0),
         )?;
-        if attempted != 0 {
-            bail!("this publication plan was already attempted");
+        let planned: serde_json::Value = serde_json::from_str(plan_json)?;
+        if planned["attemptOrdinal"].as_i64() != Some(ordinal) {
+            bail!("publication ordinal changed; preview again");
         }
         tx.execute(
             "INSERT INTO publication_attempts (id, pr_id, plan_id, plan_json, head_sha, status, created_at)
@@ -93,18 +255,15 @@ impl Store {
         .context("unresolved publication exists for this PR; reconcile on GitHub")?;
         for &(comment_id, body) in drafts {
             let n: i64 = tx.query_row(
-                "SELECT COUNT(*) FROM review_comments c JOIN review_threads t ON t.id = c.thread_id
-                 WHERE c.id = ?1 AND c.body = ?2 AND c.publish_state = 'draft' AND c.publish_selected = 1 AND t.pr_id = ?3",
+                "SELECT COUNT(*) FROM review_comment_drafts c JOIN review_threads t ON t.id = c.thread_id
+                 WHERE c.id = ?1 AND c.body = ?2 AND c.state = 'draft' AND c.publish_selected = 1 AND c.reserved_attempt_id IS NULL AND t.pr_id = ?3",
                 params![comment_id, body, pr_id],
                 |r| r.get(0),
             )?;
             if n != 1 {
                 bail!("draft changed; preview again");
             }
-            tx.execute(
-                "INSERT INTO publication_reservations (comment_id, attempt_id) VALUES (?1, ?2)",
-                params![comment_id, id],
-            )?;
+            tx.execute("UPDATE review_comment_drafts SET reserved_attempt_id = ?2 WHERE id = ?1 AND reserved_attempt_id IS NULL", params![comment_id, id])?;
         }
         tx.commit()?;
         Ok(id)
@@ -127,13 +286,8 @@ impl Store {
         if n != 1 {
             bail!("publication attempt missing");
         }
-        if status == "succeeded" {
-            tx.execute(
-                "DELETE FROM publication_claims WHERE attempt_id = ?1
-                 AND NOT EXISTS (SELECT 1 FROM publication_attempts a
-                                 WHERE a.pr_id = publication_claims.pr_id AND a.status != 'succeeded')",
-                [id],
-            )?;
+        if status == "succeeded" || status == "rejected" {
+            tx.execute("DELETE FROM publication_claims WHERE attempt_id = ?1", [id])?;
         }
         tx.commit()?;
         Ok(())

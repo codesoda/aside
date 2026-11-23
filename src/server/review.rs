@@ -31,6 +31,9 @@ pub(super) async fn finish(
     if input.summary.len() > 100_000 {
         return Err(ApiError::bad("summary is too long"));
     }
+    if input.verdict != Verdict::Approve && input.summary.trim().is_empty() {
+        return Err(ApiError::bad("a summary is required for this verdict"));
+    }
     state
         .session
         .store
@@ -51,6 +54,7 @@ pub(super) struct SelectionInput {
     comment_ids: Vec<String>,
     selected: bool,
 }
+
 pub(super) async fn publish_selection(
     State(state): State<AppState>,
     axum::Extension(actor): axum::Extension<Actor>,
@@ -59,7 +63,7 @@ pub(super) async fn publish_selection(
     human(actor)?;
     if input.comment_ids.is_empty()
         || input.comment_ids.len() > 500
-        || input.comment_ids.iter().any(|id| id.is_empty())
+        || input.comment_ids.iter().any(String::is_empty)
     {
         return Err(ApiError::bad("commentIds must contain 1–500 IDs"));
     }
@@ -69,16 +73,12 @@ pub(super) async fn publish_selection(
         .lock()
         .map_err(|_| ApiError::internal())?
         .set_publish_selection(&state.session.pr_id, &input.comment_ids, input.selected)
-        .map_err(|e| {
-            if e.to_string().contains("not selectable") {
-                ApiError::new(
-                    StatusCode::CONFLICT,
-                    "not_selectable",
-                    "comment is not selectable",
-                )
-            } else {
-                db_error(e)
-            }
+        .map_err(|_| {
+            ApiError::new(
+                StatusCode::CONFLICT,
+                "not_selectable",
+                "comment is not selectable",
+            )
         })?;
     let sequence = if changed.is_empty() {
         state
@@ -86,33 +86,41 @@ pub(super) async fn publish_selection(
             .sequence
             .load(std::sync::atomic::Ordering::SeqCst)
     } else {
-        state.session.notify("review.selection.changed", json!({"commentIds":input.comment_ids,"selected":input.selected,"selectionRevision":selection_revision})).sequence
+        state.session.notify("review.selection.changed", json!({"commentIds": input.comment_ids, "selected": input.selected, "selectionRevision": selection_revision})).sequence
     };
     Ok(Json(
-        json!({"commentIds":input.comment_ids,"selected":input.selected,"changed":changed,"selectionRevision":selection_revision,"sequence":sequence}),
+        json!({"commentIds": input.comment_ids, "selected": input.selected, "changed": changed, "selectionRevision": selection_revision, "sequence": sequence}),
     ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct PublishPreviewInput {
+    verdict: Verdict,
+    body: String,
 }
 
 pub(super) async fn publish_preview(
     State(state): State<AppState>,
     axum::Extension(actor): axum::Extension<Actor>,
+    input: Result<Json<PublishPreviewInput>, axum::extract::rejection::JsonRejection>,
 ) -> ApiResult<Json<Value>> {
     human(actor)?;
-    let plan = publish::preview(&state.session).map_err(|error| {
-        if error.to_string().contains("snapshot is incomplete") {
-            ApiError::new(
-                StatusCode::CONFLICT,
-                "snapshot_incomplete",
-                "refresh before publishing",
-            )
-        } else {
+    if state.session.demo {
+        return Err(ApiError::forbidden());
+    }
+    let Json(input) = input.map_err(|_| ApiError::bad("invalid publish preview request"))?;
+    if input.body.len() > 100_000 {
+        return Err(ApiError::bad("body is too long"));
+    }
+    let plan =
+        publish::preview_requested(&state.session, input.verdict, &input.body).map_err(|_| {
             ApiError::new(
                 StatusCode::CONFLICT,
                 "review_not_ready",
-                "finish the local review before publishing",
+                "review is not ready to publish",
             )
-        }
-    })?;
+        })?;
     let blockers = publish::blockers(&state.session, &plan).map_err(db_error)?;
     Ok(Json(
         json!({"plan":plan,"blockers":blockers,"sequence":state.session.sequence.load(std::sync::atomic::Ordering::SeqCst)}),
@@ -122,53 +130,105 @@ pub(super) async fn publish_preview(
 #[serde(rename_all = "camelCase")]
 pub(super) struct PublishInput {
     plan_id: String,
+    verdict: Verdict,
+    body: String,
     confirm: bool,
 }
-pub(super) async fn publish_confirm(
+/// Read only the unresolved claim for the current PR, never publication history or plan text.
+pub(super) async fn publish_status(
     State(state): State<AppState>,
     axum::Extension(actor): axum::Extension<Actor>,
-    Json(input): Json<PublishInput>,
+) -> ApiResult<Json<Value>> {
+    human(actor)?;
+    let active = state
+        .session
+        .store
+        .lock()
+        .map_err(|_| ApiError::internal())?
+        .active_publication(&state.session.pr_id)
+        .map_err(db_error)?;
+    Ok(Json(match active {
+        Some((attempt_id, affected_draft_ids)) => {
+            json!({"active": {"attemptId": attempt_id, "affectedDraftIds": affected_draft_ids}})
+        }
+        None => json!({"active": null}),
+    }))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ReconcileInput {
+    attempt_id: String,
+    /// Explicit human determination after checking the review on GitHub.
+    outcome: String,
+    confirm: bool,
+}
+pub(super) async fn publish_reconcile(
+    State(state): State<AppState>,
+    axum::Extension(actor): axum::Extension<Actor>,
+    Json(input): Json<ReconcileInput>,
 ) -> ApiResult<Json<Value>> {
     human(actor)?;
     if state.session.demo {
         return Err(ApiError::forbidden());
     }
     if !input.confirm {
+        return Err(ApiError::bad(
+            "explicit reconciliation confirmation required",
+        ));
+    }
+    let posted = match input.outcome.as_str() {
+        "posted" => true,
+        "not_posted" => false,
+        _ => return Err(ApiError::bad("outcome must be posted or not_posted")),
+    };
+    // Never hold the synchronous store lock while waiting for a remote publication.
+    let _publication_guard = publish::publication_mutex().lock().await;
+    state
+        .session
+        .store
+        .lock()
+        .map_err(|_| ApiError::internal())?
+        .reconcile_publication(&state.session.pr_id, &input.attempt_id, posted)
+        .map_err(db_error)?;
+    let event = state.session.notify(
+        "review.publication_reconciled",
+        json!({"attemptId":input.attempt_id,"outcome":input.outcome}),
+    );
+    Ok(Json(json!({"sequence":event.sequence})))
+}
+
+pub(super) async fn publish_confirm(
+    State(state): State<AppState>,
+    axum::Extension(actor): axum::Extension<Actor>,
+    input: Result<Json<PublishInput>, axum::extract::rejection::JsonRejection>,
+) -> ApiResult<Json<Value>> {
+    human(actor)?;
+    if state.session.demo {
+        return Err(ApiError::forbidden());
+    }
+    let Json(input) = input.map_err(|_| ApiError::bad("invalid publish confirmation request"))?;
+    if !input.confirm {
         return Err(ApiError::bad("explicit confirmation is required"));
     }
-    let outcome = publish::publish(&state.session, &input.plan_id, input.confirm)
-        .await
-        .map_err(|error| {
-            let text = error.to_string();
-            let code = if text.contains("plan changed") || text.contains("draft changed") {
-                "plan_changed"
-            } else if text.contains("publication is blocked")
-                || text.contains("unresolved publication")
-                || text.contains("already attempted")
-            {
-                "publish_blocked"
-            } else if text.contains("PR base")
-                || text.contains("PR revision")
-                || text.contains("anchor")
-                || text.contains("parent is missing")
-            {
-                "pr_changed"
-            } else {
-                "publish_conflict"
-            };
-            let mut api = ApiError::new(
-                StatusCode::CONFLICT,
-                code,
-                "publication failed or changed; refresh and preview before retrying",
-            );
-            if code == "publish_blocked"
-                && let Ok(plan) = publish::preview(&state.session)
-                && let Ok(blockers) = publish::blockers(&state.session, &plan)
-            {
-                api.details = Some(json!({"blockers":blockers}));
-            }
-            api
-        })?;
+    if input.body.len() > 100_000 {
+        return Err(ApiError::bad("body is too long"));
+    }
+    let outcome = publish::publish_requested(
+        &state.session,
+        &input.plan_id,
+        input.verdict,
+        &input.body,
+        input.confirm,
+    )
+    .await
+    .map_err(|_| {
+        ApiError::new(
+            StatusCode::CONFLICT,
+            "publish_conflict",
+            "publication failed or changed; refresh and preview before retrying",
+        )
+    })?;
     let event = state
         .session
         .notify("review.published", json!({"outcome":outcome}));
