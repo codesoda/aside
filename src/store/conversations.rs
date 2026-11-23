@@ -110,6 +110,12 @@ impl Store {
             tx.execute("INSERT INTO review_comment_drafts (id, thread_id, body, state, source_comment_id, created_at, updated_at) VALUES (?1, ?2, ?3, 'draft', ?4, ?5, ?5)", params![id, thread_id, body, source_comment_id, now])?;
             id
         };
+        tx.execute("UPDATE review_sessions SET selection_revision = selection_revision + 1 WHERE pr_id = ?1", [pr_id])?;
+        let selected: bool = tx.query_row(
+            "SELECT publish_selected FROM review_comment_drafts WHERE id = ?1",
+            [&id],
+            |r| r.get(0),
+        )?;
         tx.commit()?;
         Ok(ReviewCommentDraft {
             id,
@@ -117,6 +123,7 @@ impl Store {
             source_comment_id: source_comment_id.map(str::to_owned),
             updated_at: now,
             locked: false,
+            selected,
             target: None,
             blocker: None,
         })
@@ -136,7 +143,10 @@ impl Store {
         if locked {
             return Err(ReservedDraft.into());
         }
-        tx.execute("DELETE FROM review_comment_drafts WHERE thread_id = ?1 AND state = 'draft' AND reserved_attempt_id IS NULL", [thread_id])?;
+        let deleted = tx.execute("DELETE FROM review_comment_drafts WHERE thread_id = ?1 AND state = 'draft' AND reserved_attempt_id IS NULL", [thread_id])?;
+        if deleted != 0 {
+            tx.execute("UPDATE review_sessions SET selection_revision = selection_revision + 1 WHERE pr_id = ?1", [pr_id])?;
+        }
         tx.commit()?;
         Ok(())
     }
@@ -209,7 +219,7 @@ impl Store {
     }
 
     pub(super) fn conversation_drafts(&self, pr_id: &str) -> Result<Vec<DraftHistory>> {
-        let mut stmt = self.conn.prepare("SELECT d.thread_id, d.id, d.body, d.source_comment_id, d.updated_at, d.reserved_attempt_id, d.state, d.github_comment_id, d.github_review_id, d.published_at
+        let mut stmt = self.conn.prepare("SELECT d.thread_id, d.id, d.body, d.source_comment_id, d.updated_at, d.reserved_attempt_id, d.state, d.github_comment_id, d.github_review_id, d.published_at, d.publish_selected
             FROM review_comment_drafts d JOIN review_threads t ON t.id = d.thread_id WHERE t.pr_id = ?1 ORDER BY d.created_at, d.id")?;
         let mut entries: Vec<DraftHistory> = Vec::new();
         for row in stmt.query_map([pr_id], |r| {
@@ -224,6 +234,7 @@ impl Store {
                 r.get::<_, Option<i64>>(7)?,
                 r.get::<_, Option<i64>>(8)?,
                 r.get::<_, Option<String>>(9)?,
+                r.get::<_, bool>(10)?,
             ))
         })? {
             let (
@@ -237,6 +248,7 @@ impl Store {
                 github_comment_id,
                 github_review_id,
                 published_at,
+                selected,
             ) = row?;
             let index = if let Some(i) = entries.iter().position(|entry| entry.0 == thread) {
                 i
@@ -251,6 +263,7 @@ impl Store {
                     source_comment_id,
                     updated_at,
                     locked: reservation.is_some(),
+                    selected,
                     target: None,
                     blocker: None,
                 });

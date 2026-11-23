@@ -50,6 +50,51 @@ pub(super) async fn finish(
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub(super) struct SelectionInput {
+    comment_ids: Vec<String>,
+    selected: bool,
+}
+
+pub(super) async fn publish_selection(
+    State(state): State<AppState>,
+    axum::Extension(actor): axum::Extension<Actor>,
+    Json(input): Json<SelectionInput>,
+) -> ApiResult<Json<Value>> {
+    human(actor)?;
+    if input.comment_ids.is_empty()
+        || input.comment_ids.len() > 500
+        || input.comment_ids.iter().any(String::is_empty)
+    {
+        return Err(ApiError::bad("commentIds must contain 1–500 IDs"));
+    }
+    let (changed, selection_revision) = state
+        .session
+        .store
+        .lock()
+        .map_err(|_| ApiError::internal())?
+        .set_publish_selection(&state.session.pr_id, &input.comment_ids, input.selected)
+        .map_err(|_| {
+            ApiError::new(
+                StatusCode::CONFLICT,
+                "not_selectable",
+                "comment is not selectable",
+            )
+        })?;
+    let sequence = if changed.is_empty() {
+        state
+            .session
+            .sequence
+            .load(std::sync::atomic::Ordering::SeqCst)
+    } else {
+        state.session.notify("review.selection.changed", json!({"commentIds": input.comment_ids, "selected": input.selected, "selectionRevision": selection_revision})).sequence
+    };
+    Ok(Json(
+        json!({"commentIds": input.comment_ids, "selected": input.selected, "changed": changed, "selectionRevision": selection_revision, "sequence": sequence}),
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct PublishPreviewInput {
     verdict: Verdict,
     body: String,
@@ -76,8 +121,9 @@ pub(super) async fn publish_preview(
                 "review is not ready to publish",
             )
         })?;
+    let blockers = publish::blockers(&state.session, &plan).map_err(db_error)?;
     Ok(Json(
-        json!({"plan":plan,"sequence":state.session.sequence.load(std::sync::atomic::Ordering::SeqCst)}),
+        json!({"plan":plan,"blockers":blockers,"sequence":state.session.sequence.load(std::sync::atomic::Ordering::SeqCst)}),
     ))
 }
 #[derive(Deserialize)]

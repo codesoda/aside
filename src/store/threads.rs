@@ -233,7 +233,8 @@ impl Store {
                     resolved, head_sha, created_at, subject, finding_id, linked_thread_id, agent_state, agent_request_comment_id, agent_error, agent_updated_at,
                     (SELECT COUNT(*) FROM review_comments c WHERE c.thread_id = review_threads.id AND c.seq > human_read_seq AND c.author_kind != 'human' AND c.publish_state != 'draft'),
                     (SELECT author_kind FROM review_comments c WHERE c.thread_id = review_threads.id ORDER BY c.seq DESC LIMIT 1)
-             FROM review_threads WHERE pr_id = ?1 ORDER BY created_at, id",
+             FROM review_threads WHERE pr_id = ?1
+             ORDER BY created_at, CASE WHEN legacy_reply_seq IS NULL THEN 0 ELSE 1 END, legacy_reply_seq, id",
         )?;
         let mut threads: Vec<ReviewThread> = stmt
             .query_map([pr_id], |r| {

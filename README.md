@@ -94,6 +94,8 @@ aside update           # ask before installing a verified release
 aside --help
 ```
 
+Only the human reviewer can select drafts, preview publication, and explicitly confirm a GitHub review. New and existing local drafts start selected. Deselecting a thread changes its local draft comments together; a selected reply under a deselected root stays local. The preview lists exact outbound destinations and bodies plus drafts kept local and their reasons. Selection or PR changes require a new preview. Omitted drafts keep their selection for a later review. A partial or uncertain attempt is never retried, reconciled, or cleared automatically: check GitHub before proceeding. Demo can select and preview locally but cannot confirm publication.
+
 `aside demo` replays a bundled, offline capture of [cli/cli#14921](https://github.com/cli/cli/pull/14921); refresh uses a synthetic revision and cannot publish. Aside binds to `127.0.0.1` on an OS-assigned port and opens the review directly unless you pass `--no-open` or disable `browser.auto_open`. Keep the process running while you review. With `--no-open`, use the private login URL printed to stderr to open the UI; do not share that URL. It writes machine-readable session events to stdout and diagnostics to stderr. The agent-facing workflow and security boundaries are documented in [`skills/aside/SKILL.md`](skills/aside/SKILL.md).
 
 Repository analysis controls are available through `aside get --repo github.com/OWNER/REPO` and `aside set analysis.history.enabled false --repo github.com/OWNER/REPO`. Refresh an existing session to apply changes. See [analysis configuration](docs/analysis-configuration.md) for budgets, capabilities, and privacy boundaries.

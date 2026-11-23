@@ -1,14 +1,14 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import {
-    ApiError, createInsightThread, createScopeRule, createThread, fetchFeedbackRecords, fetchFeedbackThreads, fetchFindings, fetchQueue, fetchSession, fetchExtensionPreferences, patchThread, previewReview, putExtensionPreference, setReviewed, submitReview, watchSession,
+    ApiError, createInsightThread, createScopeRule, createThread, fetchFeedbackRecords, fetchFeedbackThreads, fetchFindings, fetchQueue, fetchSession, fetchExtensionPreferences, patchThread, putExtensionPreference, selectDrafts, setReviewed, watchSession,
     type ConversationThread, type FeedbackThread, type FindingItem, type NativeFeedbackRecord, type QueueView, type SessionView,
   } from './api';
   import { placeCallouts } from './callouts';
   import ConversationPanel from './workspace/ConversationPanel.svelte';
   import type { ConversationDraft } from './workspace/ConversationPanel.svelte';
-  import SubmitReview from './workspace/SubmitReview.svelte';
   import ReviewPrep from './workspace/ReviewPrep.svelte';
+  import FinishReview from './workspace/FinishReview.svelte';
   import Conversations from './workspace/Conversations.svelte';
   import Feedback from './workspace/Feedback.svelte';
   import type { Page } from './generated/Page';
@@ -61,6 +61,7 @@
     { id: 'files', label: 'Files changed' },
     { id: 'conversations', label: 'Conversations' },
     { id: 'feedback', label: 'GitHub feedback' },
+    { id: 'finish', label: 'Finish review' },
   ] as const;
   type WorkspaceView = (typeof views)[number]['id'];
   // Start with review prep so focus areas are visible before opening a diff.
@@ -399,6 +400,18 @@
     }
   }
 
+  async function toggleSelection(ids: string[], selected: boolean) {
+    if (!ids.length || busy) return;
+    busy = true; actionError = null;
+    try {
+      await selectDrafts(ids, selected);
+      session = await fetchSession();
+    } catch (failure) {
+      actionError = failure instanceof Error ? failure.message : String(failure);
+      try { session = await fetchSession(); } catch { /* Keep the selection error visible. */ }
+    } finally { busy = false; }
+  }
+
   function saveDraft() {
     if (!file || !anchor || !draft.trim() || anchor.fileId !== file.id || anchor.digest !== file.diffDigest || fileState?.scope.ignored) return;
     const { fileId, digest, side, line, startLine } = anchor;
@@ -414,6 +427,19 @@
 </svelte:head>
 
 <svelte:window onmouseup={selectCode} onkeyup={selectCode} onresize={() => requestAnimationFrame(alignConversation)} onscroll={() => requestAnimationFrame(alignConversation)} />
+
+{#snippet draftSelection(thread: ConversationThread)}
+  {#if thread.reviewComment}
+    {@const draft = thread.reviewComment}
+    <div class="workspace-panel p-2" aria-label="Publication selection">
+      <label class="block text-xs"><input type="checkbox" class="accent-accent" disabled={busy || draft.locked}
+        checked={draft.selected}
+        onchange={(event) => { const selected = event.currentTarget.checked; event.currentTarget.checked = !selected; void toggleSelection([draft.id], selected); }} /> Include prepared review comment when publishing</label>
+      <p class="whitespace-pre-wrap break-words text-xs">{draft.body}</p>
+      {#if draft.blocker}<p class="text-xs text-danger">{draft.blocker}</p>{/if}
+    </div>
+  {/if}
+{/snippet}
 
 {#snippet threadNavigation()}
   <nav class="mb-2 flex justify-between gap-2 text-xs" aria-label="Conversation navigation">
@@ -442,9 +468,9 @@
           <span class="status-dot" aria-hidden="true"></span>{session.pr.isDraft ? 'Draft' : session.pr.state.toLowerCase()}
         </span>
         {#if session.demo}<span class="workspace-chip">Demo · local only</span>{/if}
-        <SubmitReview threads={session.threads} demo={session.demo}
-          onPreview={previewReview} onSubmit={async (input) => { const response = await submitReview(input); session = await fetchSession(); return response; }}
-          onReconciled={async () => { session = await fetchSession(); }} />
+        <button type="button" class="workspace-button" onclick={() => { activeView = 'finish'; }}>
+          Draft ({session.threads.filter((thread) => thread.reviewComment != null).length}) · Finish review
+        </button>
       </div>
     </header>
 
@@ -459,11 +485,12 @@
       {/each}
     </nav>
 
-    {#if error || actionError || session.warnings.length}
+    {#if error || actionError || session.warnings.length || session.review.unresolvedPublication}
       <div class="workspace-notices">
         {#if error}<p class="text-danger" role="alert">Refresh failed: {error}</p>{/if}
         {#if actionError}<p class="text-danger" role="alert">{actionError}</p>{/if}
         {#each session.warnings as warning}<p class="text-warning">{warning}</p>{/each}
+        {#if session.review.unresolvedPublication}<p role="alert" class="text-danger">Publication remains unresolved. Check GitHub; Aside will not retry automatically.</p>{/if}
       </div>
     {/if}
 
@@ -554,7 +581,7 @@
                     </div>
                   {/if}
                   {#if selectedThread && (selectedThread.subject === 'file' || selectedThread.anchorState !== 'current' || selectedThread.line === null)}
-                    <div class="mobile-conversation p-2">{@render threadNavigation()}<ConversationPanel thread={selectedThread} drafts={conversationDrafts} mobile agentConnected={session.agentPresence?.connected ?? false} finding={fileFindings.find((item) => item.finding.id === selectedThread.findingId)}
+                    <div class="mobile-conversation p-2">{@render threadNavigation()}{@render draftSelection(selectedThread)}<ConversationPanel thread={selectedThread} drafts={conversationDrafts} mobile agentConnected={session.agentPresence?.connected ?? false} finding={fileFindings.find((item) => item.finding.id === selectedThread.findingId)}
                       onClose={() => { selectedThreadId = null; }} onError={(message) => { actionError = message; }} onRefresh={async () => { session = await fetchSession(); }} /></div>
                   {/if}
                   {#if fileState?.scope.ignored}
@@ -609,7 +636,7 @@
                             <span class="px-2" data-code-line={lineSide(line) ? (lineSide(line) === 'LEFT' ? line.oldLine : line.newLine) : undefined} data-side={lineSide(line) ?? undefined}>{line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}{line.text}</span>
                           </div>
                           {#if selectedThread && lineThreads.some((thread) => thread.id === selectedThreadId)}
-                            <div class="mobile-conversation min-w-0 whitespace-normal p-2">{@render threadNavigation()}<ConversationPanel thread={selectedThread} drafts={conversationDrafts} mobile agentConnected={session.agentPresence?.connected ?? false} finding={fileFindings.find((item) => item.finding.id === selectedThread.findingId)}
+                            <div class="mobile-conversation min-w-0 whitespace-normal p-2">{@render threadNavigation()}{@render draftSelection(selectedThread)}<ConversationPanel thread={selectedThread} drafts={conversationDrafts} mobile agentConnected={session.agentPresence?.connected ?? false} finding={fileFindings.find((item) => item.finding.id === selectedThread.findingId)}
                               onClose={() => { selectedThreadId = null; }} onError={(message) => { actionError = message; }} onRefresh={async () => { session = await fetchSession(); }} /></div>
                           {/if}
                           {#if !fileState?.scope.ignored && anchor?.fileId === file.id && anchor.digest === file.diffDigest && anchor.side === lineSide(line) && anchor.line === (anchor.side === 'LEFT' ? line.oldLine : line.newLine)}
@@ -637,6 +664,7 @@
               {#if selectedThread}
                 <aside class="workspace-context desktop-conversation" style={`margin-top:${conversationTop}px`} aria-label="Selected conversation">
                   {@render threadNavigation()}
+                  {@render draftSelection(selectedThread)}
                   <ConversationPanel thread={selectedThread} drafts={conversationDrafts} agentConnected={session.agentPresence?.connected ?? false} finding={fileFindings.find((item) => item.finding.id === selectedThread.findingId)}
                     onClose={() => { selectedThreadId = null; selectedFindingId = null; }} onError={(message) => { actionError = message; }} onRefresh={async () => { session = await fetchSession(); }} />
                 </aside>
@@ -647,6 +675,19 @@
           {/if}
         </section>
 
+        <section id="workspace-finish" hidden={activeView !== 'finish'} aria-label="Finish review">
+          <div class="workspace-panel p-4" aria-label="Draft publication selection">
+            <h3 class="font-semibold">Choose prepared review comments to include</h3>
+            <p class="text-sm text-muted">Selection applies to every conversation, including those outside the current file. Unselected comments stay local.</p>
+            {#each session.threads.filter((thread) => thread.reviewComment != null) as thread (thread.id)}
+              <div class="mt-3 border-t border-line pt-2">
+                <p class="font-mono text-sm">{thread.path}{thread.line === null ? '' : `:${thread.line}`}</p>
+                {@render draftSelection(thread)}
+              </div>
+            {/each}
+          </div>
+          <FinishReview {session} onSession={(view) => { session = view; }} />
+        </section>
         <section id="workspace-feedback" hidden={activeView !== 'feedback'} aria-label="GitHub feedback">
           <Feedback threads={feedbackThreads} records={feedbackRecords} threadPage={feedbackThreadPage} recordPage={feedbackRecordPage}
             loading={feedbackLoading} errors={feedbackErrors}

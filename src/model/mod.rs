@@ -20,7 +20,7 @@ pub use review::{
     Acknowledgement, Actor, AgentPresence, AgentRequest, AgentState, AnchorState, Comment,
     EventEnvelope, FileScope, FileState, FileStatus, Progress, PublishState, PublishedComment,
     ReviewCommentDraft, ReviewState, ReviewThread, SessionView, ThreadSource, ThreadSubject,
-    ThreadTarget, ThreadTargetKind, Verdict,
+    ThreadTarget, ThreadTargetKind, UnresolvedPublication, Verdict,
 };
 pub use rules::{ExclusionRule, Repository, RuleAction, RuleKind};
 pub use snapshot::{

@@ -269,6 +269,7 @@ pub struct ReviewCommentDraft {
     pub source_comment_id: Option<String>,
     pub updated_at: String,
     pub locked: bool,
+    pub selected: bool,
     pub target: Option<ThreadTarget>,
     pub blocker: Option<String>,
 }
@@ -355,10 +356,25 @@ impl Verdict {
 pub struct ReviewState {
     /// `in-progress`, `finished` or `published`.
     pub lifecycle: String,
+    #[ts(type = "number")]
+    pub selection_revision: u64,
+    pub unresolved_publication: Option<UnresolvedPublication>,
     pub verdict: Option<Verdict>,
     pub summary: String,
     pub finished_at: Option<String>,
     pub published_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct UnresolvedPublication {
+    pub attempt_id: String,
+    pub status: String,
+    pub github_review_id: Option<i64>,
+    pub error: Option<String>,
+    pub created_at: String,
+    pub reserved_comment_ids: Vec<String>,
 }
 
 /// Ephemeral connection indicator. Recent authentication is not an active stream.
@@ -400,7 +416,7 @@ pub struct SessionView {
     pub warnings: Vec<String>,
     pub complete: bool,
     pub fetched_at: String,
-    /// Per-source completeness and analysis status of the canonical snapshot.
+    // Per-source completeness and analysis status of the canonical snapshot.
     pub analysis: super::AnalysisSummary,
     pub analysis_context: Option<crate::github::context::AnalysisContext>,
 }

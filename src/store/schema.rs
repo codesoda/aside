@@ -373,6 +373,10 @@ pub(super) const MIGRATIONS: &[&str] = &[
     include_str!("conversations.sql"),
     // v9: monotonic comment sequence and request deduplication across turns.
     include_str!("conversations_v9.sql"),
+    // v10: selection belongs to prepared drafts, not private conversation messages.
+    "ALTER TABLE review_comment_drafts ADD COLUMN publish_selected INTEGER NOT NULL DEFAULT 1;
+     ALTER TABLE review_sessions ADD COLUMN selection_revision INTEGER NOT NULL DEFAULT 0;
+     ALTER TABLE review_threads ADD COLUMN legacy_reply_seq INTEGER;",
 ];
 
 pub(super) const GITHUB_METADATA: &[(&str, &str, &str)] = &[

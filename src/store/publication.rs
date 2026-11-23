@@ -1,5 +1,6 @@
+use crate::model::UnresolvedPublication;
 use anyhow::{Context, Result, bail};
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 
 use crate::util::{new_id, now_rfc3339};
 
@@ -17,6 +18,87 @@ impl std::fmt::Display for ReservedDraft {
 impl std::error::Error for ReservedDraft {}
 
 impl Store {
+    pub fn unresolved_publication(&self, pr_id: &str) -> Result<Option<UnresolvedPublication>> {
+        let row = self.conn.query_row(
+            "SELECT a.id, a.status, a.github_review_id, a.error, a.created_at FROM publication_attempts a JOIN publication_claims c ON c.attempt_id = a.id WHERE c.pr_id = ?1",
+            [pr_id], |r| Ok((r.get::<_, String>(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        ).optional()?;
+        let Some((attempt_id, status, github_review_id, error, created_at)) = row else {
+            return Ok(None);
+        };
+        let reserved_comment_ids = self
+            .conn
+            .prepare(
+                "SELECT id FROM review_comment_drafts WHERE reserved_attempt_id = ?1 ORDER BY id",
+            )?
+            .query_map([&attempt_id], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+        Ok(Some(UnresolvedPublication {
+            attempt_id,
+            status,
+            github_review_id,
+            error,
+            created_at,
+            reserved_comment_ids,
+        }))
+    }
+
+    pub fn plan_attempted(&self, pr_id: &str, plan_id: &str) -> Result<bool> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM publication_attempts WHERE pr_id = ?1 AND plan_id = ?2)",
+            params![pr_id, plan_id],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// All-or-nothing selection. A no-op leaves the plan revision unchanged.
+    pub fn set_publish_selection(
+        &mut self,
+        pr_id: &str,
+        ids: &[String],
+        selected: bool,
+    ) -> Result<(Vec<String>, u64)> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let mut changed = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for id in ids {
+            if !seen.insert(id) {
+                bail!("duplicate draft ID");
+            }
+            let row: Option<(bool, Option<String>)> = tx.query_row(
+                "SELECT d.publish_selected, d.reserved_attempt_id FROM review_comment_drafts d JOIN review_threads t ON t.id = d.thread_id WHERE d.id = ?1 AND t.pr_id = ?2 AND d.state = 'draft'",
+                params![id, pr_id], |r| Ok((r.get(0)?, r.get(1)?)),
+            ).optional()?;
+            let Some((current, reservation)) = row else {
+                bail!("comment is not selectable");
+            };
+            if reservation.is_some() {
+                bail!("comment is not selectable");
+            }
+            if current != selected {
+                changed.push(id.clone());
+            }
+        }
+        for id in &changed {
+            tx.execute(
+                "UPDATE review_comment_drafts SET publish_selected = ?2 WHERE id = ?1",
+                params![id, selected],
+            )?;
+        }
+        if !changed.is_empty() {
+            tx.execute("UPDATE review_sessions SET selection_revision = selection_revision + 1 WHERE pr_id = ?1", [pr_id])?;
+        }
+        let revision: i64 = tx.query_row(
+            "SELECT selection_revision FROM review_sessions WHERE pr_id = ?1",
+            [pr_id],
+            |r| r.get(0),
+        )?;
+        tx.commit()?;
+        Ok((changed, revision as u64))
+    }
+
     /// Only the active claim for this PR can identify an unresolved publication.
     pub fn active_publication(&self, pr_id: &str) -> Result<Option<(String, Vec<String>)>> {
         let mut claims = self
@@ -117,6 +199,7 @@ impl Store {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn start_publication(
         &mut self,
         pr_id: &str,
@@ -125,11 +208,32 @@ impl Store {
         head_sha: &str,
         drafts: &[(&str, &str)],
     ) -> Result<String> {
+        let revision = self.review_state(pr_id)?.selection_revision;
+        self.start_publication_checked(pr_id, plan_id, plan_json, head_sha, drafts, revision)
+    }
+
+    pub fn start_publication_checked(
+        &mut self,
+        pr_id: &str,
+        plan_id: &str,
+        plan_json: &str,
+        head_sha: &str,
+        drafts: &[(&str, &str)],
+        expected_selection_revision: u64,
+    ) -> Result<String> {
         let id = new_id("pub");
         // IMMEDIATE takes the writer lock before checking, across all processes.
         let tx = self
             .conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let revision: i64 = tx.query_row(
+            "SELECT selection_revision FROM review_sessions WHERE pr_id = ?1",
+            [pr_id],
+            |r| r.get(0),
+        )?;
+        if revision != expected_selection_revision as i64 {
+            bail!("publication plan changed; preview again");
+        }
         let ordinal: i64 = tx.query_row(
             "SELECT COUNT(*) + 1 FROM publication_attempts WHERE pr_id = ?1",
             [pr_id],
@@ -152,7 +256,7 @@ impl Store {
         for &(comment_id, body) in drafts {
             let n: i64 = tx.query_row(
                 "SELECT COUNT(*) FROM review_comment_drafts c JOIN review_threads t ON t.id = c.thread_id
-                 WHERE c.id = ?1 AND c.body = ?2 AND c.state = 'draft' AND c.reserved_attempt_id IS NULL AND t.pr_id = ?3",
+                 WHERE c.id = ?1 AND c.body = ?2 AND c.state = 'draft' AND c.publish_selected = 1 AND c.reserved_attempt_id IS NULL AND t.pr_id = ?3",
                 params![comment_id, body, pr_id],
                 |r| r.get(0),
             )?;

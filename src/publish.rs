@@ -8,20 +8,22 @@ use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use crate::{
     diff,
     github::{self, GhRunner, NewReviewComment, PrRef},
     model::{
-        AnchorState, LineKind, PrSnapshot, ReviewThread, Side, ThreadSource, ThreadSubject,
+        Actor, AnchorState, LineKind, PrSnapshot, ReviewThread, Side, ThreadSource, ThreadSubject,
         ThreadTarget, ThreadTargetKind, Verdict,
     },
     session::Session,
     util::sha256_hex,
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct PlannedInline {
     pub comment_id: String,
     pub thread_id: String,
@@ -30,31 +32,44 @@ pub struct PlannedInline {
     pub line: u32,
     pub start_line: Option<u32>,
     pub body: String,
+    pub author_kind: Actor,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct PlannedReply {
     pub comment_id: String,
     pub thread_id: String,
-    /// A published or imported GitHub comment, or the new inline comment in this plan.
+    // A published or imported GitHub comment, or the new inline comment in this plan.
     pub parent_comment_id: String,
     pub github_parent_id: Option<i64>,
+    pub path: String,
+    pub side: Side,
+    pub line: Option<u32>,
+    pub author_kind: Actor,
     pub body: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct OmittedDraft {
     pub comment_id: String,
     pub thread_id: String,
     pub reason: String,
+    pub code: String,
+    pub kind: String,
+    pub selected: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct PublishPlan {
     pub plan_id: String,
+    #[ts(type = "number")]
+    pub selection_revision: u64,
     pub head_sha: String,
     pub base_sha: String,
     pub verdict: Verdict,
@@ -68,14 +83,16 @@ pub struct PublishPlan {
     pub attempt_ordinal: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct PublishOutcome {
     pub attempt_id: String,
     pub status: String,
     pub github_review_id: Option<i64>,
     pub published_comment_ids: Vec<String>,
     pub remaining_comment_ids: Vec<String>,
+    pub omitted_comment_ids: Vec<String>,
     pub error: Option<String>,
 }
 
@@ -134,6 +151,7 @@ fn build_plan(
 ) -> Result<PublishPlan> {
     let mut plan = PublishPlan {
         plan_id: String::new(),
+        selection_revision: 0,
         head_sha: snapshot.pr.head_sha.clone(),
         base_sha: snapshot.pr.base_sha.clone(),
         verdict,
@@ -159,10 +177,36 @@ fn build_plan(
             .comments
             .iter()
             .find(|c| c.github_comment_id.is_some());
+        let linked_parent = thread
+            .linked_thread_id
+            .as_ref()
+            .and_then(|id| threads.iter().find(|t| &t.id == id));
+        let linked_remote = linked_parent.and_then(|t| {
+            t.published_comments
+                .iter()
+                .find_map(|p| p.github_comment_id)
+                .or_else(|| t.comments.iter().find_map(|c| c.github_comment_id))
+        });
+        let linked_draft = linked_parent.and_then(|t| t.review_comment.as_ref());
         let reason = if draft.locked {
             Some("draft reserved by an unresolved attempt")
         } else if draft.body.trim().is_empty() {
             Some("empty prepared comment")
+        } else if thread.linked_thread_id.is_some() {
+            if linked_parent.is_none()
+                || (linked_remote.is_none()
+                    && (!linked_parent.is_some_and(|t| current_anchor(t, snapshot))
+                        || linked_draft.is_none()))
+            {
+                Some("parent_unpublishable")
+            } else if linked_remote.is_none()
+                && !linked_draft
+                    .is_some_and(|d| d.selected && !d.locked && !d.body.trim().is_empty())
+            {
+                Some("parent_not_selected")
+            } else {
+                None
+            }
         } else if thread.source == ThreadSource::Github || !thread.published_comments.is_empty() {
             if parent.is_none()
                 && thread
@@ -188,26 +232,63 @@ fn build_plan(
         } else {
             None
         };
+        // Selection applies to every otherwise publishable target, including
+        // imported replies and file-fallback comments.
+        let reason = reason.or_else(|| (!draft.selected).then_some("not_selected"));
         if let Some(reason) = reason {
             plan.omitted.push(OmittedDraft {
                 comment_id: draft.id.clone(),
                 thread_id: thread.id.clone(),
                 reason: reason.into(),
+                code: reason.into(),
+                kind: if thread.linked_thread_id.is_some()
+                    || thread.source == ThreadSource::Github
+                    || !thread.published_comments.is_empty()
+                {
+                    "reply"
+                } else {
+                    "inline"
+                }
+                .into(),
+                selected: draft.selected,
             });
             continue;
         }
-        if thread.source == ThreadSource::Github || !thread.published_comments.is_empty() {
-            let github_parent_id = parent.and_then(|c| c.github_comment_id).or_else(|| {
-                thread
-                    .published_comments
-                    .iter()
-                    .find_map(|p| p.github_comment_id)
-            });
+        if thread.linked_thread_id.is_some()
+            || thread.source == ThreadSource::Github
+            || !thread.published_comments.is_empty()
+        {
+            let github_parent_id = linked_remote
+                .or_else(|| parent.and_then(|c| c.github_comment_id))
+                .or_else(|| {
+                    thread
+                        .published_comments
+                        .iter()
+                        .find_map(|p| p.github_comment_id)
+                });
             plan.replies.push(PlannedReply {
                 comment_id: draft.id.clone(),
                 thread_id: thread.id.clone(),
-                parent_comment_id: parent.map(|c| c.id.clone()).unwrap_or_default(),
+                parent_comment_id: linked_parent
+                    .and_then(|t| {
+                        t.review_comment
+                            .as_ref()
+                            .map(|d| d.id.clone())
+                            .or_else(|| t.published_comments.last().map(|d| d.id.clone()))
+                            .or_else(|| {
+                                t.comments
+                                    .iter()
+                                    .find(|c| c.github_comment_id.is_some())
+                                    .map(|c| c.id.clone())
+                            })
+                    })
+                    .or_else(|| parent.map(|c| c.id.clone()))
+                    .unwrap_or_default(),
                 github_parent_id,
+                path: thread.path.clone(),
+                side: thread.side,
+                line: thread.line,
+                author_kind: Actor::Human,
                 body: draft.body.clone(),
             });
         } else {
@@ -233,14 +314,53 @@ fn build_plan(
                     thread.start_line
                 },
                 body,
+                author_kind: Actor::Human,
             });
         }
     }
-    if matches!(verdict, Verdict::RequestChanges | Verdict::Comment) && summary.trim().is_empty() {
-        bail!("REQUEST_CHANGES and COMMENT require a summary or inline comment");
-    }
     plan.plan_id = sha256_hex(&serde_json::to_vec(&plan)?);
     Ok(plan)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct PublishBlocker {
+    pub code: String,
+    pub message: String,
+    pub attempt_id: Option<String>,
+    pub github_review_id: Option<i64>,
+}
+
+pub fn blockers(session: &Session, plan: &PublishPlan) -> Result<Vec<PublishBlocker>> {
+    let store = lock_store(session)?;
+    let mut result = Vec::new();
+    if plan.verdict != Verdict::Approve && plan.summary.trim().is_empty() && plan.inline.is_empty()
+    {
+        result.push(PublishBlocker {
+            code: "empty_review".into(),
+            message: "A summary or inline comment is required".into(),
+            attempt_id: None,
+            github_review_id: None,
+        });
+    }
+    if let Some(attempt) = store.unresolved_publication(&session.pr_id)? {
+        result.push(PublishBlocker {
+            code: "unresolved_attempt".into(),
+            message: "Check the previous attempt on GitHub; Aside will not retry it".into(),
+            attempt_id: Some(attempt.attempt_id),
+            github_review_id: attempt.github_review_id,
+        });
+    }
+    if store.plan_attempted(&session.pr_id, &plan.plan_id)? {
+        result.push(PublishBlocker {
+            code: "plan_already_attempted".into(),
+            message: "This plan was already attempted".into(),
+            attempt_id: None,
+            github_review_id: None,
+        });
+    }
+    Ok(result)
 }
 
 /// Project the same publication eligibility used by preview into the session DTO.
@@ -306,9 +426,6 @@ pub fn attach_draft_targets(snapshot: &PrSnapshot, threads: &mut [ReviewThread])
 /// In v1 all eligible local drafts are selected; the API has no per-comment selection state.
 /// Callers must display `omitted` as well as the selected operations before confirmation.
 pub fn preview_requested(session: &Session, verdict: Verdict, body: &str) -> Result<PublishPlan> {
-    if matches!(verdict, Verdict::Comment | Verdict::RequestChanges) && body.trim().is_empty() {
-        bail!("COMMENT and REQUEST_CHANGES require a summary");
-    }
     let snapshot = session
         .snapshot
         .read()
@@ -318,13 +435,17 @@ pub fn preview_requested(session: &Session, verdict: Verdict, body: &str) -> Res
         bail!("snapshot is incomplete; refresh before publication");
     }
     let store = lock_store(session)?;
-    build_plan(
+    let mut plan = build_plan(
         &snapshot,
         verdict,
         body,
         &store.list_threads(&session.pr_id)?,
         store.next_publication_ordinal(&session.pr_id)?,
-    )
+    )?;
+    plan.selection_revision = store.review_state(&session.pr_id)?.selection_revision;
+    plan.plan_id = String::new();
+    plan.plan_id = sha256_hex(&serde_json::to_vec(&plan)?);
+    Ok(plan)
 }
 
 #[cfg(test)]
@@ -387,6 +508,9 @@ pub async fn publish_requested(
     let plan = preview_requested(session, verdict, body)?;
     if plan.plan_id != plan_id {
         bail!("publication plan changed; preview again");
+    }
+    if !blockers(session, &plan)?.is_empty() {
+        bail!("publication is blocked");
     }
     // Fetch a fresh, internally consistent diff before claiming drafts or writing
     // anything remotely. A matching head alone does not protect against a base
@@ -471,6 +595,11 @@ pub async fn publish_requested(
                 .iter()
                 .find(|t| t.id == reply.thread_id)
                 .context("reply thread disappeared; preview again")?;
+            let thread = thread
+                .linked_thread_id
+                .as_ref()
+                .and_then(|id| threads.iter().find(|t| &t.id == id))
+                .unwrap_or(thread);
             let valid = current.github_threads.iter().any(|remote| {
                 !remote.rest_only
                     && remote.path == thread.path
@@ -493,11 +622,14 @@ pub async fn publish_requested(
             if !valid {
                 bail!("reply parent is missing or outdated; refresh and preview again");
             }
-        } else if !plan
-            .inline
-            .iter()
-            .any(|c| c.comment_id == reply.parent_comment_id && c.thread_id == reply.thread_id)
-        {
+        } else if !plan.inline.iter().any(|c| {
+            c.comment_id == reply.parent_comment_id
+                && (c.thread_id == reply.thread_id
+                    || threads.iter().any(|t| {
+                        t.id == reply.thread_id
+                            && t.linked_thread_id.as_deref() == Some(c.thread_id.as_str())
+                    }))
+        }) {
             bail!("reply parent is not a validated inline comment; preview again");
         }
     }
@@ -519,13 +651,16 @@ pub async fn publish_requested(
         // the confirmed texts. A concurrent edit after preflight must not be
         // substituted for the text the user approved.
         let threads = store.list_threads(&session.pr_id)?;
-        let latest = build_plan(
+        let mut latest = build_plan(
             &snapshot,
             plan.verdict,
             &plan.summary,
             &threads,
             store.next_publication_ordinal(&session.pr_id)?,
         )?;
+        latest.selection_revision = store.review_state(&session.pr_id)?.selection_revision;
+        latest.plan_id = String::new();
+        latest.plan_id = sha256_hex(&serde_json::to_vec(&latest)?);
         if latest.plan_id != plan_id {
             bail!("publication plan changed; preview again");
         }
@@ -552,7 +687,14 @@ pub async fn publish_requested(
             )
             .collect::<Result<_>>()?;
         // The transactional claim and draft reservations commit before the remote call.
-        store.start_publication(&session.pr_id, plan_id, &plan_json, &plan.head_sha, &drafts)?
+        store.start_publication_checked(
+            &session.pr_id,
+            plan_id,
+            &plan_json,
+            &plan.head_sha,
+            &drafts,
+            plan.selection_revision,
+        )?
     };
     let mut outcome = PublishOutcome {
         attempt_id: attempt_id.clone(),
@@ -565,6 +707,7 @@ pub async fn publish_requested(
             .map(|c| c.comment_id.clone())
             .chain(plan.replies.iter().map(|c| c.comment_id.clone()))
             .collect(),
+        omitted_comment_ids: plan.omitted.iter().map(|c| c.comment_id.clone()).collect(),
         error: None,
     };
     if let Err(error) = execute(session, &gh, &pr, &plan, &mut outcome).await {
@@ -712,11 +855,16 @@ async fn execute(
                 move || github::fetch_snapshot(gh.as_ref(), &pr, &diff::Limits::default())
             })
             .await?;
-            let thread = lock_store(session)?
-                .list_threads(&session.pr_id)?
-                .into_iter()
+            let threads = lock_store(session)?.list_threads(&session.pr_id)?;
+            let reply_thread = threads
+                .iter()
                 .find(|t| t.id == c.thread_id)
                 .context("reply thread disappeared")?;
+            let thread = reply_thread
+                .linked_thread_id
+                .as_ref()
+                .and_then(|id| threads.iter().find(|t| &t.id == id))
+                .unwrap_or(reply_thread);
             if !fresh.complete
                 || fresh.pr.base_sha != plan.base_sha
                 || fresh.pr.head_sha != plan.head_sha
@@ -1825,6 +1973,182 @@ mod tests {
     }
 
     #[test]
+    fn deselected_prepared_draft_is_omitted_without_losing_its_target_or_body() {
+        let mut thread = ReviewThread {
+            id: "t".into(),
+            source: ThreadSource::Local,
+            github_thread_id: None,
+            path: "a.rs".into(),
+            file_id: None,
+            side: Side::Right,
+            line: Some(1),
+            start_line: None,
+            line_text: Some("new".into()),
+            anchor_state: AnchorState::Current,
+            anchor_reason: None,
+            resolved: false,
+            head_sha: "head".into(),
+            created_at: String::new(),
+            comments: vec![],
+            subject: ThreadSubject::Line,
+            finding_id: None,
+            review_comment: Some(ReviewCommentDraft {
+                id: "d".into(),
+                body: "fix".into(),
+                source_comment_id: None,
+                updated_at: String::new(),
+                locked: false,
+                selected: true,
+                target: None,
+                blocker: None,
+            }),
+            published_comments: vec![],
+            linked_thread_id: None,
+            agent: Default::default(),
+            unread_count: 0,
+            last_participant: None,
+        };
+        let mut snapshot = snapshot();
+        snapshot.files = diff::parse_unified(
+            "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n",
+            "head",
+            &diff::Limits::default(),
+        )
+        .files;
+        let selected = build_plan(&snapshot, Verdict::Comment, "", &[thread.clone()], 1).unwrap();
+        assert_eq!(selected.inline.len(), 1);
+        thread.review_comment.as_mut().unwrap().selected = false;
+        let omitted = build_plan(&snapshot, Verdict::Comment, "", &[thread.clone()], 1).unwrap();
+        assert!(omitted.inline.is_empty());
+        assert_eq!(omitted.omitted[0].code, "not_selected");
+        assert!(!omitted.omitted[0].selected);
+        assert_eq!(thread.review_comment.as_ref().unwrap().body, "fix");
+        assert_ne!(selected.plan_id, omitted.plan_id);
+
+        let mut reply = thread.clone();
+        reply.id = "legacy_reply".into();
+        reply.linked_thread_id = Some("t".into());
+        reply.review_comment.as_mut().unwrap().id = "reply".into();
+        reply.review_comment.as_mut().unwrap().selected = true;
+        let blocked = build_plan(
+            &snapshot,
+            Verdict::Comment,
+            "summary",
+            &[thread.clone(), reply.clone()],
+            1,
+        )
+        .unwrap();
+        assert_eq!(
+            blocked
+                .omitted
+                .iter()
+                .find(|o| o.comment_id == "reply")
+                .unwrap()
+                .code,
+            "parent_not_selected"
+        );
+        thread.review_comment.as_mut().unwrap().selected = true;
+        let ready = build_plan(
+            &snapshot,
+            Verdict::Comment,
+            "summary",
+            &[thread.clone(), reply.clone()],
+            1,
+        )
+        .unwrap();
+        assert_eq!(ready.inline.len(), 1);
+        assert_eq!(ready.replies.len(), 1);
+        assert_eq!(ready.replies[0].parent_comment_id, "d");
+        assert_eq!(ready.replies[0].github_parent_id, None);
+        thread.review_comment = None;
+        thread
+            .published_comments
+            .push(crate::model::PublishedComment {
+                id: "d".into(),
+                body: "fix".into(),
+                github_comment_id: Some(42),
+                github_review_id: Some(7),
+                published_at: "now".into(),
+            });
+        let later = build_plan(
+            &snapshot,
+            Verdict::Comment,
+            "summary",
+            &[thread.clone(), reply],
+            2,
+        )
+        .unwrap();
+        assert!(later.inline.is_empty());
+        assert_eq!(later.replies[0].github_parent_id, Some(42));
+        let mut published_local = thread.clone();
+        published_local.id = "published-local".into();
+        published_local.review_comment = Some(ReviewCommentDraft {
+            id: "local-reply".into(),
+            body: "later".into(),
+            source_comment_id: None,
+            updated_at: String::new(),
+            locked: false,
+            selected: false,
+            target: None,
+            blocker: None,
+        });
+        let mut imported = published_local.clone();
+        imported.id = "github-thread".into();
+        imported.source = ThreadSource::Github;
+        imported.published_comments.clear();
+        imported.comments.push(crate::model::Comment {
+            id: "github-root".into(),
+            thread_id: "github-thread".into(),
+            author_kind: Actor::Github,
+            author: "alice".into(),
+            body: "remote".into(),
+            created_at: "now".into(),
+            updated_at: "now".into(),
+            publish_state: crate::model::PublishState::Imported,
+            github_comment_id: Some(42),
+        });
+        imported.review_comment.as_mut().unwrap().id = "github-reply".into();
+        let mut selected_imported = imported.clone();
+        selected_imported.review_comment.as_mut().unwrap().selected = true;
+        let imported_plan = build_plan(
+            &snapshot,
+            Verdict::Comment,
+            "summary",
+            &[selected_imported],
+            2,
+        )
+        .unwrap();
+        assert_eq!(imported_plan.replies[0].github_parent_id, Some(42));
+        assert_eq!(imported_plan.replies[0].parent_comment_id, "github-root");
+        let mut selected = published_local.clone();
+        selected.id = "selected-root".into();
+        selected.published_comments.clear();
+        selected.review_comment.as_mut().unwrap().id = "selected-root-draft".into();
+        selected.review_comment.as_mut().unwrap().selected = true;
+        let mixed = build_plan(
+            &snapshot,
+            Verdict::Comment,
+            "summary",
+            &[selected, published_local, imported],
+            2,
+        )
+        .unwrap();
+        assert_eq!(mixed.inline.len(), 1);
+        assert!(mixed.replies.is_empty());
+        assert_eq!(
+            mixed
+                .omitted
+                .iter()
+                .map(|o| (o.comment_id.as_str(), o.code.as_str(), o.kind.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("local-reply", "not_selected", "reply"),
+                ("github-reply", "not_selected", "reply")
+            ]
+        );
+    }
+
+    #[test]
     fn stale_draft_is_omitted_without_moving_its_anchor() {
         let t = ReviewThread {
             id: "t".into(),
@@ -1850,6 +2174,7 @@ mod tests {
                 source_comment_id: None,
                 updated_at: String::new(),
                 locked: false,
+                selected: true,
                 target: None,
                 blocker: None,
             }),
@@ -1998,6 +2323,7 @@ mod tests {
                 source_comment_id: None,
                 updated_at: String::new(),
                 locked: false,
+                selected: true,
                 target: None,
                 blocker: None,
             }),
@@ -2019,6 +2345,32 @@ mod tests {
         let plan = build_plan(&snap, Verdict::Comment, "summary", &[thread.clone()], 1).unwrap();
         assert_eq!(plan.inline[0].body, "File Comment:\nmessage");
         assert_eq!(plan.inline[0].line, 1);
+        let mut selected = thread.clone();
+        selected.id = "selected".into();
+        selected.subject = ThreadSubject::Line;
+        selected.line = Some(1);
+        selected.line_text = Some("new".into());
+        selected.review_comment.as_mut().unwrap().id = "selected-draft".into();
+        thread.review_comment.as_mut().unwrap().selected = false;
+        let mixed = build_plan(
+            &snap,
+            Verdict::Comment,
+            "summary",
+            &[selected.clone(), thread.clone()],
+            1,
+        )
+        .unwrap();
+        assert_eq!(
+            mixed
+                .inline
+                .iter()
+                .map(|c| c.comment_id.as_str())
+                .collect::<Vec<_>>(),
+            ["selected-draft"]
+        );
+        assert_eq!(mixed.omitted[0].code, "not_selected");
+        assert_eq!(mixed.omitted[0].kind, "inline");
+        thread.review_comment.as_mut().unwrap().selected = true;
         assert_eq!(
             plan.inline[0].side,
             Side::Left,

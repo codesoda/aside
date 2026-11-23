@@ -1053,17 +1053,17 @@ test('repository owner matching PR author is not proof of self review', async ()
   view.demo = false; view.pr.owner = view.pr.author;
   workspaceRoutes(() => view);
   await start();
-  button('Submit review — Draft (0)').click(); await settle();
-  assert.equal(byLabel('Review verdict').querySelector('[value="APPROVE"]').disabled, false);
+  button('Draft (0) · Finish review').click(); await settle();
+  assert.equal(document.querySelector('#workspace-finish select [value="APPROVE"]').disabled, false);
   assert.deepEqual(mutations(), []);
 });
 
-test('opening Submit Review never posts a review', async () => {
+test('opening the canonical finish flow never posts a review', async () => {
   workspaceRoutes(() => ({ ...sessionView(), demo: false }));
   await start();
-  button('Submit review — Draft (0)').click();
+  button('Draft (0) · Finish review').click();
   await settle();
-  assert.ok(byLabel('Submit review'));
+  assert.ok(document.querySelector('#workspace-finish [aria-label="Draft publication selection"]'));
   assert.equal(mutations().filter((call) => call.path.startsWith('/api/v1/review/publish')).length, 0);
 });
 

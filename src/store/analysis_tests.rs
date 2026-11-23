@@ -334,6 +334,187 @@ fn branch_v5_rest_schema_gains_main_import_memberships() {
 }
 
 #[test]
+fn released_v9_drafts_gain_selection_without_reset() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("released-v9.db");
+    let store = Store::open(&path).unwrap();
+    store.conn.execute_batch("INSERT INTO repositories VALUES ('repo1', 'github.com', 'acme', 'widget', 'R', 'now');
+        INSERT INTO pull_requests VALUES ('pr1', 'repo1', 42, 'title', 'url', 'now');
+        INSERT INTO review_sessions (pr_id, created_at, last_opened_at, selection_revision) VALUES ('pr1', 'now', 'now', 4);
+        INSERT INTO review_threads (id, pr_id, source, path, side, head_sha, anchor_state, created_at, updated_at) VALUES ('thread', 'pr1', 'local', 'a.rs', 'RIGHT', 'head', 'current', 'now', 'now');
+        INSERT INTO review_comment_drafts (id, thread_id, body, state, created_at, updated_at) VALUES ('draft', 'thread', 'text', 'draft', 'now', 'now');").unwrap();
+    // Recreate the released v9 boundary from a complete fixture; v10 must
+    // retain all drafts, not reset the database to create selection state.
+    store.conn.execute_batch("CREATE TABLE legacy_pending_replies (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, body TEXT NOT NULL, selected INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, reserved_attempt_id TEXT, original_seq INTEGER NOT NULL);
+        INSERT INTO legacy_pending_replies VALUES ('reply', 'thread', 'later', 0, 'now', 'now', NULL, 2);
+        ALTER TABLE review_comment_drafts DROP COLUMN publish_selected; ALTER TABLE review_sessions DROP COLUMN selection_revision; ALTER TABLE review_threads DROP COLUMN legacy_reply_seq; DELETE FROM schema_migrations WHERE version = 10;").unwrap();
+    store.conn.pragma_update(None, "user_version", 9).unwrap();
+    drop(store);
+    let migrated = Store::open(&path).unwrap();
+    assert_eq!(user_version(&migrated.conn), MIGRATIONS.len() as i64);
+    assert_eq!(migrated.review_state("pr1").unwrap().selection_revision, 0);
+    let threads = migrated.list_threads("pr1").unwrap();
+    assert!(
+        threads
+            .iter()
+            .find(|t| t.id == "thread")
+            .unwrap()
+            .review_comment
+            .as_ref()
+            .unwrap()
+            .selected
+    );
+    let reply = threads
+        .iter()
+        .find(|t| t.id == "legacy_reply_reply")
+        .unwrap();
+    assert_eq!(reply.linked_thread_id.as_deref(), Some("thread"));
+    assert_eq!(reply.review_comment.as_ref().unwrap().id, "reply");
+    assert!(!reply.review_comment.as_ref().unwrap().selected);
+    drop(migrated);
+    let mut reopened = Store::open(&path).unwrap();
+    let (changed, revision) = reopened
+        .set_publish_selection("pr1", &["draft".into()], false)
+        .unwrap();
+    assert_eq!(changed, ["draft"]);
+    assert_eq!(revision, 1);
+    let (unchanged, same_revision) = reopened
+        .set_publish_selection("pr1", &["draft".into()], false)
+        .unwrap();
+    assert!(unchanged.is_empty());
+    assert_eq!(same_revision, revision);
+    assert!(
+        reopened
+            .set_publish_selection("pr1", &["draft".into(), "draft".into()], true)
+            .is_err()
+    );
+    assert!(
+        reopened
+            .start_publication_checked(
+                "pr1",
+                "old",
+                r#"{"attemptOrdinal":1}"#,
+                "head",
+                &[("draft", "text")],
+                0
+            )
+            .is_err()
+    );
+    let claims: i64 = reopened
+        .conn
+        .query_row("SELECT COUNT(*) FROM publication_claims", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(claims, 0);
+    assert!(
+        reopened
+            .set_publish_selection("pr1", &["draft".into(), "missing".into()], true)
+            .is_err()
+    );
+    assert!(
+        !reopened
+            .list_threads("pr1")
+            .unwrap()
+            .iter()
+            .find(|t| t.id == "thread")
+            .unwrap()
+            .review_comment
+            .as_ref()
+            .unwrap()
+            .selected
+    );
+}
+
+#[test]
+fn branch_v7_deselected_root_and_deferred_reply_survive_upgrade() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("branch-v7.db");
+    let store = Store::open(&path).unwrap();
+    // Reverse only the empty fixture's post-v6 schema, then populate it as
+    // PR13 v7 did. This exercises the actual upgrade path, not a reset.
+    store.conn.execute_batch("DROP INDEX idx_threads_finding; DROP INDEX idx_drafts_open_thread; DROP INDEX idx_drafts_github_id; DROP INDEX idx_agent_request_thread;
+        DROP TABLE review_comment_drafts; DROP TABLE agent_request_history; DROP TABLE repository_extension_preferences; DROP TABLE review_exclusion_rules;
+        ALTER TABLE review_threads DROP COLUMN last_comment_seq;
+        ALTER TABLE review_threads DROP COLUMN linked_thread_id;
+        ALTER TABLE review_threads DROP COLUMN agent_updated_at;
+        ALTER TABLE review_threads DROP COLUMN agent_error;
+        ALTER TABLE review_threads DROP COLUMN agent_state;
+        ALTER TABLE review_threads DROP COLUMN agent_request_comment_id;
+        ALTER TABLE review_threads DROP COLUMN human_read_seq;
+        ALTER TABLE review_threads DROP COLUMN finding_id;
+        ALTER TABLE review_threads DROP COLUMN subject;
+        ALTER TABLE review_threads DROP COLUMN legacy_reply_seq;
+        ALTER TABLE review_sessions DROP COLUMN selection_revision;
+        ALTER TABLE review_sessions ADD COLUMN selection_revision INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE review_comments ADD COLUMN publish_selected INTEGER NOT NULL DEFAULT 1;
+        DELETE FROM schema_migrations WHERE version > 7;
+        INSERT INTO repositories VALUES ('repo1', 'github.com', 'acme', 'widget', 'R', 'now');
+        INSERT INTO pull_requests VALUES ('pr1', 'repo1', 42, 'title', 'url', 'now');
+        INSERT INTO review_sessions (pr_id, created_at, last_opened_at, selection_revision) VALUES ('pr1', 'now', 'now', 8);
+        INSERT INTO review_threads (id, pr_id, source, path, side, line, line_text, head_sha, anchor_state, created_at, updated_at) VALUES
+          ('root-thread', 'pr1', 'local', 'a.rs', 'RIGHT', 1, 'new', 'head', 'current', 'now', 'now'),
+          ('github-thread', 'pr1', 'github', 'a.rs', 'RIGHT', 1, 'new', 'head', 'current', 'now', 'now');
+        INSERT INTO review_comments (id, thread_id, author_kind, author, body, publish_state, github_comment_id, created_at, updated_at, seq, publish_selected) VALUES
+          ('root', 'root-thread', 'human', 'me', 'first', 'draft', NULL, 'now', 'now', 1, 0),
+          ('reply', 'root-thread', 'human', 'me', 'later', 'draft', NULL, 'now', 'now', 2, 0),
+          ('github-root', 'github-thread', 'github', 'alice', 'remote', 'imported', 42, 'now', 'now', 1, 1),
+          ('z-first', 'github-thread', 'human', 'me', 'first reply', 'draft', NULL, 'now', 'now', 2, 1),
+          ('a-second', 'github-thread', 'human', 'me', 'second reply', 'draft', NULL, 'now', 'now', 3, 0);
+        INSERT INTO publication_attempts (id, pr_id, plan_id, plan_json, head_sha, status, created_at) VALUES ('attempt', 'pr1', 'old-plan', '{}', 'head', 'partial', 'now');
+        INSERT INTO publication_claims (pr_id, attempt_id) VALUES ('pr1', 'attempt');
+        INSERT INTO publication_reservations (comment_id, attempt_id) VALUES ('z-first', 'attempt');").unwrap();
+    store.conn.pragma_update(None, "user_version", 7).unwrap();
+    drop(store);
+    let reopened = Store::open(&path).unwrap();
+    assert_eq!(user_version(&reopened.conn), MIGRATIONS.len() as i64);
+    assert_eq!(reopened.review_state("pr1").unwrap().selection_revision, 8);
+    let threads = reopened.list_threads("pr1").unwrap();
+    let root = threads
+        .iter()
+        .find(|t| t.id == "root-thread")
+        .unwrap()
+        .review_comment
+        .as_ref()
+        .unwrap();
+    assert_eq!(root.id, "root");
+    assert!(!root.selected);
+    let reply = threads
+        .iter()
+        .find(|t| t.id == "legacy_reply_reply")
+        .unwrap();
+    assert_eq!(reply.linked_thread_id.as_deref(), Some("root-thread"));
+    assert!(!reply.review_comment.as_ref().unwrap().selected);
+    let imported_replies: Vec<_> = threads
+        .iter()
+        .filter(|t| t.linked_thread_id.as_deref() == Some("github-thread"))
+        .collect();
+    assert_eq!(
+        imported_replies
+            .iter()
+            .map(|t| t.review_comment.as_ref().unwrap().id.as_str())
+            .collect::<Vec<_>>(),
+        ["z-first", "a-second"]
+    );
+    assert_eq!(
+        imported_replies
+            .iter()
+            .map(|t| t.review_comment.as_ref().unwrap().selected)
+            .collect::<Vec<_>>(),
+        [true, false]
+    );
+    assert!(imported_replies[0].review_comment.as_ref().unwrap().locked);
+    assert!(!imported_replies[1].review_comment.as_ref().unwrap().locked);
+    assert_eq!(
+        threads
+            .iter()
+            .find(|t| t.id == "github-thread")
+            .unwrap()
+            .comments[0]
+            .github_comment_id,
+        Some(42)
+    );
+}
+
+#[test]
 fn colliding_v3_schemas_converge_without_losing_rows() {
     for main_v3 in [false, true] {
         let dir = tempfile::tempdir().unwrap();

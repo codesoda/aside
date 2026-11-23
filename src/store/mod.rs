@@ -79,6 +79,26 @@ impl Store {
         }
         for (i, sql) in schema::MIGRATIONS.iter().enumerate().skip(version as usize) {
             let tx = self.conn.transaction()?;
+            // PR13's unpublished v7 used the same version number as main's
+            // released review-rules migration. Preserve its data and install
+            // the missing released schema before running conversations v8.
+            if i + 1 == 8 && version == 7 {
+                let has_rules: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'review_exclusion_rules')",
+                    [], |r| r.get(0),
+                )?;
+                if !has_rules {
+                    tx.execute_batch(schema::MIGRATIONS[6])?;
+                    // v8 normalizes only root drafts. Capture branch reply drafts
+                    // before its conversion of old draft rows to private history.
+                    tx.execute_batch("CREATE TABLE legacy_pending_replies (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, body TEXT NOT NULL, selected INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, reserved_attempt_id TEXT, original_seq INTEGER NOT NULL);
+                        INSERT INTO legacy_pending_replies SELECT c.id, c.thread_id, c.body, c.publish_selected, c.created_at, c.updated_at, r.attempt_id, c.seq
+                        FROM review_comments c JOIN review_threads t ON t.id = c.thread_id
+                        LEFT JOIN publication_reservations r ON r.comment_id = c.id
+                        WHERE c.author_kind = 'human' AND c.publish_state = 'draft' AND trim(c.body) != ''
+                        AND (t.source = 'github' OR c.seq > (SELECT MIN(root.seq) FROM review_comments root WHERE root.thread_id = c.thread_id));")?;
+                }
+            }
             if i + 1 == 4 {
                 // Both branches released a different v3. Inspect under the write
                 // transaction before applying only the missing half.
@@ -87,8 +107,39 @@ impl Store {
                 if i + 1 == 5 || i + 1 == 6 {
                     migrate_rest_columns(&tx)?;
                 }
-                tx.execute_batch(sql)
-                    .with_context(|| format!("migration v{} failed", i + 1))?;
+                if i + 1 == 10 {
+                    let mut stmt = tx.prepare("PRAGMA table_info(review_sessions)")?;
+                    let columns = stmt
+                        .query_map([], |r| r.get::<_, String>(1))?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    if !columns.iter().any(|c| c == "selection_revision") {
+                        tx.execute_batch(sql)?;
+                    } else {
+                        tx.execute_batch("ALTER TABLE review_comment_drafts ADD COLUMN publish_selected INTEGER NOT NULL DEFAULT 1;
+                            ALTER TABLE review_threads ADD COLUMN legacy_reply_seq INTEGER;")?;
+                    }
+                } else {
+                    tx.execute_batch(sql)
+                        .with_context(|| format!("migration v{} failed", i + 1))?;
+                }
+                if i + 1 == 10 {
+                    let mut stmt = tx.prepare("PRAGMA table_info(review_comments)")?;
+                    let columns = stmt
+                        .query_map([], |r| r.get::<_, String>(1))?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    if columns.iter().any(|c| c == "publish_selected") {
+                        tx.execute_batch("UPDATE review_comment_drafts SET publish_selected = (SELECT publish_selected FROM review_comments WHERE review_comments.id = review_comment_drafts.id) WHERE id IN (SELECT id FROM review_comments);")?;
+                    }
+                    let captured: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'legacy_pending_replies')", [], |r| r.get(0))?;
+                    if captured {
+                        tx.execute_batch("INSERT INTO review_threads (id, pr_id, source, path, side, line, start_line, line_text, diff_digest, head_sha, anchor_state, anchor_reason, resolved, created_at, updated_at, subject, linked_thread_id, legacy_reply_seq)
+                            SELECT 'legacy_reply_' || p.id, t.pr_id, 'local', t.path, t.side, t.line, t.start_line, t.line_text, t.diff_digest, t.head_sha, t.anchor_state, t.anchor_reason, t.resolved, p.created_at, p.updated_at, t.subject, t.id, p.original_seq
+                            FROM legacy_pending_replies p JOIN review_threads t ON t.id = p.thread_id;
+                            INSERT INTO review_comment_drafts (id, thread_id, body, state, created_at, updated_at, publish_selected, reserved_attempt_id)
+                            SELECT id, 'legacy_reply_' || id, body, 'draft', created_at, updated_at, selected, reserved_attempt_id FROM legacy_pending_replies;
+                            DROP TABLE legacy_pending_replies;")?;
+                    }
+                }
             }
             if i + 1 > schema::MIGRATION_TABLE_VERSION {
                 tx.execute(

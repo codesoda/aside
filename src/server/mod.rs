@@ -290,6 +290,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/refresh", post(refresh))
         .route("/review/finish", post(finish))
+        .route("/review/publish/selection", post(review::publish_selection))
         .route("/review/publish/preview", post(publish_preview))
         .route("/review/publish", post(publish_confirm))
         .route("/review/publish/reconcile", post(publish_reconcile))
@@ -412,6 +413,17 @@ mod tests {
         origin: Option<&str>,
         body: Option<Value>,
     ) -> Response {
+        request_on(app(), method, path, credential, origin, body).await
+    }
+
+    async fn request_on(
+        app: Router,
+        method: Method,
+        path: &str,
+        credential: Option<&str>,
+        origin: Option<&str>,
+        body: Option<Value>,
+    ) -> Response {
         use tower::ServiceExt;
         let mut builder = axum::http::Request::builder()
             .method(method)
@@ -436,8 +448,7 @@ mod tests {
         } else {
             String::new()
         };
-        app()
-            .oneshot(builder.body(axum::body::Body::from(bytes)).unwrap())
+        app.oneshot(builder.body(axum::body::Body::from(bytes)).unwrap())
             .await
             .unwrap()
     }
@@ -663,6 +674,30 @@ mod tests {
         assert_eq!(
             request(
                 Method::POST,
+                "/api/v1/review/publish/selection",
+                Some("Bearer agent-secret"),
+                None,
+                Some(json!({"commentIds":["c"],"selected":false}))
+            )
+            .await
+            .status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            request(
+                Method::POST,
+                "/api/v1/review/publish/preview",
+                Some("Bearer agent-secret"),
+                None,
+                None
+            )
+            .await
+            .status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            request(
+                Method::POST,
                 "/api/v1/review/publish",
                 Some("Bearer agent-secret"),
                 None,
@@ -684,6 +719,180 @@ mod tests {
             .status(),
             StatusCode::FORBIDDEN
         );
+    }
+
+    #[tokio::test]
+    async fn demo_selection_deselect_all_preview_and_confirmation_boundary() {
+        use crate::model::{AnchorState, Side, ThreadSource, Verdict};
+        use crate::store::NewThread;
+        let session = Session::new(
+            crate::demo::snapshot(0),
+            crate::store::Store::open_in_memory().unwrap(),
+            None,
+            None,
+        )
+        .unwrap();
+        {
+            let mut store = session.store.lock().unwrap();
+            store
+                .insert_thread(
+                    &session.pr_id,
+                    &NewThread {
+                        id: "t".into(),
+                        source: ThreadSource::Local,
+                        github_thread_id: None,
+                        path: "absent.rs".into(),
+                        side: Side::Right,
+                        line: Some(1),
+                        start_line: None,
+                        line_text: Some("line".into()),
+                        diff_digest: None,
+                        head_sha: "head".into(),
+                        anchor_state: AnchorState::Current,
+                        anchor_reason: None,
+                        resolved: false,
+                        created_at: None,
+                        subject: crate::model::ThreadSubject::Line,
+                        finding_id: None,
+                    },
+                )
+                .unwrap();
+            store
+                .upsert_review_comment(&session.pr_id, "t", "private body", None)
+                .unwrap();
+            store
+                .finish_review(&session.pr_id, Verdict::Comment, "")
+                .unwrap();
+        }
+        let draft_id = session
+            .store
+            .lock()
+            .unwrap()
+            .list_threads(&session.pr_id)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == "t")
+            .unwrap()
+            .review_comment
+            .unwrap()
+            .id;
+        let api = router(AppState::new(
+            session.clone(),
+            "ui-secret".into(),
+            "agent-secret".into(),
+        ));
+        let call = |path, body| {
+            request_on(
+                api.clone(),
+                Method::POST,
+                path,
+                Some("aside_ui=ui-secret"),
+                Some("http://127.0.0.1:1234"),
+                body,
+            )
+        };
+        assert_eq!(
+            call(
+                "/api/v1/review/publish/selection",
+                Some(json!({"commentIds":[],"selected":false}))
+            )
+            .await
+            .status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            call(
+                "/api/v1/review/publish/selection",
+                Some(json!({"commentIds":vec![draft_id.clone(); 501],"selected":false}))
+            )
+            .await
+            .status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            call(
+                "/api/v1/review/publish/selection",
+                Some(json!({"commentIds":[draft_id.clone(),"other-pr"],"selected":false}))
+            )
+            .await
+            .status(),
+            StatusCode::CONFLICT
+        );
+        assert!(
+            session
+                .store
+                .lock()
+                .unwrap()
+                .list_threads(&session.pr_id)
+                .unwrap()
+                .into_iter()
+                .find(|t| t.id == "t")
+                .unwrap()
+                .review_comment
+                .unwrap()
+                .selected
+        );
+        let selection = call(
+            "/api/v1/review/publish/selection",
+            Some(json!({"commentIds":[draft_id.clone()],"selected":false})),
+        )
+        .await;
+        assert_eq!(selection.status(), StatusCode::OK);
+        let body: Value = serde_json::from_slice(
+            &axum::body::to_bytes(selection.into_body(), 1_048_576)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body["selectionRevision"], 2);
+        let plan =
+            crate::publish::preview_requested(&session, Verdict::Comment, "summary").unwrap();
+        assert!(plan.inline.is_empty());
+        assert!(
+            !plan
+                .omitted
+                .iter()
+                .find(|o| o.comment_id == draft_id)
+                .unwrap()
+                .selected
+        );
+        assert_eq!(
+            call("/api/v1/review/publish/preview", None).await.status(),
+            StatusCode::FORBIDDEN
+        );
+        session.refresh().await.unwrap();
+        let persisted = session
+            .store
+            .lock()
+            .unwrap()
+            .list_threads(&session.pr_id)
+            .unwrap();
+        assert!(
+            !persisted
+                .iter()
+                .find(|t| t.id == "t")
+                .unwrap()
+                .review_comment
+                .as_ref()
+                .unwrap()
+                .selected
+        );
+        assert_eq!(
+            session
+                .store
+                .lock()
+                .unwrap()
+                .review_state(&session.pr_id)
+                .unwrap()
+                .selection_revision,
+            2
+        );
+        let confirm = call(
+            "/api/v1/review/publish",
+            Some(json!({"planId":body["plan"]["planId"],"confirm":true})),
+        )
+        .await;
+        assert_eq!(confirm.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

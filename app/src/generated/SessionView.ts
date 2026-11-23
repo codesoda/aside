@@ -25,8 +25,4 @@ sequence: number,
 /**
  * Who the caller is authenticated as.
  */
-actor: Actor, agentPresence: AgentPresence, repository: Repository, pr: PullRequest, files: Array<ChangedFile>, fileStates: Array<FileState>, progress: Progress, rules: Array<ExclusionRule>, threads: Array<ReviewThread>, reviews: Array<ImportedReview>, issueComments: Array<IssueComment>, review: ReviewState, warnings: Array<string>, complete: boolean, fetchedAt: string,
-/**
- * Per-source completeness and analysis status of the canonical snapshot.
- */
-analysis: AnalysisSummary, analysisContext: AnalysisContext | null, };
+actor: Actor, agentPresence: AgentPresence, repository: Repository, pr: PullRequest, files: Array<ChangedFile>, fileStates: Array<FileState>, progress: Progress, rules: Array<ExclusionRule>, threads: Array<ReviewThread>, reviews: Array<ImportedReview>, issueComments: Array<IssueComment>, review: ReviewState, warnings: Array<string>, complete: boolean, fetchedAt: string, analysis: AnalysisSummary, analysisContext: AnalysisContext | null, };
