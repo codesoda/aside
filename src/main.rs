@@ -1,5 +1,6 @@
 #![recursion_limit = "256"]
 
+mod advanced;
 mod analysis;
 mod config;
 mod demo;
@@ -61,6 +62,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Evaluate experimental read-only analysis sources.
+    #[command(hide = true)]
+    PrototypeSources(advanced::Options),
     /// Review a bundled offline capture of cli/cli#14921.
     Demo {
         #[command(flatten)]
@@ -317,6 +321,7 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
     let (snapshot, pr_ref, gh, opts) = match (cli.command, cli.pr_url) {
+        (Some(Command::PrototypeSources(options)), _) => return advanced::run(options),
         (Some(Command::Set { key, value, repo }), _) => {
             let mut cfg = config::load()?;
             cfg.set_scoped(&key, &value, repo.as_deref())?;
