@@ -1751,6 +1751,53 @@ fn dispositions_survive_restart_and_use_revisions() {
 }
 
 #[test]
+fn user_state_batch_is_pr_scoped_and_matches_individual_reads() {
+    let mut f = fixture();
+    let snapshot = f.add_snapshot("h", true);
+    let run = f.queue(&snapshot, "p", 0);
+    let batch = simple_batch(&run, &["one", "two"]);
+    f.store.commit_analysis_batch(&batch).unwrap();
+    let ids: Vec<_> = batch
+        .findings
+        .iter()
+        .map(|f| f.value().id.clone())
+        .collect();
+    let mut state = FindingUserState::untouched(ids[0].clone(), &f.pr, "now");
+    state.disposition = UserDisposition::Investigating;
+    state.note = Some("keep".into());
+    let expected = f.store.put_finding_user_state(&f.pr, &state, 0).unwrap();
+    let repo = f
+        .store
+        .resolve_repository("github.com", "acme", "widget", Some(REPO))
+        .unwrap();
+    let other = f
+        .store
+        .upsert_pull_request(&repo.id, 43, "other", "u")
+        .unwrap();
+    for i in 0..150 {
+        f.store.conn.execute(
+            "INSERT INTO finding_user_state (session_id, finding_id, pr_id, disposition, updated_at, revision) VALUES (?1, ?2, ?3, 'dismissed_local', 'now', 1)",
+            rusqlite::params![other, format!("foreign_{i}"), other],
+        ).unwrap();
+    }
+    // A synthetic session with this PR id must not replace the individual
+    // PR-session lookup for the second finding.
+    f.store.conn.execute(
+        "INSERT INTO finding_user_state (session_id, finding_id, pr_id, disposition, updated_at, revision) VALUES ('old_session', ?1, ?2, 'dismissed_local', 'now', 1)",
+        rusqlite::params![ids[1].as_str(), f.pr],
+    ).unwrap();
+    let states = f.store.list_finding_user_states(&f.pr).unwrap();
+    assert_eq!(states, vec![expected.clone()]);
+    for id in &ids {
+        assert_eq!(
+            states.iter().find(|state| &state.finding_id == id),
+            f.store.get_finding_user_state(&f.pr, id).unwrap().as_ref()
+        );
+    }
+    assert_eq!(f.store.list_finding_user_states(&other).unwrap().len(), 150);
+}
+
+#[test]
 fn analysis_never_writes_review_state() {
     let mut f = fixture();
     f.store

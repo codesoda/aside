@@ -121,6 +121,35 @@ test('uncertain promotion retry retains its original revision and operation ID a
   assert.equal(writes()[1].path, path);
 });
 
+test('HTTP 408 after a committed promotion replays the original operation', async () => {
+  let committed;
+  routes[`POST ${path}`] = (_url, init) => {
+    const input = JSON.parse(init.body);
+    if (!committed) {
+      const thread = promotedThread();
+      committed = { input, thread };
+      current = { ...current, userState: { ...current.userState, revision: 4, promotedDraftId: thread.reviewComment.id } };
+      return json({ error: 'timeout' }, 408);
+    }
+    assert.deepEqual(input, committed.input);
+    // Make the committed draft visible once the lagging session read catches up.
+    const { thread } = committed;
+    view.threads.push(thread);
+    return json({ state: current.userState, thread, draft: thread.reviewComment });
+  };
+  await start();
+  promoteButton().click();
+  await settle();
+  assert.match(document.body.textContent, /Promotion outcome uncertain/);
+  assert.equal(current.userState.revision, 4);
+  promoteButton().click();
+  await settle();
+  assert.equal(writes().length, 2);
+  assert.deepEqual(JSON.parse(writes()[1].body), JSON.parse(writes()[0].body));
+  assert.equal(view.threads.filter((candidate) => candidate.id === committed.thread.id).length, 1);
+  assert.equal(document.querySelector('.desktop-conversation [aria-label="Review comment draft"]').value, committed.thread.reviewComment.body);
+});
+
 test('historical load failure is not shown as empty history and can be retried', async () => {
   let historicalAttempts = 0;
   const historical = { ...structuredClone(findings[1]), label: 'historical' };

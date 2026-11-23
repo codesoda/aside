@@ -428,6 +428,13 @@ pub(super) async fn findings(
             let mut items = Vec::new();
             let mut excluded = 0;
             let now = crate::util::now_rfc3339();
+            let mut user_states: std::collections::HashMap<_, _> = read
+                .store
+                .list_finding_user_states(read.pr_id)
+                .map_err(db_error)?
+                .into_iter()
+                .map(|state| (state.finding_id.clone(), state))
+                .collect();
             for stored in read
                 .store
                 .list_findings(read.pr_id, include_historical)
@@ -443,10 +450,7 @@ pub(super) async fn findings(
                     ObservationLabel::Historical => "historical",
                 };
                 let finding = stored.finding.value();
-                let user_state = read
-                    .store
-                    .get_finding_user_state(read.pr_id, &finding.id)
-                    .map_err(db_error)?;
+                let user_state = user_states.remove(&finding.id);
                 let disposition = user_state
                     .as_ref()
                     .map_or(crate::model::UserDisposition::Untouched, |state| {
@@ -893,20 +897,16 @@ pub(super) async fn queue(State(state): State<AppState>) -> ApiResult<Json<Queue
                 .map_err(db_error)?;
             let findings: Vec<ObservedFinding> = stored.iter().map(ObservedFinding::from).collect();
             let mut relations = Vec::new();
-            let mut user_states = Vec::new();
+            let user_states = read
+                .store
+                .list_finding_user_states(read.pr_id)
+                .map_err(db_error)?;
             for f in &findings {
                 relations.extend(
                     read.store
                         .list_finding_relations(&f.finding.id)
                         .map_err(db_error)?,
                 );
-                if let Some(state) = read
-                    .store
-                    .get_finding_user_state(read.pr_id, &f.finding.id)
-                    .map_err(db_error)?
-                {
-                    user_states.push(state);
-                }
             }
             let input = QueueInput {
                 files: &read.file_states,

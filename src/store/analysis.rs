@@ -889,6 +889,48 @@ impl Store {
         read_user_state(&self.conn, session_id, finding_id)
     }
 
+    /// Loads PR-keyed local triage in one query. Rows for synthetic sessions
+    /// are intentionally excluded; the session filter matches individual reads.
+    pub fn list_finding_user_states(&self, pr_id: &str) -> Result<Vec<FindingUserState>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT finding_id, disposition, snoozed_until, note, promoted_draft_id, updated_at, revision
+             FROM finding_user_state WHERE pr_id = ?1 AND session_id = ?1",
+        )?;
+        let rows = stmt.query_map([pr_id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, i64>(6)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (
+                finding_id,
+                disposition,
+                snoozed_until,
+                note,
+                promoted_draft_id,
+                updated_at,
+                revision,
+            ) = row?;
+            Ok(FindingUserState {
+                finding_id: FindingId::new(finding_id),
+                session_id: pr_id.to_string(),
+                disposition: serde_json::from_value(Value::String(disposition))?,
+                snoozed_until,
+                note,
+                promoted_draft_id,
+                updated_at,
+                revision: revision as u64,
+            })
+        })
+        .collect()
+    }
+
     /// Explicitly deletes local triage (the only way it is removed).
     #[allow(dead_code)] // TODO(#26): not consumed by the binary yet.
     pub fn delete_finding_user_state(

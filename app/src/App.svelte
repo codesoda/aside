@@ -160,7 +160,8 @@
       loadInsights();
       openFindingDraft(session.threads.find((thread) => thread.id === result.thread.id));
     } catch (failure) {
-      const rejected = failure instanceof ApiError && failure.status >= 400 && failure.status < 500;
+      const rejected = failure instanceof ApiError && failure.status >= 400 && failure.status < 500
+        && ![408, 425, 429].includes(failure.status);
       if (rejected) promotionOperations.delete(id);
       findingError = rejected ? String(failure) : `Promotion outcome uncertain. Retry uses the same operation ID. ${String(failure)}`;
       refreshFindingViews();
