@@ -27,6 +27,16 @@ pnpm -C app install --frozen-lockfile
 
 ## Start the backend and frontend together
 
+The review frontend in `app/` uses React, TypeScript, shadcn/ui, and Tailwind CSS. Use the shared shadcn controls for common interactions. Keep review-specific styling, such as diff highlighting, separate from shared controls.
+
+Before running Aside for development, set `ASIDE_DATA_DIR` to a private folder outside the checkout. Use the same folder in every terminal for this task. On macOS or Linux, for example:
+
+```sh
+export ASIDE_DATA_DIR="$(mktemp -d "${TMPDIR:-/tmp}/aside-dev.XXXXXX")"
+```
+
+This folder does not contain your saved reviews. Do not share it across worktrees or commit its contents.
+
 From the repository root:
 
 ```sh
@@ -68,6 +78,7 @@ The marketing website in `web/` is separate from the CLI frontend in `app/`. Fro
 ```sh
 python3 tests/install_test.py
 pnpm -C app check
+pnpm -C app test
 pnpm -C app build
 cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
@@ -76,5 +87,7 @@ actionlint .github/workflows/*.yml
 ```
 
 The Unix installer tests use a temporary home directory and mocked downloads/build tools, so they do not install Aside into your real home or fetch releases. The `Installer tests` workflow runs this suite on Ubuntu for changes to `install.sh`, `tests/install_test.py`, or the workflow itself; it does not cover `install.ps1`.
+
+For frontend changes, also run the offline demo from an embedded release build (`pnpm -C app build` followed by `cargo build --locked --release`). Copy the executable to a temporary folder and run it there with `demo --no-open` and the isolated data directory. Use the private login URL to check that the UI loads without Vite or Node on the executable's path.
 
 Do not test GitHub publication against another person's PR. Use the offline demo or fake GitHub runner for mutation tests. See [`aside-prd.md`](docs/plans/aside-prd.md) for the behavior and security contracts.

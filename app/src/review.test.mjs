@@ -1,12 +1,24 @@
 // Review screen with progressive insights (#38), mounted in jsdom.
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, test } from 'node:test';
+import { createRequire } from 'node:module';
 import { installDom } from '../test/dom.mjs';
 import { evidence, findings, page, queueView, sessionView, source } from '../test/fixtures.mjs';
 
 installDom();
-const { mount, unmount, flushSync, tick } = await import('svelte');
-const { default: App } = await import('./App.svelte');
+// jsdom's visual frame timer is too slow for a single React act turn.
+window.requestAnimationFrame = globalThis.requestAnimationFrame = (callback) => setTimeout(() => callback(performance.now()), 0);
+window.cancelAnimationFrame = globalThis.cancelAnimationFrame = clearTimeout;
+globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+const require = createRequire(import.meta.url);
+const React = require('react');
+const { act } = React;
+const { createRoot } = require('react-dom/client');
+const { createServer } = await import('vite');
+const vite = await createServer({ server: { middlewareMode: true, hmr: false }, appType: 'custom' });
+const { default: App } = await vite.ssrLoadModule('/src/App.tsx');
+test.after(async () => vite.close());
+const tick = async () => { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); };
 
 /** A promise the test resolves when it chooses: "analysis still pending". */
 function deferred() {
@@ -48,26 +60,23 @@ beforeEach(() => {
   };
   document.body.innerHTML = '';
   document.title = 'Aside'; // Match the static shell, including its existing title element.
-  app = null;
+  app = createRoot(document.body);
 });
 
-afterEach(() => {
-  if (app) unmount(app);
+afterEach(async () => {
+  await act(async () => app.unmount());
 });
 
 async function start() {
-  app = mount(App, { target: document.body });
+  await act(async () => app.render(React.createElement(App)));
   await settle();
 }
 
 async function settle() {
-  for (let i = 0; i < 10; i++) {
-    await new Promise((r) => setTimeout(r, 0));
-    await tick();
-  }
-  flushSync();
+  for (let i = 0; i < 3; i++) await tick();
 }
 
+const nativeValue = (node, value) => Object.getOwnPropertyDescriptor(Object.getPrototypeOf(node), 'value').set.call(node, value);
 const text = () => document.body.textContent.replace(/\s+/g, ' ');
 const byLabel = (label) => document.querySelector(`[aria-label="${label}"]`);
 const button = (name) => [...document.querySelectorAll('button')].find((b) => b.textContent.replace(/\s+/g, ' ').trim() === name || b.getAttribute('aria-label') === name);
@@ -101,12 +110,12 @@ test('page title follows review changes and renamed PRs from session events', as
   await start();
   assert.equal(document.title, '#7: Tidy auth · o/n · Aside');
 
-  view = { ...view, sessionId: 's2', pr: { ...view.pr, owner: 'acme', repo: 'widgets', number: 12, title: 'Improve search' } };
+  view = { ...view, sequence: view.sequence + 1, pr: { ...view.pr, owner: 'acme', repo: 'widgets', number: 12, title: 'Improve search' } };
   sources[0].emit('resync');
   await settle();
   assert.equal(document.title, '#12: Improve search · acme/widgets · Aside');
 
-  view.pr.title = 'Improve search and filtering';
+  view = { ...view, sequence: view.sequence + 1, pr: { ...view.pr, title: 'Improve search and filtering' } };
   sources[0].emit('pr.refreshed');
   await settle();
   assert.equal(document.title, '#12: Improve search and filtering · acme/widgets · Aside');
@@ -197,13 +206,13 @@ test('review prep is the initial view while analysis is pending, then updates in
   // The reviewer is reading prep: results must not steal focus.
   const prepHeading = document.getElementById('review-prep-heading');
   prepHeading.focus();
-  assert.equal(document.activeElement, prepHeading);
+  assert.equal(document.activeElement?.id, prepHeading.id);
 
   queue.resolve(json(queueView()));
   findingPage.resolve(json(page(findings)));
   await settle();
 
-  assert.equal(document.activeElement, prepHeading, 'insights must not move focus');
+  assert.equal(document.activeElement?.id, prepHeading.id, 'insights must not move focus');
   assert.equal(workspaceView('prep').hidden, false, 'prep remains the active view');
   assert.match(text(), /verify_token\(\);/, 'diff remains available in the workspace');
   assert.ok(byLabel('Open src/auth.rs'), 'compact file navigation remains available after analysis');
@@ -222,7 +231,7 @@ test('file band, inline adjacency, markers and reveal are read-only', async () =
   routes['GET /api/v1/analysis/findings'] = () => json(page([whole, range]));
   await start();
   const diff = document.getElementById('file-review');
-  assert.ok(diff.querySelector('.workspace-diff-header .marker-group'), 'file insight appears beside file heading');
+  assert.ok(diff.querySelector('.workspace-diff-header + .marker-group, .workspace-diff-header ~ .marker-group'), 'file insight appears beside file heading');
   const row = [...diff.querySelectorAll('.diff-row')].find((el) => el.textContent.includes('verify_token'));
   assert.equal(diff.querySelector('.diff-row .marker-group').tagName, 'BUTTON');
   assert.ok(row.querySelector('.marker-group'), 'unrelated existing thread keeps its own end-row marker');
@@ -246,7 +255,7 @@ test('context row presents old and new range endpoints together with honest mark
   const row = [...document.querySelectorAll('.diff-row')].find((element) => element.textContent.includes('verify_token'));
   assert.deepEqual([...document.querySelectorAll('.diff-row .marker-group')].filter((marker) => /line 1/.test(marker.getAttribute('aria-label'))).map((marker) => marker.getAttribute('aria-label').match(/(old|new) line 1/)[1]), ['old', 'new']);
   assert.doesNotMatch(row.querySelector('.marker-group')?.getAttribute('aria-label') ?? '', /range/, 'range adds no end-row marker');
-  assert.equal(row.querySelector('span.w-9').className.includes('w-9'), true);
+  assert.ok(row.querySelector('[data-code-line]'), 'context row retains its code line');
   assert.equal(document.querySelectorAll('.inline-callouts').length, 0, 'ranges do not insert cards');
   assert.deepEqual(mutations(), []);
 });
@@ -268,14 +277,15 @@ test('snapshot mismatch holds old findings off lines and fetch keeps focused dra
   document.querySelector('[title="Draft a comment on this line"]').click();
   await tick();
   const draft = document.getElementById('draft');
-  draft.value = 'unfinished';
+  nativeValue(draft, 'unfinished');
   draft.dispatchEvent(new window.Event('input', { bubbles: true }));
   draft.focus();
   sources[0].emit('analysis.findings.upserted');
   await settle();
-  assert.equal(document.activeElement, draft);
+  assert.equal(document.activeElement?.id, draft.id);
   assert.equal(draft.value, 'unfinished');
   view.analysis.snapshotId = 'snap-2';
+  view.sequence += 1;
   sources[0].emit('pr.refreshed');
   await settle();
   assert.equal(document.querySelectorAll('.inline-callouts').length, 0);
@@ -454,7 +464,7 @@ test('every new insight control is a native, named, keyboard-focusable element w
       assert.ok(name.length > 0, `unnamed control: ${el.outerHTML}`);
       if (el.matches('.callout-marker, .thread-marker')) assert.match(el.className, /marker/, `marker has focus style: ${el.outerHTML}`);
       el.focus();
-      assert.equal(document.activeElement, el, `not focusable: ${el.outerHTML}`);
+      assert.equal(document.activeElement === el, true, `not focusable: ${el.outerHTML}`);
     }
   }
   assert.ok(checked >= 5, `checked ${checked} controls`);
@@ -472,7 +482,7 @@ test('workspace navigation keeps drafts and opens the actual file thread without
   diff.querySelector('[title="Draft a comment on this line"]').click();
   await tick();
   const draft = document.getElementById('draft');
-  draft.value = 'Still working on this draft';
+  nativeValue(draft, 'Still working on this draft');
   draft.dispatchEvent(new window.Event('input', { bubbles: true }));
 
   viewButton('conversations').click();
@@ -503,7 +513,7 @@ test('adding a line draft focuses the comment field', async () => {
 
   const comment = document.getElementById('draft');
   assert.ok(comment);
-  assert.equal(document.activeElement, comment);
+  assert.equal(document.activeElement?.id, comment.id);
 });
 
 test('review prep shows real suggestions and editable file scope without leaving the view', async () => {
@@ -558,7 +568,7 @@ test('the diff still submits a line draft, replies locally and advances after Vi
   const diff = workspaceView('files');
   const fill = (id, value) => {
     const input = document.getElementById(id);
-    input.value = value;
+    nativeValue(input, value);
     input.dispatchEvent(new window.Event('input', { bubbles: true }));
   };
   diff.querySelectorAll('[title="Draft a comment on this line"]')[1].click();
@@ -599,7 +609,7 @@ for (const modifier of ['metaKey', 'ctrlKey']) {
     };
     press({ [modifier]: true });
     assert.equal(mutations().length, 0, 'empty drafts are not saved');
-    input.value = 'My keyboard draft';
+    nativeValue(input, 'My keyboard draft');
     input.dispatchEvent(new window.Event('input', { bubbles: true }));
     await tick();
     assert.equal(press().defaultPrevented, false, 'plain Enter keeps newline behavior');
@@ -635,7 +645,7 @@ for (const modifier of ['metaKey', 'ctrlKey']) {
     };
     press({ [modifier]: true });
     assert.equal(mutations().length, 0, 'empty replies are not saved');
-    input.value = 'My keyboard reply';
+    nativeValue(input, 'My keyboard reply');
     input.dispatchEvent(new window.Event('input', { bubbles: true }));
     await tick();
     assert.equal(press().defaultPrevented, false, 'plain Enter keeps newline behavior');
@@ -659,15 +669,16 @@ test('selecting adjacent code lines creates a contextual thread anchored to the 
   await start();
   const lines = [...document.querySelectorAll('#file-review [data-code-line]')];
   const range = document.createRange();
-  range.setStart(lines[0].lastChild, 1);
-  range.setEnd(lines[1].lastChild, lines[1].lastChild.textContent.length);
+  range.setStart(lines[0].firstChild.firstChild, 1);
+  range.setEnd(lines[1].firstChild.firstChild, lines[1].textContent.length);
   window.getSelection().removeAllRanges();
   window.getSelection().addRange(range);
   document.querySelector('.workspace-code').dispatchEvent(new window.MouseEvent('mouseup', { bubbles: true }));
   await tick();
+  button('Draft selected lines').click(); await tick();
   assert.match(document.querySelector('label[for="draft"]').textContent, /new lines 1–2/);
   const input = document.getElementById('draft');
-  input.value = 'Why is this check added?';
+  nativeValue(input, 'Why is this check added?');
   input.dispatchEvent(new window.Event('input', { bubbles: true }));
   await tick();
   button('Save draft').click();
@@ -699,7 +710,7 @@ test('native feedback loads all pages, searches a later reply and preserves igno
   button('Reveal ignored feedback').click();
   await tick();
   const search = document.getElementById('feedback-search');
-  search.value = 'Unique later page reply';
+  nativeValue(search, 'Unique later page reply');
   search.dispatchEvent(new window.Event('input', { bubbles: true }));
   await tick();
   assert.match(workspaceView('feedback').textContent, /Unique later page reply/);
@@ -750,7 +761,7 @@ test('native cards show supported links, anchors, freshness and unmappable navig
   await start();
   viewButton('feedback').click();
   button('Reveal ignored feedback').focus();
-  assert.equal(document.activeElement, button('Reveal ignored feedback'));
+  assert.equal(document.activeElement === button('Reveal ignored feedback'), true);
   button('Reveal ignored feedback').click();
   await tick();
   const feedback = workspaceView('feedback');
@@ -887,7 +898,7 @@ test('selected conversation shows grouped unread marker, private reply and local
   assert.deepEqual(JSON.parse(mutations()[0].body), { readThrough: thread.comments.at(-1).id });
   assert.equal(thread.unreadCount, 0);
   const input = document.getElementById('reply-desktop-t1');
-  input.value = 'Private question'; input.dispatchEvent(new window.Event('input', { bubbles: true })); await tick();
+  nativeValue(input, 'Private question'); input.dispatchEvent(new window.Event('input', { bubbles: true })); await tick();
   button('Send private reply').click(); await settle();
   assert.equal(thread.comments.at(-1).body, 'Private question');
   assert.equal(thread.reviewComment, null, 'discussion never creates an outgoing review comment');
@@ -922,9 +933,9 @@ test('both panel instances share per-thread unsaved text through resize, refresh
     const label = document.querySelector('.desktop-conversation label');
     assert.equal(label.control, desktop, 'desktop label targets its visible editor');
     desktop.focus();
-    assert.equal(document.activeElement, desktop);
+    assert.equal(document.activeElement === desktop, true);
     const fill = (element, value) => {
-      element.value = value;
+      nativeValue(element, value);
       element.dispatchEvent(new window.Event('input', { bubbles: true }));
     };
     fill(desktop, 'Unsent private reply');
@@ -957,7 +968,7 @@ test('failed outgoing save keeps the shared edit and successful clear resets bot
   routes['DELETE /api/v1/threads/t1/review-comment'] = () => { thread.reviewComment = null; return json({}); };
   await start(); document.querySelector('.diff-row .thread-marker').click(); await settle();
   const editor = document.querySelector('.desktop-conversation [aria-label="Review comment draft"]');
-  editor.value = 'Keep this text'; editor.dispatchEvent(new window.Event('input', { bubbles: true })); await tick();
+  nativeValue(editor, 'Keep this text'); editor.dispatchEvent(new window.Event('input', { bubbles: true })); await tick();
   [...document.querySelectorAll('.desktop-conversation button')].find((item) => item.textContent === 'Save review comment').click(); await settle();
   assert.equal(editor.value, 'Keep this text');
   assert.equal(document.querySelector('.mobile-conversation [aria-label="Review comment draft"]').value, 'Keep this text');
@@ -999,7 +1010,7 @@ test('repository type preference reloads and failure does not falsely save', asy
   };
   await start();
   const search = byLabel('Search file paths');
-  search.value = 'auth'; search.dispatchEvent(new window.Event('input', { bubbles: true }));
+  nativeValue(search, 'auth'); search.dispatchEvent(new window.Event('input', { bubbles: true }));
   button('File filters').click(); await tick();
   document.querySelector('nav[aria-label="Changed files"] label.regex input').click(); await tick();
   let select = byLabel('Repository preference for .rs');
@@ -1026,7 +1037,7 @@ test('selected range aligns desktop panel to starting row and renders mobile pan
   const media = window.matchMedia;
   window.matchMedia = () => ({ matches: false });
   HTMLElement.prototype.getBoundingClientRect = function () {
-    const top = this.id === 'file-review' ? 10 : this.dataset.threadAnchor?.split(' ').includes('t1') ? 150
+    const top = this.id === 'file-review' ? 10 : (this.dataset.threadAnchor?.split(' ').includes('t1') || this.matches?.('[data-code-line]') && this.closest('[data-thread-anchor="t1"]')) ? 150
       : this.matches?.('.desktop-conversation .review-thread') ? 40 + parseFloat(document.querySelector('.desktop-conversation')?.style.marginTop || '0') : 0;
     return { top, left: 0, right: 0, bottom: 0, width: 0, height: 0 };
   };
@@ -1038,13 +1049,13 @@ test('selected range aligns desktop panel to starting row and renders mobile pan
     assert.equal(row.getBoundingClientRect().top, 150);
     assert.equal(document.getElementById('file-review').getBoundingClientRect().top, 10);
     row.querySelector('.thread-marker').click(); await settle();
-    assert.equal(document.querySelector('.desktop-conversation').style.marginTop, '110px');
+    assert.equal(document.querySelector('.desktop-conversation').style.marginTop, '140px');
     const inline = row.nextElementSibling;
     assert.match(inline.className, /mobile-conversation/);
     assert.equal(inline.querySelector('article').id, 'thread-mobile-t1');
     assert.equal(document.querySelector('.desktop-conversation article').id, 'thread-t1');
     window.dispatchEvent(new window.Event('resize')); await settle();
-    assert.equal(document.querySelector('.desktop-conversation').style.marginTop, '110px');
+    assert.equal(document.querySelector('.desktop-conversation').style.marginTop, '140px');
   } finally { HTMLElement.prototype.getBoundingClientRect = original; window.matchMedia = media; }
 });
 

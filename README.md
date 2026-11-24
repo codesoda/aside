@@ -34,7 +34,7 @@ This project is under active development. The backend and API are still being in
 
 - [Rust](https://www.rust-lang.org/) and [Axum](https://github.com/tokio-rs/axum) for the CLI and loopback HTTP API.
 - [SQLite](https://www.sqlite.org/) for local review state.
-- [Svelte](https://svelte.dev/), [Vite](https://vite.dev/), and [Tailwind CSS](https://tailwindcss.com/) for the embedded UI.
+- [React](https://react.dev/), [TypeScript](https://www.typescriptlang.org/), [shadcn/ui](https://ui.shadcn.com/), [Vite](https://vite.dev/), and [Tailwind CSS](https://tailwindcss.com/) for the embedded UI.
 - [GitHub CLI](https://cli.github.com/) for access to live PRs.
 
 <p align="right"><a href="#readme-top">Back to top</a></p>
@@ -108,13 +108,14 @@ For unattended updates, `aside update --yes` is an explicit install confirmation
 
 ```sh
 pnpm -C app check
+pnpm -C app test
 pnpm -C app build
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-The CLI's Svelte frontend lives in `app/`; the standalone website lives in `web/`. Run `pnpm web` from the repository root to preview the website at `http://127.0.0.1:4173/` (set `ASIDE_WEB_PORT` to override the port). For a hot-reloaded CLI frontend backed by the server, run `pnpm -C app dev:aside` from the repository root. It builds and launches the demo server, starts Vite, and prints a private frontend login URL. Pass a full GitHub PR URL after `dev:aside` to test a live review. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for prerequisites, manual startup, port overrides, and shutdown instructions. The Rust backend is grouped by responsibility: `src/model/` defines the API contract, `src/diff/` parses patches, `src/github/` talks to `gh`, `src/store/` persists state, and `src/server/` serves authenticated routes. PRs run a Linux build and an [aislop](https://github.com/scanaislop/aislop) quality gate. Tags matching `v*` trigger the cross-platform release workflow. See [`aside-prd.md`](docs/plans/aside-prd.md) for contracts, security requirements, and acceptance criteria.
+The CLI's React frontend lives in `app/`; the standalone website lives in `web/`. Run `pnpm web` from the repository root to preview the website at `http://127.0.0.1:4173/` (set `ASIDE_WEB_PORT` to override the port). For a hot-reloaded CLI frontend backed by the server, set an isolated `ASIDE_DATA_DIR`, then run `pnpm -C app dev:aside` from the repository root. It builds and launches the demo server, starts Vite, and prints a private frontend login URL. Pass a full GitHub PR URL after `dev:aside` to test a live review. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for prerequisites, manual startup, port overrides, and shutdown instructions. The Rust backend is grouped by responsibility: `src/model/` defines the API contract, `src/diff/` parses patches, `src/github/` talks to `gh`, `src/store/` persists state, and `src/server/` serves authenticated routes. PRs run a Linux build and an [aislop](https://github.com/scanaislop/aislop) quality gate. Tags matching `v*` trigger the cross-platform release workflow. See [`aside-prd.md`](docs/plans/aside-prd.md) for contracts, security requirements, and acceptance criteria.
 
 <p align="right"><a href="#readme-top">Back to top</a></p>
 

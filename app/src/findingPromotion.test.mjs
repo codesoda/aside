@@ -2,11 +2,19 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, test } from 'node:test';
 import { installDom } from '../test/dom.mjs';
+import { createRequire } from 'node:module';
 import { findings, page, queueView, sessionView } from '../test/fixtures.mjs';
 
 installDom();
-const { mount, unmount, flushSync, tick } = await import('svelte');
-const { default: App } = await import('./App.svelte');
+globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+const require = createRequire(import.meta.url);
+const React = require('react');
+const { act } = React;
+const { createRoot } = require('react-dom/client');
+const { createServer } = await import('vite');
+const vite = await createServer({ server: { middlewareMode: true, hmr: false }, appType: 'custom' });
+const { default: App } = await vite.ssrLoadModule('/src/App.tsx');
+test.after(async () => vite.close());
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 const path = `/api/v1/analysis/findings/${findings[0].finding.id}/promote`;
 let app;
@@ -25,7 +33,8 @@ class FakeEventSource {
 }
 
 beforeEach(() => {
-  app = null;
+  document.body.innerHTML = '';
+  app = createRoot(document.body);
   calls = [];
   view = sessionView();
   current = structuredClone(findings[0]);
@@ -45,20 +54,14 @@ beforeEach(() => {
     const handler = routes[`${method} ${url.pathname}`];
     return handler ? handler(url, init) : json({ error: 'not_found', message: `no route ${method} ${url.pathname}` }, 404);
   };
-  document.body.innerHTML = '';
   document.title = 'Aside';
 });
 
-afterEach(() => { if (app) unmount(app); });
+afterEach(async () => { if (app) await act(async () => app.unmount()); });
 
-async function settle() {
-  for (let i = 0; i < 10; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await tick();
-  }
-  flushSync();
-}
-async function start() { app = mount(App, { target: document.body }); await settle(); }
+async function settle() { await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); }); }
+async function start() { await act(async () => app.render(React.createElement(App))); await settle(); }
+async function click(node) { assert.ok(node); await act(async () => node.click()); await settle(); }
 function promoteButton() {
   const button = [...document.querySelectorAll('#workspace-prep button')].find((node) => node.textContent.trim() === 'Promote to draft');
   assert.ok(button, 'current finding offers promotion');
@@ -82,7 +85,7 @@ test('browser promotion posts only to the local endpoint and opens an editable r
   };
   await start();
   assert.deepEqual(writes(), []);
-  promoteButton().click();
+  await click(promoteButton());
   await settle();
 
   assert.equal(writes().length, 1);
@@ -95,9 +98,11 @@ test('browser promotion posts only to the local endpoint and opens an editable r
   const editor = document.querySelector('.desktop-conversation [aria-label="Review comment draft"]');
   assert.ok(editor, 'existing review comment editor is open');
   assert.equal(editor.value, thread.reviewComment.body);
-  editor.value = 'Edited before saving';
-  editor.dispatchEvent(new window.Event('input', { bubbles: true }));
-  await tick();
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set.call(editor, 'Edited before saving');
+    editor.dispatchEvent(new window.Event('input', { bubbles: true }));
+  });
+  await settle();
   assert.equal(editor.value, 'Edited before saving');
   assert.equal(writes().length, 1, 'editing does not publish or save implicitly');
 });
@@ -113,11 +118,11 @@ test('uncertain promotion retry retains its original revision and operation ID a
     return json({ error: 'conflict' }, 409);
   };
   await start();
-  promoteButton().click();
+  await click(promoteButton());
   await settle();
   assert.match(document.body.textContent, /Promotion outcome uncertain/);
   assert.equal(current.userState.revision, 4);
-  promoteButton().click();
+  await click(promoteButton());
   await settle();
   assert.equal(attempts, 2);
   assert.equal(writes().length, 2);
@@ -142,11 +147,11 @@ test('HTTP 408 after a committed promotion replays the original operation', asyn
     return json({ state: current.userState, thread, draft: thread.reviewComment });
   };
   await start();
-  promoteButton().click();
+  await click(promoteButton());
   await settle();
   assert.match(document.body.textContent, /Promotion outcome uncertain/);
   assert.equal(current.userState.revision, 4);
-  promoteButton().click();
+  await click(promoteButton());
   await settle();
   assert.equal(writes().length, 2);
   assert.deepEqual(JSON.parse(writes()[1].body), JSON.parse(writes()[0].body));
@@ -166,16 +171,16 @@ test('paginated history is isolated from repeated visibility and session refresh
   };
   await start();
   const browser = () => document.querySelector('[aria-label="Browse findings"]');
-  const click = (label) => [...browser().querySelectorAll('button')].find((button) => button.textContent.trim() === label).click();
-  click('Historical');
+  const clickLabel = async (label) => click([...browser().querySelectorAll('button')].find(button => button.textContent.trim() === label));
+  await clickLabel('Historical');
   await settle();
   assert.ok(browser().textContent.includes('Old finding 2'));
   const historyCalls = () => calls.filter((call) => call.path === '/api/v1/analysis/findings' && call.search.includes('includeHistorical=true'));
   assert.equal(historyCalls().length, 3);
-  click('Open');
+  await clickLabel('Open');
   for (let index = 0; index < 3; index++) {
-    document.dispatchEvent(new window.Event('visibilitychange'));
-    FakeEventSource.latest.emit('analysis.findings.upserted');
+    await act(async () => document.dispatchEvent(new window.Event('visibilitychange')));
+    await act(async () => FakeEventSource.latest.emit('analysis.findings.upserted'));
     await settle();
     assert.ok(browser().textContent.includes(current.finding.title));
   }
@@ -193,15 +198,15 @@ test('current refresh completes while historical pagination is pending; stale hi
   };
   await start();
   const browser = () => document.querySelector('[aria-label="Browse findings"]');
-  const click = (label) => [...browser().querySelectorAll('button')].find((button) => button.textContent.trim() === label).click();
-  click('Historical');
+  const clickLabel = async (label) => click([...browser().querySelectorAll('button')].find(button => button.textContent.trim() === label));
+  await clickLabel('Historical');
   await settle();
-  click('Open');
+  await clickLabel('Open');
   current = { ...current, finding: { ...current.finding, title: 'Fresh current finding' } };
-  document.dispatchEvent(new window.Event('visibilitychange'));
+  await act(async () => document.dispatchEvent(new window.Event('visibilitychange')));
   await settle();
   assert.match(browser().textContent, /Fresh current finding/);
-  releaseHistory(json(page([{ ...structuredClone(findings[1]), label: 'historical' }])));
+  await act(async () => releaseHistory(json(page([{ ...structuredClone(findings[1]), label: 'historical' }]))));
   await settle();
   assert.match(browser().textContent, /Fresh current finding/);
   assert.doesNotMatch(browser().textContent, /Loading findings/);
@@ -216,19 +221,19 @@ test('historical load failure is not shown as empty history and can be retried',
     return json(page([current, historical]));
   };
   const browser = () => document.querySelector('[aria-label="Browse findings"]');
-  const click = (label) => [...browser().querySelectorAll('button')].find((button) => button.textContent.trim() === label).click();
+  const clickLabel = async (label) => click([...browser().querySelectorAll('button')].find(button => button.textContent.trim() === label));
   await start();
   assert.equal(historicalAttempts, 0);
-  click('Historical');
+  await clickLabel('Historical');
   await settle();
   assert.match(browser().textContent, /Could not load findings/);
   assert.doesNotMatch(browser().textContent, /No historical findings/);
-  click('Open');
+  await clickLabel('Open');
   await settle();
   assert.ok(browser().textContent.includes(current.finding.title), 'retained current finding remains visible after history fails');
-  click('Historical');
+  await clickLabel('Historical');
   await settle();
-  click('Retry finding load');
+  await clickLabel('Retry finding load');
   await settle();
   assert.equal(historicalAttempts, 3);
   assert.ok(browser().textContent.includes(historical.finding.title));
