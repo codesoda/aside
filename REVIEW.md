@@ -6,7 +6,7 @@
 - Review pagination and failure paths for every GitHub source. Partial pages, permission errors, rate limits, and unknown totals must retain usable records without claiming a complete import or silently inferring deletion.
 - Check that browser and agent clients see the same server-owned session, coverage, and paginated findings. Stale cursors or revisions should fail recoverably; an empty result with incomplete coverage is not clean.
 - Check local draft and agent actions for attribution and boundaries. An agent must not mark files reviewed, change exclusions or consent, approve, publish, or send private code to an external model without explicit human action.
-- Treat structural analysis as leads to investigate, not confirmed defects. Keep native review independent of Inspect and require explicit consent before sending code to an external model.
+- Treat structural analysis as leads to investigate, not confirmed defects.
 - Before GitHub publication, inspect the exact selected drafts and targets, revalidate base/head and anchors, and require explicit human confirmation. A failed or uncertain remote write must not be retried blindly or discard remaining drafts.
 - Exercise persistence and migrations with an existing database as well as a fresh one. Review state, triage, drafts, source identities, and old snapshots must survive restart without being relabelled current or complete.
 - Keep `aside demo` offline and non-publishing. For UI or API changes, check the embedded production assets and generated TypeScript contracts as well as the Rust tests; do not rely only on the Vite development server.

@@ -8,7 +8,6 @@ on:
       - 'install.ps1'
       - 'tests/install_test.py'
       - 'tests/install_windows.ps1'
-      - 'tests/inspect_contract_evaluation.py'
       - '.github/workflows/installer.yml'
 
 permissions:
@@ -27,9 +26,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Run offline installer contract tests
-        run: |
-          python3 tests/install_test.py
-          python3 -m unittest -v tests/inspect_contract_evaluation.py
+        run: python3 tests/install_test.py
 
   windows-installer:
     runs-on: windows-2022

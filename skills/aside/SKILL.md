@@ -29,6 +29,8 @@ Before reviewing a PR, look for `REVIEW.md` at the root of the PR's repository. 
 
 ## Independent review and early feedback
 
+The installers can fetch Inspect as a separate tool. An installed copy does not select a review mode or authorize its use. Aside's native review works without it. To skip the download, use `--without-inspect` on Unix or `-WithoutInspect` on Windows.
+
 For each live PR review requested through Aside, begin reviewing as soon as the session is healthy. Do not wait for the person to open or finish reading the UI; local drafts appear there through live events. Read the current session and repository `REVIEW.md`, and use Aside's native analysis as leads, not verdicts. Do not invoke an external model-backed tool without explicit consent.
 
 Independently examine the diff, surrounding code, evidence, coverage, and relevant call sites. Also look for concerns that the native analysis did not flag. Verify each concern against the current complete patch and repository guidance; do not post speculative findings, risk scores alone, or duplicate existing threads. If nothing is verified, do not create a draft just to populate the UI.

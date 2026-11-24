@@ -59,7 +59,7 @@ aside <pr_url>
 
 - **Local-first and single binary:** Production Aside remains one Rust CLI + Axum server with embedded, statically compiled Svelte/Tailwind/shadcn-svelte assets. The base review UI does not depend on analysis completion, an LLM, a second service, a hosted backend, or a Node runtime.
 - **Deterministic by default:** Git/diff rules, history-derived signals and structural analysis work without an LLM or sending code to another provider.
-- **LLMs are optional and consent-based:** No silent network upload of private source, comments, secrets or repository contents. Inspect's optional LLM mode is still an LLM mode, not “static analysis.”
+- **LLMs are optional and consent-based:** No silent network upload of private source, comments, secrets or repository contents. Model-assisted review is not “static analysis.”
 - **Existing GitHub feedback is first-class:** It is imported *as authored*, with precise source identity, threads, review states, timestamps, history, code coordinates, validity and permissions. A comment is not equivalent to a tool-generated finding.
 - **Every finding is explainable:** Evidence, derivation, scope, source, version, uncertainty and suggested next action must be inspectable. A score alone is never an adequate result.
 - **Review state is independent:** No analysis engine, bot comment, severity score or scan completion may mark files human-reviewed, auto-approve, auto-resolve GitHub discussions or publish.
@@ -71,7 +71,7 @@ aside <pr_url>
 ### 1.2 Priority vocabulary and recommended phasing
 
 - **A0 — Foundation:** Unified schemas, mock fixtures, basic import/normalisation, deterministic diff signals, in-place presentation and SSE progress. This should attach to the original mocked UI/integration milestones where feasible.
-- **A1 — First useful intelligence release:** Full GitHub thread/review import, check-run annotation import, history/temporal coupling, optional structural inspect adapter, persistence, rerun/invalidation and agent read access.
+- **A1 — First useful intelligence release:** Full GitHub thread/review import, check-run annotation import, history/temporal coupling, native structural analysis, persistence, rerun/invalidation and agent read access.
 - **A2 — Opt-in deeper analysis:** Bring-your-own-model LLM passes, validator/rebuttal stage, advanced cross-file graph, richer test/coverage integration, tuning/evaluation and optional SARIF/code-scanning sources.
 
 `A0/A1/A2` are **addendum priorities**; they do not silently reclassify existing parent-PRD `P0/P1/P2` requirements.
@@ -173,7 +173,7 @@ PR ingestion ─┬─> diff facts (fast, no history)
               └─> repository snapshot + safe Git context
                      ├─> churn / recency / ownership
                      ├─> temporal coupling
-                     ├─> structural entities + complexity + inspect
+                     ├─> structural entities + complexity
                      └─> dependency/blast radius
                              └─> optional LLM context selection
 ```
@@ -370,99 +370,6 @@ Detect changes to exported/public signatures, schema files, database migrations,
 
 ---
 
-## 7. `ataraxy-labs/inspect` integration: exact intent and constraints
-
-**Evaluation decision (#37):** Aside does not bundle or invoke Inspect. By default, the installers try to download the standalone, checksum-pinned executable from upstream. Users can skip it, and it is not required for installation or review. The native structural engine remains the shipping path. See the [evaluation record](../inspect-evaluation.md) for the licence, source contract, sandbox gaps and benchmark. The options and command shapes below describe a possible future integration, not shipped behavior.
-
-Repository: <https://github.com/ataraxy-labs/inspect>. The upstream documentation describes Rust/Tree-sitter-based **entity-level classification, dependency graphs, blast-radius scoring, independent change grouping, JSON output, six MCP tools and optional LLM-powered review**. These are different capabilities and must remain separate in Aside's user settings and provenance.
-
-### 7.1 What we want from `inspect`
-
-- A precise inventory of modified **entities**, not just changed files: function/method/class/trait/interface and path/line identity as supported.
-- Before/after classification such as text-only/cosmetic, syntax/signature and functional changes (as upstream reports them).
-- An explainable structural-risk measurement including direct/transitive dependencies, public API exposure and change operation.
-- Separate logical groups within a large/tangled PR that can be navigated from a suggested review-order pane.
-- Entity-level related context that helps investigate specific modified code while keeping the official PR diff as the canonical review surface.
-
-A numeric `inspect` risk score is **upstream's triage heuristic**. Store it under a namespaced `source_score`, its upstream version and input set; do not relabel it as an Aside defect probability or overwrite the user-visible severity of other tools.
-
-### 7.2 Integration choices, in order
-
-| Option | Pros | Risks / policy | Recommendation |
-|---|---|---|---|
-| **Subprocess of installed `inspect` binary** | Fast prototype; JSON interface; low coupling; separate distribution | Additional install; version drift; subprocess permissions; **licence/commercial-use implications remain** | **Evaluate in development and opt-in experimental mode** |
-| **Rust crate/source embedding** | Single binary; typed APIs; lower runtime overhead | Distribution, linking, update burden; potential competing-use licence concern | **Do not ship before legal clearance/explicit permission** |
-| **Native structural adapter** using permissively licensed Tree-sitter ecosystem | Full ownership of contract; single binary; deterministic fallback | Significant engineering; cross-language graph harder | **Long-term safe baseline** |
-| **Hosted `inspect` endpoint** | More advanced upstream analyses | Network sends source/PR identity; service, credential, billing, privacy; changes product assumptions | **Explicit separate opt-in only** |
-| **No structural engine available** | Minimal, dependable | Fewer structure signals | **Must continue with basic diff + GitHub import** |
-
-**Critical licensing gate:** At time of research, upstream `LICENSE.md` identifies **FSL-1.1-ALv2**, with a “Competing Use” restriction covering software offered as a commercial product/service with same or substantially similar functionality, and an Apache-2.0 future conversion on a per-version second-anniversary basis. Aside itself is a code-review product, so this is a material issue. Do not treat the repository as unconditional MIT/Apache open source; do not copy/ship its implementation without qualified licensing review or permission. Developing our own algorithms from public techniques does not grant permission to copy their protected code. Reference: <https://github.com/ataraxy-labs/inspect/blob/main/LICENSE.md>. No assertion of legal clearance is made here.
-
-### 7.3 CLI prototype, capabilities and process isolation
-
-Upstream documents these command shapes:
-
-```bash
-# Proposed experimentation only; inspect availability/version must be checked.
-inspect diff main..feature --format json
-inspect pr 42 --format json
-inspect diff main..feature --min-risk medium --format json
-
-# IMPORTANT: this is an LLM path, not static analysis:
-inspect review main..feature --provider ollama --model <explicit-model>
-```
-
-The upstream CLI may change its JSON schema or exact repository/PR resolution behaviour. **Do not assume the examples are a pinned, validated JSON API.** At integration time:
-
-1. Pin a source release/commit and record executable hash/version, `--help` output and observed fixture JSON.
-2. Compare output on known repos and exact SHAs to confirm it analysed the same base/head snapshot as Aside. `inspect pr` may resolve refs from the working directory; do not silently use unrelated checkout state.
-3. Prefer `inspect diff <pinned-base>..<pinned-head>` only after verifying this yields the desired PR comparison semantics, or use an adapter exposing explicit source snapshots. Label any approximation.
-4. Use `tokio::process::Command` with validated argv, fixed working directory, clean environment and bounded stdout/stderr/time/resources; never a shell.
-5. Set minimum environment variables; filter tokens and credential-bearing env from child processes. Prevent unknown provider model calls in deterministic mode.
-6. Parse JSON through versioned adapter types; reject mismatched schema, partial JSON and wrong input refs. Store raw outputs only if necessary, privately, with size limits and redaction policy.
-7. Translate entities to the canonical PR file IDs, changed-hunk anchors and `CodeEntity` objects. If exact current anchor isn't provable, use an entity/file-level anchor or a related-context link rather than guessing line numbers.
-8. Preserve upstream score, classification, logical group ID, dependency counts, tool version, analysis input and warnings.
-9. A timeout/failure affects only that provider; mark structural analysis `partial` or `unavailable`, not “no risk.”
-
-### 7.4 Suggested `inspect` adapter output
-
-```json
-{
-  "provider": "inspect",
-  "providerVersion": "<pinned-version>",
-  "mode": "deterministic_triage",
-  "snapshotId": "snap_abc",
-  "comparison": {"baseSha": "<sha>", "headSha": "<sha>", "method": "validated_git_range"},
-  "entities": [
-    {
-      "upstreamId": "entity-1",
-      "filePath": "src/auth.rs",
-      "symbol": "validate_session",
-      "kind": "function",
-      "changeClassification": ["functional"],
-      "changeOperation": "modified",
-      "upstreamRiskScore": 0.82,
-      "upstreamRiskLabel": "critical",
-      "isPublicApi": true,
-      "directDependents": 12,
-      "transitiveDependents": 171,
-      "logicalGroupId": "group-1",
-      "anchor": {"kind": "entity", "startLine": 40, "endLine": 84}
-    }
-  ],
-  "warnings": [],
-  "complete": true
-}
-```
-
-This is an **Aside adapter sketch**, not a quotation of upstream's actual JSON schema. The adapter must be validated against pinned upstream fixtures before implementation.
-
-### 7.5 Integration with LLM mode
-
-If a user explicitly selects `inspect review` as the LLM implementation, it must be recorded as `source_kind=llm` with an `inspect` orchestrator and actual model/provider. The same strict consent, code exposure, request budgets and validation rules from Section 8 apply; “the CLI ran locally” does not mean the model inference stayed local. `inspect review` supports external providers as well as local Ollama/OpenAI-compatible endpoints per upstream docs. **Never start it as part of the default deterministic scan.**
-
----
-
 ## 8. Optional LLM-assisted analysis: complete specification
 
 LLM review is an **opt-in second layer** over deterministic evidence and imported feedback. Its purpose is to explore plausible correctness/security/performance/contract issues in high-attention changes, not to substitute for human review. No model is hard-coded as universally best; models, prices and capabilities are editable, and unknown pricing is unknown.
@@ -475,7 +382,6 @@ LLM review is an **opt-in second layer** over deterministic evidence and importe
 | `local_model` | Opt-in | Local model endpoint only if configured | Validate endpoint/host; local endpoint can itself proxy to cloud, so disclose uncertainty. |
 | `external_provider` | Opt-in, per repo/provider | Source excerpts sent to configured external provider | Show estimated token/cost/budget and the exact class of data shared. |
 | `agent_supplied` | Opt-in | Depends on attached agent and its tools | Agent output imported as attributed untrusted suggestions, not native deterministic facts. |
-| `inspect_llm` | Opt-in | Depends on `inspect` provider flags/hosted option | Treated as an LLM run, with provider provenance. |
 
 **Consent dimensions:** per-repository permission; model/provider; which source categories may be sent (diff, related source, test snippets, imported comments, CI summaries); maximum included bytes/tokens; external vs localhost endpoint; cost/token budget; whether results may persist to disk; whether source excerpts may be retained; redaction configuration. Clear current policy and provide a dry-run data-preview summary. Never automatically infer consent from the existence of an API key.
 
@@ -485,7 +391,7 @@ LLM review is an **opt-in second layer** over deterministic evidence and importe
 
 ```text
 ModelProvider
-  id, name, endpointKind(local|external|agent|inspect), endpointOrigin
+  id, name, endpointKind(local|external|agent), endpointOrigin
   modelId, modelRevision?, supportedCapabilities
   contextWindow?, maxOutputTokens?, reasoningSetting?, temperature?
   pricingInputPerM?, pricingOutputPerM?, currency?, priceSource?, observedAt?
@@ -791,7 +697,7 @@ Derived ReviewIntelligenceView (per-current-snapshot UI/API read model)
 
 | Field | Values (initial set) | Notes |
 |---|---|---|
-| `sourceKind` | `aside_static`, `inspect_static`, `llm`, `github_review_thread`, `github_review_summary`, `github_issue_comment`, `github_check_annotation`, `github_check_run`, `github_commit_status`, `github_code_scanning`, `agent_local`, `other_adapter` | Source category, not verdict. |
+| `sourceKind` | `aside_static`, `llm`, `github_review_thread`, `github_review_summary`, `github_issue_comment`, `github_check_annotation`, `github_check_run`, `github_commit_status`, `github_code_scanning`, `agent_local`, `other_adapter` | Source category, not verdict. |
 | `assertionKind` | `measured_fact`, `attention_hint`, `defect_hypothesis`, `confirmed_test_failure`, `external_feedback`, `source_status`, `informational` | Do not turn external allegation into a measured fact. |
 | `findingKind` | `complexity`, `churn`, `hotspot`, `temporal_coupling`, `blast_radius`, `public_api`, `contract`, `security`, `concurrency`, `correctness`, `performance`, `test_coverage`, `tests_changed`, `dependency`, `migration`, `suppression`, `ownership`, `duplicate_code`, `ci_annotation`, `other` | Typed category tags may be multiple. |
 | `attentionLevel` | `high`, `investigate`, `info`, `none` | Aside presentation grouping, explainable and versioned. |
@@ -818,7 +724,7 @@ struct EntityId(String);
 struct AnalysisRun {
     id: AnalysisRunId,
     snapshot_id: SnapshotId,
-    provider_id: String,         // e.g. "aside.git-history", "inspect", "anthropic"
+    provider_id: String,         // e.g. "aside.git-history", "aside.structure", "anthropic"
     engine_version: String,
     configuration_digest: String,
     input_digest: String,
@@ -1050,11 +956,11 @@ FileSummary
   scopeStatus: included                      // from repository exclusion evaluator
   reasons:
     - deterministic: churn percentile 96, 180-day corpus
-    - structural: inspect blast radius 171, upstream score 0.82
+    - structural: 171 measured transitive dependents
     - external: 2 unresolved GitHub threads, one outdated thread
     - model: 1 unverified LLM hypothesis
   attentionLevel: high                       // derived presentation, explained
-  completeness: {history: complete, github: complete, inspect: partial, llm: skipped}
+  completeness: {history: complete, github: complete, structure: partial, llm: skipped}
 ```
 
 Importantly, the derived `FileSummary` is **not** stored as authority. Recompute it after scope edits, source refreshes and snapshot changes. Underlying imported native threads retain original replies and status.
@@ -1260,7 +1166,7 @@ All routes below are **proposed additions under the parent's existing `/api/v1` 
     {"id":"github.reviews","status":"succeeded","complete":true,"lastSync":"2026-11-20T11:59:00Z"},
     {"id":"aside.diff","status":"succeeded","complete":true},
     {"id":"aside.history","status":"partial","complete":false,"warning":"history shallow"},
-    {"id":"inspect","status":"skipped","reason":"not_installed"},
+    {"id":"aside.structure","status":"partial","complete":false,"warning":"unsupported language"},
     {"id":"llm","status":"skipped","reason":"disabled_by_default"}
   ],
   "suggestedFileOrder": [
@@ -1371,7 +1277,7 @@ This is a conceptual layout, not a mandate for a permanent third column. On smal
 ### 14.2 First paint and progressive enhancement
 
 - Render PR header, file tree, normal diff, persisted scope and review progress from parent-PRD snapshot immediately.
-- Show passive, granular progress in a bottom status region or compact badge: GitHub feedback syncing, diff scan ready, history running/partial, inspect unavailable, LLM disabled.
+- Show passive, granular progress in a bottom status region or compact badge: GitHub feedback syncing, diff scan ready, history running/partial, structure unavailable, LLM disabled.
 - Add file-level indicators as results arrive without shifting the selected line or stealing focus.
 - Never disable review or require clicking Start Review before analysis finishes.
 - Cache the last completed run with “from head abc…” and `stale` label until refreshed; do not show stale findings as if checked against current code.
@@ -1404,7 +1310,7 @@ At most a few compact badges/icons should appear by default; detailed evidence l
 Every card/popup should include:
 
 - concise, factual title;
-- source icon/text (`Aside static`, `inspect`, `GitHub · CodeRabbit`, `Copilot`, `LLM · provider/model`, `CI check`, etc.);
+- source icon/text (`Aside static`, `GitHub · CodeRabbit`, `Copilot`, `LLM · provider/model`, `CI check`, etc.);
 - `Measured`, `External comment`, `Unverified hypothesis`, or `Validated hypothesis` label;
 - current/old/outdated state and relevant commit/digest;
 - precise file/entity/line or an explicit file/PR-level anchor;
@@ -1525,7 +1431,6 @@ min_temporal_coupling_confidence = 0.60
 
 [analysis.structure]
 enabled = true
-preferred_engine = "native"   # optional: "inspect" once cleared/installed
 max_traversal_depth = 4
 max_entities_per_file = 500
 
@@ -1563,7 +1468,7 @@ show_outdated_threads = true
 GitHub PR metadata, comments, review bot messages, Markdown, source files, config files, AST parse results and model output are all **untrusted content**. They may contain prompt injection, HTML/script payloads, malicious filenames, huge strings, Unicode tricks, secrets and misleading statements.
 
 - Render source/Markdown with escaping and controlled sanitisation, never insert raw GitHub HTML or raw model-generated HTML into Svelte.
-- Use `gh`/`git`/`inspect` with parameter arrays and validated input, never `sh -c` with interpolated PR URLs, filenames or comment text.
+- Use `gh`/`git` with parameter arrays and validated input, never `sh -c` with interpolated PR URLs, filenames or comment text.
 - Validate PR owner/repo/number/host according to parent's GitHub.com-only rule; canonicalize paths and reject traversal. Never use a PR file path as a filesystem read without a safe object-store lookup.
 - Do not run arbitrary repository scripts, package managers, test suites, Git hooks or third-party plugins as part of static-analysis startup.
 - Limit CPU, memory, subprocess time, output bytes, recursion depth, number of files, AST nesting and total result count. Degrade per-provider with honest partial status.
@@ -1576,7 +1481,7 @@ Respect the parent PRD: bind only loopback; validate Host/Origin; do not allow p
 
 ### 17.3 Sensitive code and external services
 
-Private-source LLM transmission is high-impact. Require explicit repo/provider opt-in with a data disclosure preview; no initial automatic hosted `inspect` calls. Credential material must use OS keychain/env references and safe storage permissions. A configured “localhost” LLM endpoint should be limited to trusted address families unless deliberately opted into a remote URL; even then, explain that a local proxy may relay data outward. Do not log HTTP bodies. Don't claim all secrets can be detected or redacted; present this as a best-effort safeguard.
+Private-source LLM transmission is high-impact. Require explicit repo/provider opt-in with a data disclosure preview. Credential material must use OS keychain/env references and safe storage permissions. A configured “localhost” LLM endpoint should be limited to trusted address families unless deliberately opted into a remote URL; even then, explain that a local proxy may relay data outward. Do not log HTTP bodies. Don't claim all secrets can be detected or redacted; present this as a best-effort safeguard.
 
 ### 17.4 GitHub publication boundary
 
@@ -1584,7 +1489,7 @@ Analysis results, locally dismissed GitHub comments, “validated” LLM hypothe
 
 ### 17.5 Licences and attribution
 
-Before distributing any optional analyzer bundled in the Rust CLI, audit direct and transitive dependencies, licence compatibility and provider terms. `inspect`'s current FSL restrictions require special attention due to its competing functionality (Section 7). A prototype that executes a user-installed binary may still have distribution/use considerations; do not equate subprocess isolation with legal permission. Record tool versions and acknowledgement notices in About/Diagnostics as applicable.
+Before distributing any optional analyzer bundled in the Rust CLI, audit direct and transitive dependencies, licence compatibility and provider terms. Record tool versions and acknowledgement notices in About/Diagnostics as applicable.
 
 ### 17.6 Data export and privacy
 
@@ -1615,7 +1520,7 @@ github_fetch_started/completed/partial/failed
 snapshot_parsed + fingerprint_version
 analysis_run_started/progress/completed/failed
 history_corpus_loaded + count + truncated
-inspect_adapter_version + input sha + status
+structure_engine_version + input sha + status
 llm_consent_checked + provider/mode + budget + status
 source_import_completed + pages + counts + partial reason
 finding_upserted/correlated/superseded + counts only
@@ -1636,8 +1541,7 @@ Do not log source bodies, GitHub private comments, credentials or LLM prompts by
 | Git history unavailable | Diff static analysis works; history module skipped | `history_unavailable` coverage reason |
 | Shallow Git history | Metrics display a partial-corpus badge | Cache corpus and truncation info |
 | Unsupported language | File still reviewable; structural metrics unavailable | Record skipped files/reason |
-| `inspect` uninstalled/unlicensed | Static fallback + “inspect unavailable” | Never silently invoke network install |
-| `inspect` exits non-zero or invalid JSON | Optional structural provider fails independently | Keep existing valid findings, mark prior output stale if inputs differ |
+| Structural analysis fails | Diff static analysis and GitHub import continue | Keep existing valid findings, mark prior output stale if inputs differ |
 | Model provider disabled | No model calls; no “0 bugs” conclusion | LLM run `skipped`, default |
 | Model request budget exhausted | Partial results with coverage/cost | Preserve all valid partial findings |
 | LLM hallucinated anchor | Candidate not inline-attached | Reject/downgrade to unanchored; record warning |
@@ -1747,7 +1651,7 @@ Mock fixtures must match real Rust/TypeScript contract shapes. No live credentia
 13. `aside analyze <pr_url> --json` returns stable, typed, complete-or-partial analysis with finding IDs and evidence; it never writes to GitHub.
 14. A coding agent can read findings and native imported threads, investigate with the documented skill and reply locally under agent identity; cannot silently alter review acknowledgment/publish.
 15. Browser reload/new tab sees same persisted findings and local user dispositions; SSE gaps reconcile from snapshot.
-16. A history/inspect/model provider failure is isolated; normal PR review and imported feedback remain functional.
+16. A history/structure/model provider failure is isolated; normal PR review and imported feedback remain functional.
 17. A report with only failed/partial providers never announces “0 issues found.”
 18. All current high-attention findings link to concrete code or a declared file/PR-level context, with reproducible rationale and explicit input version.
 
@@ -1768,7 +1672,7 @@ Suggested metrics:
 - reviewer time-to-first-meaningful-file, repeated-review time saved, % of findings dismissed as noise;
 - LLM cost per validated useful finding, tokens/context truncation, safety violations and source-data transfer consent compliance.
 
-Always include baselines: GitHub file order, simple diff size order, unresolved-thread order, hotspot-only ranking and combined ranking. An upstream benchmark claim from `inspect` is useful background but **not a promise of Aside's performance or a replacement for validation on Aside's PR distribution**.
+Always include baselines: GitHub file order, simple diff size order, unresolved-thread order, hotspot-only ranking and combined ranking. Validate performance on Aside's PR distribution rather than relying on external benchmark claims.
 
 ---
 
@@ -1801,12 +1705,12 @@ These are suggested work packages to merge with the parent's existing Milestones
 
 **Exit:** Offline/real PRs show reproducible evidence and actionable suggestions without an LLM or repo checkout, and don't delay the review UI.
 
-### AI-3 — History, structural and `inspect` evaluation
+### AI-3 — History and structural analysis
 
 - Safe matching repo acquisition/cache, fixed comparison baseline, Git churn/recency and temporal coupling.
 - Tree-sitter/native entity interfaces and metrics; related context and change grouping.
-- Evaluate the pinned Inspect contract and licence offline. Do not ship a subprocess without clearance and verified exact-input binding. Record the native structural benchmark and the integration decision in the [evaluation record](../inspect-evaluation.md).
-- In the release, use only legally cleared/distributable integration; support native/fallback engine.
+- Benchmark native structural analysis against representative PRs, recording input identity, coverage and limitations.
+- In the release, support native structural analysis with a diff-only fallback.
 
 **Exit:** An ordinary PR can show measured hotspots, co-change candidates and bounded blast radius where supported, with tool/input/coverage provenance; failure is isolated.
 
@@ -1837,7 +1741,6 @@ These are suggested work packages to merge with the parent's existing Milestones
 | Default LLM | Disabled | Consent and source privacy. |
 | External feedback coverage | All accessible review threads, reviews, issue comments, check runs/annotations, commit statuses | Broad coverage; clear pagination/permission status. |
 | Code scanning alerts | A2 opt-in/read-only if permitted | Additional permissions and PR-instance correlation complexity. |
-| `inspect` shipping strategy | Optional prototype; do not bundle before licence review | FSL competing-use concern; single-binary release requirement. |
 | Repo history | Matching local Git objects/cache if available; API fallback; bounded fetch | No mandatory checkout and no repo mutation. |
 | Human review status | Only parent's explicit current-fingerprint acknowledgment | Prevent automation from masquerading as review. |
 | Review queue | Explainable categorical/lexicographic priority | Avoid false calibrated “risk”. |
@@ -1854,24 +1757,23 @@ These are suggested work packages to merge with the parent's existing Milestones
 
 **Open items to explicitly prototype and decide:**
 
-1. Exact `inspect` licensing route and whether an embedded/native substitute is preferable.
-2. Git history access for private repos using existing `gh` credentials without leaking tokens to child processes or logs.
-3. Whether local history analysis is off by default for very large repos, with on-demand analysis per file.
-4. GitHub GraphQL field capability verification and nested pagination implementation, plus robust REST fallback.
-5. Source-specific semantics for `outdated`, `resolved`, `dismissed`, `minimized`, `pending` and deleted source records.
-6. Supported Rust/TS/Python language coverage and quality of cross-file entity graphs.
-7. Fingerprint algorithm/version linkage for source findings to the canonical parent-PRD diff digest.
-8. Snapshot invalidation and whether source comments retain “current” if GitHub remaps them but Aside's file digest differs.
-9. When to run model verification, whether to use independent model/vendor, and which reproduction tests are permitted.
-10. Exact LLM privacy consent screen and storage/TTL for prompts, evidence and source excerpts.
-11. How to expose CI annotations from runs on merge/merge-queue refs distinctly from PR head SHA.
-12. Whether analysis can inspect intentionally ignored files by default or only their imported feedback, with clear per-provider coverage.
-13. Search, paging and rendering strategy for pathological PRs with thousands of files and comments.
-14. Meaning of “Reviewed” vs “Viewed” from parent PRD when user applies an attention queue; analysis must not decide this.
-15. Whether to expose advisory integration and code-scanning alerts in v1 versus post-v1.
-16. Calibration of thresholds and ranking weights on real PR samples rather than intuition.
-17. Model/provider pricing availability and unknown-cost handling; no invented defaults.
-18. Optional cross-machine sharing of analysis metadata is outside current parent scope and should not be introduced accidentally.
+1. Git history access for private repos using existing `gh` credentials without leaking tokens to child processes or logs.
+2. Whether local history analysis is off by default for very large repos, with on-demand analysis per file.
+3. GitHub GraphQL field capability verification and nested pagination implementation, plus robust REST fallback.
+4. Source-specific semantics for `outdated`, `resolved`, `dismissed`, `minimized`, `pending` and deleted source records.
+5. Supported Rust/TS/Python language coverage and quality of cross-file entity graphs.
+6. Fingerprint algorithm/version linkage for source findings to the canonical parent-PRD diff digest.
+7. Snapshot invalidation and whether source comments retain “current” if GitHub remaps them but Aside's file digest differs.
+8. When to run model verification, whether to use independent model/vendor, and which reproduction tests are permitted.
+9. Exact LLM privacy consent screen and storage/TTL for prompts, evidence and source excerpts.
+10. How to expose CI annotations from runs on merge/merge-queue refs distinctly from PR head SHA.
+11. Whether analysis can inspect intentionally ignored files by default or only their imported feedback, with clear per-provider coverage.
+12. Search, paging and rendering strategy for pathological PRs with thousands of files and comments.
+13. Meaning of “Reviewed” vs “Viewed” from parent PRD when user applies an attention queue; analysis must not decide this.
+14. Whether to expose advisory integration and code-scanning alerts in v1 versus post-v1.
+15. Calibration of thresholds and ranking weights on real PR samples rather than intuition.
+16. Model/provider pricing availability and unknown-cost handling; no invented defaults.
+17. Optional cross-machine sharing of analysis metadata is outside current parent scope and should not be introduced accidentally.
 
 ---
 
@@ -1883,8 +1785,6 @@ The following URLs are technical references and starting points for implementers
 
 - **Current Aside PRD:** <https://github.com/codesoda/aside/blob/main/docs/plans/aside-prd.md> — especially §§1.1–1.2, 3, 4.2–4.5, 5–7, 8–9, 12–13. This document was checked against its current `main` version on 20 November 2026.
 - **discuss-cli:** <https://github.com/codesoda/discuss-cli> — earlier PR review implementation to learn from, especially GitHub authentication, local-first comments and review workflows.
-- **inspect:** <https://github.com/ataraxy-labs/inspect> — entity-level triage, risk, dependency context, grouping and optional review via LLM.
-- **inspect licence:** <https://github.com/ataraxy-labs/inspect/blob/main/LICENSE.md> — FSL-1.1-ALv2, competing-use terms and future conversion; obtain legal review before shipping its code.
 - **ast-grep:** <https://github.com/ast-grep/ast-grep> — potential structural rule engine/reference.
 - **rust-code-analysis:** <https://github.com/mozilla/rust-code-analysis> — potential structural metric engine/reference.
 
@@ -1903,7 +1803,6 @@ The following URLs are technical references and starting points for implementers
 
 ### Claims vs design proposals
 
-- **Verified upstream capabilities:** `inspect` documents entity triage, `inspect pr <number> --format json`, `inspect diff <ref> --format json`, optional `inspect review` LLM providers, six MCP tools and FSL licence. The exact JSON adapter contract in this document is **proposed**, not copied from a tested released schema.
 - **Verified GitHub API classes:** native review threads, review submissions, issue comments, check runs/annotations and statuses are separate objects. Exact GraphQL query fields, permissions and preview capabilities need live fixture verification.
 - **Proposed Aside design:** every Rust type, REST endpoint, SSE event, ranking weight, history window, config setting, acceptance test and example JSON payload here is *implementation guidance*, not a claim of an already-existing API.
 

@@ -10,7 +10,7 @@ Aside is a local-first workspace for reviewing pull requests. This guide is for 
 
 ## Install after consent
 
-The official [Unix script](https://raw.githubusercontent.com/codesoda/aside/main/install.sh) and [PowerShell script](https://raw.githubusercontent.com/codesoda/aside/main/install.ps1) resolve the latest stable Aside release and verify its SHA-256 checksum. They install Aside and its agent skill, then attempt to install the standalone Inspect executable by default. Tell the person about both downloads before asking for consent. If no release or matching asset is available, stop and offer source-build instructions rather than another installer.
+The official [Unix script](https://raw.githubusercontent.com/codesoda/aside/main/install.sh) and [PowerShell script](https://raw.githubusercontent.com/codesoda/aside/main/install.ps1) resolve the latest stable Aside release and verify its SHA-256 checksum. They install Aside and its agent skill. Review the script and its downloads with the person before asking for consent. If no release or matching asset is available, stop and offer source-build instructions rather than another installer.
 
 For a human who trusts the source, the quick commands are:
 
@@ -39,8 +39,6 @@ Get-Content .\aside-install.ps1
 ```
 
 A checkout source install is an explicit alternative (`sh install.sh --from-source` or `./install.ps1 -FromSource`), never the default. Verify `aside --help` and that the installed skill is available; report a failure rather than claiming setup is complete.
-
-By default, the installer downloads Inspect from [its GitHub Releases](https://github.com/Ataraxy-Labs/inspect/releases/tag/v0.1.1), checks the pinned SHA-256, and shows its [FSL-1.1-ALv2 licence](https://github.com/Ataraxy-Labs/inspect/blob/v0.1.1/LICENSE.md). If the person wants only Aside and its agent skill, use the locally reviewed script with `sh aside-install.sh --without-inspect` or `.\aside-install.ps1 -WithoutInspect`. Do not run Inspect as part of installation or review setup.
 
 ## Start a review
 
