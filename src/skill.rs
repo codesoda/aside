@@ -136,17 +136,15 @@ mod tests {
     }
 
     #[test]
-    fn embedded_skill_uses_native_triage_and_requires_external_model_consent() {
-        assert!(CONTENT.contains("use Aside's native analysis as leads, not verdicts"));
+    fn embedded_skill_uses_static_triage_and_requires_external_model_consent() {
+        assert!(CONTENT.contains("inspect pr NUMBER --remote OWNER/REPO --format json"));
+        assert!(CONTENT.contains("aislop scan --changes --base BASE_SHA --json"));
+        assert!(CONTENT.contains("Use all static signals as leads, not verdicts"));
         assert!(
             CONTENT
                 .contains("Do not invoke an external model-backed tool without explicit consent")
         );
-        let instructions = CONTENT.to_ascii_lowercase();
-        assert!(!instructions.contains("`inspect"));
-        for command in ["inspect pr", "inspect diff", "inspect review"] {
-            assert!(!instructions.contains(command), "unexpected `{command}`");
-        }
+        assert!(!CONTENT.contains("`inspect review "));
     }
 
     #[test]
