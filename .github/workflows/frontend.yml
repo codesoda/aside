@@ -6,6 +6,7 @@ on:
     paths:
       - 'app/**'
       - '.github/workflows/frontend.yml'
+      - 'scripts/check-embedded-ui.mjs'
 
 permissions:
   contents: read
@@ -31,3 +32,10 @@ jobs:
       - run: pnpm -C app check
       - run: pnpm -C app test
       - run: pnpm -C app build
+      - name: Verify embedded review UI
+        run: |
+          ASIDE_DATA_DIR="$(mktemp -d)"
+          export ASIDE_DATA_DIR
+          trap 'rm -rf "$ASIDE_DATA_DIR"' EXIT
+          cargo build --locked --release
+          node scripts/check-embedded-ui.mjs

@@ -1,9 +1,11 @@
 import { defineConfig } from 'vite';
-import { svelte } from '@sveltejs/vite-plugin-svelte';
+import react from '@vitejs/plugin-react';
+import { fileURLToPath, URL } from 'node:url';
 import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
-  plugins: [tailwindcss(), svelte()],
+  plugins: [tailwindcss(), react()],
+  resolve: { alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) } },
   build: { outDir: 'dist', emptyOutDir: true },
   server: {
     // scripts/dev.mjs sets ASIDE_URL from the server's session.started event.

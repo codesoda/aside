@@ -2,10 +2,20 @@
 import assert from 'node:assert/strict';
 import { beforeEach, afterEach, test } from 'node:test';
 import { installDom } from '../test/dom.mjs';
+import { createRequire } from 'node:module';
 import { sessionView, page, queueView, findings } from '../test/fixtures.mjs';
 installDom();
-const { mount, unmount, tick, flushSync } = await import('svelte');
-const { default: App } = await import('./App.svelte');
+globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+globalThis.Event = window.Event;
+globalThis.CustomEvent = window.CustomEvent;
+const require = createRequire(import.meta.url);
+const React = require('react');
+const { act } = React;
+const { createRoot } = require('react-dom/client');
+const { createServer } = await import('vite');
+const vite = await createServer({ server: { middlewareMode: true, hmr: false }, appType: 'custom' });
+const { default: App } = await vite.ssrLoadModule('/src/App.tsx');
+test.after(async () => vite.close());
 const { selectionCurrent, sameSelection } = await import('./explain.ts');
 const json = (body, status = 200) => new Response(JSON.stringify(body), {status, headers:{'Content-Type':'application/json'}});
 const providers = [
@@ -21,7 +31,7 @@ class FakeEvents {
   close() {}
 }
 beforeEach(() => {
-  app=null; calls=[]; sources=[]; view=sessionView();
+  document.body.innerHTML=''; app=createRoot(document.body); calls=[]; sources=[]; view=sessionView();
   // Include a real before/after pair in the visual fixture.
   view.files[0].hunks[0].lines.splice(1,0,{id:'removed',kind:'deletion',oldLine:2,newLine:null,text:'    allow_all();'});
   responder = (request) => json({...request,answer:'Old line 2 removed allow_all(); new line 2 adds verify_token(). Red means removed, not an error.'});
@@ -38,24 +48,24 @@ beforeEach(() => {
     if(path.endsWith('/cancel')) return json({cancelled:true});
     throw new Error(`Unexpected request ${method} ${path}`);
   };
-  document.body.innerHTML='';
 });
-afterEach(() => {if(app) unmount(app);});
-async function settle() {for(let i=0;i<8;i++){await new Promise(r=>setTimeout(r,0));await tick();}flushSync();}
-async function start() {app=mount(App,{target:document.body});await settle();}
+afterEach(async () => {if(app) await act(async () => app.unmount());});
+async function settle() {await act(async () => {await new Promise(r=>setTimeout(r,0));});}
+async function start() {await act(async () => app.render(React.createElement(App)));await settle();}
+async function click(node) {assert.ok(node);await act(async () => node.click());await settle();}
 const button = (name, root=document) => [...root.querySelectorAll('button')].find(b=>b.textContent.trim()===name || b.getAttribute('aria-label')===name);
 const panel = () => document.querySelector('[role=dialog][aria-label="Explain this change"]');
 const asks = () => calls.filter(c=>c.path==='/api/v1/explain/questions');
-async function open() {document.querySelector('[aria-controls="workspace-files"]').click();button('Explain removed old line 2').click();await settle();}
-async function explain() {button('Explain this change',panel()).click();await settle();}
-function input(question) {const field=document.getElementById('explain-question');field.value=question;field.dispatchEvent(new window.Event('input',{bubbles:true}));flushSync();}
+async function open() {await click(document.querySelector('[aria-controls="workspace-files"]'));await click(button('Explain removed old line 2'));}
+async function explain() {await click(button('Explain this change',panel()));}
+async function input(question) {const field=document.getElementById('explain-question');await act(async () => {Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value').set.call(field,question);field.dispatchEvent(new window.Event('input',{bubbles:true}));});}
 
 test('opening and suggestions never send code; explicit request binds selection; follow-ups keep context',async()=>{
   await start();assert.equal(calls.filter(c=>c.path.includes('/explain/')).length,0);
   await open();assert.equal(asks().length,0);
   assert.match(panel().textContent,/Local processing/);
   assert.match(panel().textContent,/Removed old line 2 and adjacent changes/);
-  button('What does this red highlight mean?',panel()).click();await settle();assert.equal(asks().length,0);
+  await click(button('What does this red highlight mean?',panel()));assert.equal(asks().length,0);
   await explain();
   assert.equal(asks().length,1);
   const first=asks()[0].body;
@@ -63,7 +73,7 @@ test('opening and suggestions never send code; explicit request binds selection;
   assert.equal(first.provider,'local');assert.deepEqual(first.history,[]);
   assert.equal(first.code,undefined,'code is server-derived, never browser-supplied');
   assert.match(panel().textContent,/Red means removed, not an error/);
-  input('What could this affect?');button('Send question',panel()).click();await settle();
+  await input('What could this affect?');await click(button('Send question',panel()));
   assert.deepEqual(asks()[1].body.selection,first.selection);
   assert.equal(asks()[1].body.history[0].answer,document.querySelector('[data-explanation-answer]').textContent);
   assert.ok(calls.every(c=>c.method==='GET'||c.path.includes('/explain/')),'no review mutations');
@@ -71,7 +81,8 @@ test('opening and suggestions never send code; explicit request binds selection;
 
 test('provider changes start an empty conversation without making a hosted request',async()=>{
   await start();await open();await explain();
-  const select=document.getElementById('explain-provider');select.value='claude';select.dispatchEvent(new window.Event('change',{bubbles:true}));await settle();
+  await click(document.getElementById('explain-provider'));
+  await click([...document.querySelectorAll('[role="option"]')].find(node=>node.textContent.includes('Claude Code')));
   assert.equal(asks().length,1);assert.equal(document.querySelectorAll('[data-explanation-answer]').length,0);
   assert.match(panel().textContent,/Hosted processing/);
   await explain();assert.equal(asks()[1].body.provider,'claude');assert.deepEqual(asks()[1].body.history,[]);
@@ -80,7 +91,7 @@ test('provider changes start an empty conversation without making a hosted reque
 test('cancel stops display, calls server cancellation, ignores late answers, and permits retry',async()=>{
   let resolve;responder=request=>new Promise(r=>{resolve=()=>r(json({...request,answer:'late answer'}));});
   await start();await open();await explain();assert.match(panel().textContent,/Preparing an explanation/);
-  button('Cancel request',panel()).click();await settle();
+  await click(button('Cancel request',panel()));
   assert.equal(asks()[0].signal.aborted,true);
   assert.ok(calls.some(c=>c.path.endsWith(`/${asks()[0].body.requestId}/cancel`)));
   resolve();await settle();assert.doesNotMatch(panel().textContent,/late answer/);
@@ -90,8 +101,8 @@ test('cancel stops display, calls server cancellation, ignores late answers, and
 test('revision change clears answers and cancels outstanding questions even if file digest is unchanged',async()=>{
   await start();await open();await explain();
   let resolve;responder=request=>new Promise(r=>{resolve=()=>r(json({...request,answer:'wrong revision'}));});
-  input('Follow up');button('Send question',panel()).click();await settle();
-  view=structuredClone(view);view.pr.headSha='new-head';sources[0].emit('pr.refreshed');await settle();
+  await input('Follow up');await click(button('Send question',panel()));
+  view=structuredClone(view);view.pr.headSha='new-head';await act(async () => sources[0].emit('pr.refreshed'));await settle();
   assert.match(panel().textContent,/no longer current/);
   assert.equal(document.querySelectorAll('[data-explanation-answer]').length,0);
   assert.ok(asks()[1].signal.aborted);
@@ -102,8 +113,8 @@ test('different file closes Q&A and a new selection does not inherit answers',as
   view.fileStates[1].scope.ignored = false;
   await start();await open();await explain();
   const fileButton=[...document.querySelectorAll('button')].find(b=>b.getAttribute('aria-label')?.startsWith('Open gen/out.rs'));
-  fileButton.click();await settle();assert.equal(panel(),null);
-  button('Explain added new line 1').click();await settle();await explain();
+  await click(fileButton);assert.equal(panel(),null);
+  await click(button('Explain added new line 1'));await explain();
   assert.equal(asks()[1].body.selection.fileId,'f-gen');assert.deepEqual(asks()[1].body.history,[]);
 });
 
@@ -121,7 +132,7 @@ test('closing restores keyboard focus; mismatched response is never shown',async
   responder=request=>json({...request,selection:{...request.selection,headSha:'wrong'},answer:'unrelated answer'});
   await start();await open();await explain();
   assert.match(panel().textContent,/did not match this selection/);assert.doesNotMatch(panel().textContent,/unrelated answer/);
-  button('Close explanation').click();await settle();
+  await click(button('Close explanation'));
   assert.equal(document.activeElement.getAttribute('aria-label'),'Explain removed old line 2');assert.equal(panel(),null);
 });
 

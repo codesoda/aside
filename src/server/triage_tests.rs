@@ -294,6 +294,139 @@ async fn promotion_uses_server_anchor_and_retry_preserves_edited_draft_and_selec
     assert!(gh.calls.lock().unwrap().is_empty());
 }
 
+/// Run with ASIDE_COMPAT_PHASE=create, then verify, against the same isolated
+/// ASIDE_DATA_DIR to exercise a saved pre-cutover database in separate processes.
+#[tokio::test]
+async fn saved_review_data_reopens_through_the_same_api() {
+    let phase = std::env::var("ASIDE_COMPAT_PHASE").unwrap_or_else(|_| "both".into());
+    assert!(["create", "verify", "both"].contains(&phase.as_str()));
+    let _temporary;
+    let dir = if phase == "both" {
+        _temporary = tempfile::tempdir().unwrap();
+        _temporary.path().to_path_buf()
+    } else {
+        std::path::PathBuf::from(
+            std::env::var_os("ASIDE_DATA_DIR").expect("isolated ASIDE_DATA_DIR"),
+        )
+        .join("compat-99")
+    };
+    let db = dir.join("aside.db");
+    let evidence = dir.join("expected.json");
+
+    if phase != "verify" {
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(
+            !db.exists() && !evidence.exists(),
+            "do not overwrite saved evidence"
+        );
+        let (session, app, gh) = fixture_on_store(Store::open(&db).unwrap()).await;
+        let view = session.view(Actor::Human).unwrap();
+        let file = &demo::snapshot(0).files[0];
+        let (status, ack) = call(
+            &app,
+            Method::POST,
+            &format!("/api/v1/files/{}/reviewed", file.id),
+            Some(json!({"diffDigest": file.diff_digest})),
+            true,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{ack}");
+        let item = promotable(&findings(&app, false).await).clone();
+        let (status, promoted) = call(
+            &app,
+            Method::POST,
+            &route(id(&item), "promote"),
+            Some(json!({"expectedRevision": 0, "operationId": "compat-99-operation"})),
+            true,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{promoted}");
+        let thread_id = promoted["thread"]["id"].as_str().unwrap();
+        let draft_id = promoted["draft"]["id"].as_str().unwrap();
+        let (status, edited) = call(
+            &app,
+            Method::PUT,
+            &format!("/api/v1/threads/{thread_id}/review-comment"),
+            Some(json!({"body": "Saved pre-cutover review text"})),
+            true,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{edited}");
+        let (status, selected) = call(
+            &app,
+            Method::POST,
+            "/api/v1/review/publish/selection",
+            Some(json!({"commentIds": [draft_id], "selected": true})),
+            true,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{selected}");
+        assert!(gh.calls.lock().unwrap().is_empty());
+        let expected = json!({
+            "snapshotId": view.analysis.snapshot_id,
+            "fileId": file.id,
+            "acknowledgement": ack["acknowledgement"],
+            "findingId": id(&item),
+            "threadId": thread_id,
+            "draftId": draft_id,
+        });
+        drop(app);
+        drop(session);
+        std::fs::write(&evidence, serde_json::to_vec_pretty(&expected).unwrap()).unwrap();
+    }
+
+    if phase != "create" {
+        let expected: Value = serde_json::from_slice(&std::fs::read(&evidence).unwrap()).unwrap();
+        let (session, app, gh) = fixture_on_store(Store::open(&db).unwrap()).await;
+        let view = session.view(Actor::Human).unwrap();
+        assert_eq!(json!(view.analysis.snapshot_id), expected["snapshotId"]);
+        let acknowledgements = session
+            .store
+            .lock()
+            .unwrap()
+            .list_acknowledgements(&session.pr_id)
+            .unwrap();
+        assert!(
+            acknowledgements
+                .iter()
+                .any(|ack| json!(ack) == expected["acknowledgement"])
+        );
+        let (status, retry) = call(
+            &app,
+            Method::POST,
+            &route(expected["findingId"].as_str().unwrap(), "promote"),
+            Some(json!({"expectedRevision": 0, "operationId": "compat-99-operation"})),
+            true,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{retry}");
+        assert_eq!(retry["thread"]["id"], expected["threadId"]);
+        assert_eq!(retry["draft"]["id"], expected["draftId"]);
+        assert_eq!(retry["draft"]["body"], "Saved pre-cutover review text");
+        assert_eq!(retry["draft"]["selected"], true);
+        let (status, preview) = call(
+            &app,
+            Method::POST,
+            "/api/v1/review/publish/preview",
+            Some(json!({"verdict": "COMMENT", "body": "Review summary"})),
+            true,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{preview}");
+        assert!(
+            preview["plan"]["inline"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|line| {
+                    line["commentId"] == expected["draftId"]
+                        && line["body"] == "Saved pre-cutover review text"
+                })
+        );
+        assert!(gh.calls.lock().unwrap().is_empty());
+    }
+}
+
 #[tokio::test]
 async fn promotion_rejects_ignored_native_and_invalid_anchors() {
     let (session, app, gh) = fixture().await;

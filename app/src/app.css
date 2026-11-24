@@ -1,9 +1,42 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+
+/* Stock shadcn controls use these semantic utilities; the app's existing
+ * palette remains the source of truth for both light and OS-dark modes. */
+@theme inline {
+  --color-background: var(--color-canvas);
+  --color-foreground: var(--color-ink);
+  --color-card: var(--color-canvas);
+  --color-card-foreground: var(--color-ink);
+  --color-popover: var(--color-canvas);
+  --color-popover-foreground: var(--color-ink);
+  --color-primary: var(--color-accent);
+  --color-primary-foreground: var(--ui-primary-foreground);
+  --color-secondary: var(--color-surface);
+  --color-secondary-foreground: var(--color-ink);
+  --color-muted-foreground: var(--color-muted);
+  --color-ui-muted: var(--color-surface);
+  --color-ui-accent: var(--color-accent-soft);
+  --color-accent-foreground: var(--color-ink);
+  --color-destructive: var(--color-danger);
+  --color-border: var(--color-line);
+  --color-input: var(--color-line);
+  --color-ring: var(--color-accent);
+  --radius-sm: 0.25rem;
+  --radius-md: 0.375rem;
+  --radius-lg: 0.5rem;
+  --radius-xl: 0.75rem;
+}
+
+:root { --ui-primary-foreground: #fff; }
+@media (prefers-color-scheme: dark) {
+  :root { --ui-primary-foreground: #111816; }
+}
 
 /*
  * Semantic colour tokens. Light values live in @theme. The dark override below
  * follows the OS preference only (prefers-color-scheme); there is no toggle.
- * web/index.html keeps a parallel set with the same names. Keep the two in step.
+ * The standalone website has its own palette.
  */
 @theme {
   --color-canvas: #ffffff;

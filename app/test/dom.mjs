@@ -1,4 +1,4 @@
-// Minimal browser globals for mounting Svelte components under node:test.
+// Minimal browser globals for mounting React components under node:test.
 import { JSDOM } from 'jsdom';
 
 export function installDom() {
