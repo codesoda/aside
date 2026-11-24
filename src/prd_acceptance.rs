@@ -4,8 +4,9 @@
 //! already have their own tests. See `docs/plans/prd-acceptance.md`.
 
 use std::{
-    sync::{Arc, Barrier},
+    sync::{Arc, Barrier, mpsc},
     thread,
+    time::Duration,
 };
 
 use crate::{
@@ -310,6 +311,60 @@ fn ignoring_and_reincluding_keeps_acknowledgements() {
     assert_eq!(acks[0].path, "git/client.go");
 }
 
+/// Every participant waits exactly once. A failure before the wait still
+/// releases the other participants instead of hanging the suite.
+fn after_barrier<T, R>(
+    barrier: &Barrier,
+    prepare: impl FnOnce() -> Result<T, String>,
+    write: impl FnOnce(T) -> Result<R, String>,
+) -> Result<R, String> {
+    let mut waited = false;
+    let result = (|| {
+        let prepared = prepare()?;
+        barrier.wait();
+        waited = true;
+        write(prepared)
+    })();
+    if !waited {
+        barrier.wait();
+    }
+    result
+}
+
+#[test]
+fn barrier_releases_when_preparation_fails() {
+    let barrier = Arc::new(Barrier::new(2));
+    let (tx, rx) = mpsc::channel();
+    for fail in [true, false] {
+        let barrier = Arc::clone(&barrier);
+        let tx = tx.clone();
+        thread::spawn(move || {
+            let result = after_barrier(
+                &barrier,
+                || {
+                    if fail {
+                        Err("open failed".into())
+                    } else {
+                        Ok(())
+                    }
+                },
+                |()| Ok(()),
+            );
+            tx.send(result).unwrap();
+        });
+    }
+    drop(tx);
+    let mut results = Vec::new();
+    for _ in 0..2 {
+        results.push(
+            rx.recv_timeout(Duration::from_secs(2))
+                .expect("worker did not release the barrier"),
+        );
+    }
+    let failures = results.iter().filter(|result| result.is_err()).count();
+    assert_eq!(failures, 1);
+}
+
 #[test]
 fn concurrent_rule_and_acknowledgement_writes_commit() {
     let dir = tempfile::tempdir().unwrap();
@@ -336,19 +391,23 @@ fn concurrent_rule_and_acknowledgement_writes_commit() {
         let repo_id = repo_id.clone();
         let barrier = Arc::clone(&barrier);
         tasks.push(thread::spawn(move || -> Result<(), String> {
-            let mut store = Store::open(&path).map_err(|error| format!("{error:#}"))?;
-            barrier.wait();
-            store
-                .create_rule(
-                    &repo_id,
-                    RuleAction::Exclude,
-                    RuleKind::Directory,
-                    &format!("concurrent/dir-{index}"),
-                    None,
-                    Actor::Human,
-                )
-                .map_err(|error| format!("{error:#}"))?;
-            Ok(())
+            after_barrier(
+                &barrier,
+                || Store::open(&path).map_err(|error| format!("{error:#}")),
+                |mut store| {
+                    store
+                        .create_rule(
+                            &repo_id,
+                            RuleAction::Exclude,
+                            RuleKind::Directory,
+                            &format!("concurrent/dir-{index}"),
+                            None,
+                            Actor::Human,
+                        )
+                        .map(|_| ())
+                        .map_err(|error| format!("{error:#}"))
+                },
+            )
         }));
     }
     for index in 0..4 {
@@ -356,24 +415,28 @@ fn concurrent_rule_and_acknowledgement_writes_commit() {
         let pr_id = pr_id.clone();
         let barrier = Arc::clone(&barrier);
         tasks.push(thread::spawn(move || -> Result<(), String> {
-            let mut store = Store::open(&path).map_err(|error| format!("{error:#}"))?;
-            barrier.wait();
-            let ack = Acknowledgement {
-                id: new_id("ack"),
-                path: format!("concurrent/{index}.rs"),
-                kind: "reviewed".into(),
-                fingerprint_version: 1,
-                diff_digest: format!("digest-{index}"),
-                content_digest: None,
-                head_sha: "head".into(),
-                base_sha: "base".into(),
-                actor: Actor::Human,
-                created_at: now_rfc3339(),
-            };
-            store
-                .insert_acknowledgement(&pr_id, &ack)
-                .map_err(|error| format!("{error:#}"))?;
-            Ok(())
+            after_barrier(
+                &barrier,
+                || Store::open(&path).map_err(|error| format!("{error:#}")),
+                |mut store| {
+                    let ack = Acknowledgement {
+                        id: new_id("ack"),
+                        path: format!("concurrent/{index}.rs"),
+                        kind: "reviewed".into(),
+                        fingerprint_version: 1,
+                        diff_digest: format!("digest-{index}"),
+                        content_digest: None,
+                        head_sha: "head".into(),
+                        base_sha: "base".into(),
+                        actor: Actor::Human,
+                        created_at: now_rfc3339(),
+                    };
+                    store
+                        .insert_acknowledgement(&pr_id, &ack)
+                        .map(|_| ())
+                        .map_err(|error| format!("{error:#}"))
+                },
+            )
         }));
     }
     for task in tasks {

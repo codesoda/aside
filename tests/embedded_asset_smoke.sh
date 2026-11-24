@@ -75,7 +75,12 @@ if printf '%s' "$body" | grep -q 'Frontend not built'; then
   exit 1
 fi
 
-code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "${url}.git/config")
+# session.started url has no credential. Build the dot-path from the origin
+# and path only, so a future query string cannot be mistaken for the path.
+origin=${url%%\#*}
+origin=${origin%%\?*}
+origin=${origin%/}
+code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "${origin}/.git/config")
 if [[ "$code" != "404" ]]; then
   echo "dot-path request returned $code, expected 404" >&2
   exit 1
