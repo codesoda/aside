@@ -1,4 +1,4 @@
-param([switch] $FromSource)
+param([switch] $FromSource, [switch] $WithInspect, [switch] $WithoutInspect)
 
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Net.Http
@@ -57,10 +57,10 @@ function Assert-SafeDestination([string] $Destination) {
     }
 }
 
-function Install-Binary([string] $Source, [string] $Destination = $Binary) {
-    Assert-SafeDestination $Destination
+function Install-Binary([string] $Source) {
+    Assert-SafeDestination $Binary
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-    Copy-Item -LiteralPath $Source -Destination $Destination -Force
+    Copy-Item -LiteralPath $Source -Destination $Binary -Force
 
     $UserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
     $Entries = @($UserPath -split ';' | Where-Object { $_.TrimEnd('\') -ieq $InstallDir.TrimEnd('\') })
@@ -128,12 +128,47 @@ function Install-FromRelease([string] $StagingDir) {
     } finally { Remove-Item -LiteralPath $TempDir -Recurse -Force }
 }
 
-try {
-    # Inspect has no native Windows ARM64 release. Do not install either executable there.
-    $Target = Get-Target
-    if ($Target -ne 'x86_64-pc-windows-msvc') { throw 'Inspect v0.1.1 has no native Windows ARM64 executable; refusing to install' }
-    Assert-SafeDestination $Binary
+function Install-Inspect {
     Assert-SafeDestination $InspectBinary
+    Write-Host 'Inspect is licensed under FSL-1.1-ALv2: https://github.com/Ataraxy-Labs/inspect/blob/v0.1.1/LICENSE.md'
+    if (Test-Path -LiteralPath $InspectBinary -PathType Leaf) {
+        if ((Get-FileHash -LiteralPath $InspectBinary -Algorithm SHA256).Hash -ine $InspectSHA256) {
+            throw "Refusing to replace a different Inspect executable at $InspectBinary"
+        }
+        Write-Host "Inspect $InspectVersion is already installed at $InspectBinary."
+        return
+    }
+    $TempDir = Join-Path ([IO.Path]::GetTempPath()) ("aside-inspect-" + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $TempDir | Out-Null
+    try {
+        $Source = Join-Path $TempDir $InspectAsset
+        Invoke-WebRequest -Uri "https://github.com/Ataraxy-Labs/inspect/releases/download/$InspectVersion/$InspectAsset" -OutFile $Source -UseBasicParsing -TimeoutSec 30
+        if (-not (Test-Path -LiteralPath $Source -PathType Leaf) -or (Get-Item -LiteralPath $Source).Length -le 0 -or
+            (Get-FileHash -LiteralPath $Source -Algorithm SHA256).Hash -ine $InspectSHA256) {
+            throw "SHA256 mismatch or empty download for $InspectAsset; refusing to install"
+        }
+        Assert-SafeDestination $InspectBinary
+        # Stage beside the destination, then publish without overwriting an existing file.
+        $Staged = Join-Path $InstallDir (".inspect-" + [guid]::NewGuid().ToString('N'))
+        try {
+            [IO.File]::Copy($Source, $Staged)
+            [IO.File]::Move($Staged, $InspectBinary)
+        } finally {
+            if (Test-Path -LiteralPath $Staged -PathType Leaf) { Remove-Item -LiteralPath $Staged -Force }
+        }
+        Write-Host "Installed Inspect $InspectVersion at $InspectBinary."
+    } finally {
+        try { Remove-Item -LiteralPath $TempDir -Recurse -Force }
+        catch { Write-Warning "Could not clean up temporary Inspect installer files: $_" }
+    }
+}
+
+try {
+    if ($WithInspect -and $WithoutInspect) { throw 'Cannot specify both -WithInspect and -WithoutInspect' }
+    # Keep the existing Windows x64-only installer scope, including source mode.
+    $Target = Get-Target
+    if ($Target -ne 'x86_64-pc-windows-msvc') { throw 'This installer supports Windows x64 only; Windows ARM64 is not supported' }
+    Assert-SafeDestination $Binary
     if ($FromSource -and (-not $PSScriptRoot -or
         -not (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'Cargo.toml') -PathType Leaf) -or
         -not (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'skills/aside/SKILL.md') -PathType Leaf) -or
@@ -141,70 +176,54 @@ try {
         throw '-FromSource requires the Aside checkout with app/ and skills/aside/'
     }
 
-    # Fetch and verify Inspect before installing either executable, including in -FromSource mode.
-    $InspectTemp = Join-Path ([IO.Path]::GetTempPath()) ("aside-inspect-" + [guid]::NewGuid().ToString('N'))
-    New-Item -ItemType Directory -Path $InspectTemp | Out-Null
+    $StagingDir = Join-Path ([IO.Path]::GetTempPath()) ("aside-install-" + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $StagingDir | Out-Null
     try {
-        $InspectSource = Join-Path $InspectTemp $InspectAsset
-        Invoke-WebRequest -Uri "https://github.com/Ataraxy-Labs/inspect/releases/download/$InspectVersion/$InspectAsset" -OutFile $InspectSource -UseBasicParsing
-        if (-not (Test-Path -LiteralPath $InspectSource -PathType Leaf) -or (Get-Item -LiteralPath $InspectSource).Length -le 0 -or
-            (Get-FileHash -LiteralPath $InspectSource -Algorithm SHA256).Hash -ine $InspectSHA256) {
-            throw "SHA256 mismatch or empty download for $InspectAsset; refusing to install"
-        }
-
-        # Stage Aside before changing either managed binary.
         if ($FromSource) {
-            Install-FromSource $InspectTemp
+            Install-FromSource $StagingDir
         } else {
-            Install-FromRelease $InspectTemp
+            Install-FromRelease $StagingDir
         }
-        $AsideSource = Join-Path $InspectTemp 'aside.exe'
+        $AsideSource = Join-Path $StagingDir 'aside.exe'
         if (-not (Test-Path -LiteralPath $AsideSource -PathType Leaf) -or
             (Get-Item -LiteralPath $AsideSource).Length -le 0) { throw 'Staged Aside binary is missing or empty' }
 
-        # Snapshot both destinations before the first copy. Keep backups outside the install directory.
-        $Managed = @(
-            @{ Destination = $Binary; Backup = (Join-Path $InspectTemp 'aside.backup'); Existed = $false },
-            @{ Destination = $InspectBinary; Backup = (Join-Path $InspectTemp 'inspect.backup'); Existed = $false }
-        )
-        foreach ($Entry in $Managed) {
-            Assert-SafeDestination $Entry.Destination
-            if (Test-Path -LiteralPath $Entry.Destination) {
-                Copy-Item -LiteralPath $Entry.Destination -Destination $Entry.Backup
-                $Entry.Existed = $true
-            }
-        }
+        # Keep the backup outside the install directory until verification and skill installation finish.
+        $Backup = Join-Path $StagingDir 'aside.backup'
+        $Existed = Test-Path -LiteralPath $Binary
+        Assert-SafeDestination $Binary
+        if ($Existed) { Copy-Item -LiteralPath $Binary -Destination $Backup }
         try {
             Install-Binary $AsideSource
-            Install-Binary $InspectSource $InspectBinary
             & $Binary --version
             if ($LASTEXITCODE -ne 0) { throw 'Installed binary failed to run' }
             & $Binary skill
             if ($LASTEXITCODE -ne 0) { throw 'Embedded skill installation failed' }
         } catch {
             $InstallError = $_
-            foreach ($Entry in $Managed) {
-                try {
-                    Assert-SafeDestination $Entry.Destination
-                    if ($Entry.Existed) {
-                        Copy-Item -LiteralPath $Entry.Backup -Destination $Entry.Destination -Force
-                    } elseif (Test-Path -LiteralPath $Entry.Destination) {
-                        Remove-Item -LiteralPath $Entry.Destination -Force
-                    }
-                } catch {
-                    Write-Warning "Could not restore $($Entry.Destination): $_"
+            try {
+                Assert-SafeDestination $Binary
+                if ($Existed) {
+                    Copy-Item -LiteralPath $Backup -Destination $Binary -Force
+                } elseif (Test-Path -LiteralPath $Binary) {
+                    Remove-Item -LiteralPath $Binary -Force
                 }
+            } catch {
+                Write-Warning "Could not restore ${Binary}: $_"
             }
             throw $InstallError
         }
     } finally {
-        try { Remove-Item -LiteralPath $InspectTemp -Recurse -Force }
+        try { Remove-Item -LiteralPath $StagingDir -Recurse -Force }
         catch { Write-Warning "Could not clean up temporary installer files: $_" }
     }
     # User PATH changes do not update this PowerShell process or agents launched from it.
     $env:Path = "$InstallDir;$env:Path"
-    Write-Host "Installed aside at $Binary and Inspect $InspectVersion at $InspectBinary."
-    Write-Host 'Inspect is licensed under FSL-1.1-ALv2: https://github.com/Ataraxy-Labs/inspect/blob/v0.1.1/LICENSE.md'
+    Write-Host "Installed aside at $Binary."
+    if (-not $WithoutInspect -and (-not $PSBoundParameters.ContainsKey('WithInspect') -or $WithInspect)) {
+        try { Install-Inspect }
+        catch { Write-Warning "Inspect installation failed; Aside remains installed: $_" }
+    }
     if (-not [Console]::IsInputRedirected) {
         $Answer = Read-Host 'Run a live Aside review example with an agent? [y/N]'
         if ($Answer -match '^(?i:y|yes)$') {

@@ -136,6 +136,18 @@ mod tests {
     }
 
     #[test]
+    fn embedded_skill_uses_static_triage_and_requires_external_model_consent() {
+        assert!(CONTENT.contains("inspect pr NUMBER --remote OWNER/REPO --format json"));
+        assert!(CONTENT.contains("aislop scan --changes --base BASE_SHA --json"));
+        assert!(CONTENT.contains("Use all static signals as leads, not verdicts"));
+        assert!(
+            CONTENT
+                .contains("Do not invoke an external model-backed tool without explicit consent")
+        );
+        assert!(!CONTENT.contains("`inspect review "));
+    }
+
+    #[test]
     fn refuses_to_delete_user_files_on_update() {
         let home = tempfile::tempdir().unwrap();
         let path = install(home.path(), &[".claude"]).unwrap().remove(0);

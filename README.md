@@ -55,9 +55,9 @@ For a human on Windows x86-64 (PowerShell):
 irm https://raw.githubusercontent.com/codesoda/aside/main/install.ps1 | iex
 ```
 
-**These commands execute remote code.** Use them only if you trust the source; for a safer path, download and inspect the [Unix script](https://raw.githubusercontent.com/codesoda/aside/main/install.sh) or [PowerShell script](https://raw.githubusercontent.com/codesoda/aside/main/install.ps1) before running it. Agents must ask for consent and preferably inspect the script; they must not auto-run either command. Windows ARM64 is not supported yet because Inspect is unavailable for that target. For other architectures, [build from source](#install-from-source) rather than using a release installer.
+**These commands execute remote code.** Use them only if you trust the source; for a safer path, download and inspect the [Unix script](https://raw.githubusercontent.com/codesoda/aside/main/install.sh) or [PowerShell script](https://raw.githubusercontent.com/codesoda/aside/main/install.ps1) before running it. Agents must ask for consent and preferably inspect the script; they must not auto-run either command. The Windows quick installer currently supports x86-64 only. For other architectures, [build from source](#install-from-source) rather than using a release installer.
 
-The installer installs Aside, downloads [Inspect](https://github.com/Ataraxy-Labs/inspect) directly from upstream, and installs the agent skill. Inspect uses the [Functional Source License (FSL)](https://github.com/Ataraxy-Labs/inspect/blob/main/LICENSE.md). After installation, it offers an optional live example (`[y/N]`) with `claude`, `codex`, or `pi`; declining does not start it. A live PR requires [GitHub CLI (`gh`)](https://cli.github.com/) authentication (`gh auth login`). The bundled offline demo (`aside demo`) is separate and does not require `gh`.
+The installer sets up Aside and its agent skill. After installation, it offers an optional live example (`[y/N]`) with `claude`, `codex`, or `pi`; declining does not start it. A live PR requires [GitHub CLI (`gh`)](https://cli.github.com/) authentication (`gh auth login`). The bundled offline demo (`aside demo`) is separate and does not require `gh`.
 
 The installers resolve the [latest stable Aside release](https://github.com/codesoda/aside/releases/latest) and verify the matching asset against published SHA-256 checksums. If no stable release or matching asset is available, use the source-build instructions below. A source install requires an explicit `sh install.sh --from-source` or `./install.ps1 -FromSource` from the checkout.
 
@@ -138,6 +138,6 @@ No license file is included yet. Do not assume the repository grants open-source
 
 ## Acknowledgments
 
-README structure adapted from [Best-README-Template](https://github.com/othneildrew/Best-README-Template) by othneildrew. Aside uses the GitHub CLI and downloads upstream [Inspect](https://github.com/Ataraxy-Labs/inspect) under its [Functional Source License (FSL)](https://github.com/Ataraxy-Labs/inspect/blob/main/LICENSE.md).
+README structure adapted from [Best-README-Template](https://github.com/othneildrew/Best-README-Template) by othneildrew. Aside uses the GitHub CLI for live reviews.
 
 <p align="right"><a href="#readme-top">Back to top</a></p>

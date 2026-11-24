@@ -718,3 +718,140 @@ fn typed_evidence_and_entity_relations_survive_serialization() {
             .is_empty()
     );
 }
+
+// Opt-in native baseline: includes pinned Git tree/blob reads, parsing, graph
+// traversal and provider presentation; excludes fixture creation and compilation.
+#[test]
+#[ignore = "run explicitly with --ignored --nocapture to measure the native structural baseline"]
+fn benchmark_native_structure_pinned_fixture() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().to_owned();
+    let git = |args: &[&str]| {
+        let result = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Fixture")
+            .env("GIT_AUTHOR_EMAIL", "fixture@example.com")
+            .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00 +0000")
+            .env("GIT_COMMITTER_NAME", "Fixture")
+            .env("GIT_COMMITTER_EMAIL", "fixture@example.com")
+            .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00 +0000")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "git {args:?}: {result:?}");
+        String::from_utf8(result.stdout).unwrap().trim().to_owned()
+    };
+    git(&["init", "-q"]);
+    std::fs::create_dir(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/lib.rs"),
+        "mod service;\nmod client;\npub fn target() {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/service.rs"),
+        "pub fn service() { crate::target(); }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/client.rs"),
+        "pub fn client() { crate::service::service(); }\n",
+    )
+    .unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-qm", "base"]);
+    let base = git(&["rev-parse", "HEAD"]);
+    std::fs::write(
+        root.join("src/lib.rs"),
+        "mod service;\nmod client;\npub fn target() { let _changed = true; }\n",
+    )
+    .unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-qm", "head"]);
+    let head = git(&["rev-parse", "HEAD"]);
+
+    let mut ctx = context();
+    let input = Arc::make_mut(&mut ctx.input);
+    input.base_sha = base.clone();
+    input.head_sha = head.clone();
+    let snapshot = Arc::make_mut(&mut input.snapshot);
+    snapshot.files.truncate(1);
+    let file = &mut snapshot.files[0];
+    file.path = "src/lib.rs".into();
+    file.previous_path = None;
+    file.hunks[0].lines = vec![crate::model::DiffLine {
+        id: "target-change".into(),
+        kind: crate::model::LineKind::Addition,
+        text: "pub fn target() { let _changed = true; }".into(),
+        old_line: None,
+        new_line: Some(3),
+        patch_position: 1,
+    }];
+    input.history_context = Some(AnalysisContext {
+        source: "fixture".into(),
+        base_sha: base.clone(),
+        head_sha: head.clone(),
+        comparison_base: Some(base.clone()),
+        history_count: 2,
+        shallow: false,
+        complete: true,
+        reason: None,
+    });
+    input.history_objects = Some(HistoryObjects::fixture(temp, root.join(".git")));
+
+    let check = |output: &ProviderOutput| {
+        assert_eq!(output.status, RunStatus::Partial, "{:?}", output.warnings);
+        assert_eq!(output.coverage.completeness, Completeness::Partial);
+        assert_eq!(
+            output.coverage.analyzed_files,
+            KnownCount::Known { value: 3 }
+        );
+        assert_eq!(
+            output.coverage.analyzed_entities,
+            KnownCount::Known { value: 5 }
+        );
+        let corpus = output.evidence[0].value().value.as_ref().unwrap();
+        assert_eq!(corpus["coverage"]["omitted_files"], 0);
+        assert_eq!(corpus["coverage"]["omitted_results"], 0);
+        assert!(
+            output.evidence.iter().skip(1).any(|e| {
+                let v = e.value().value.as_ref().unwrap();
+                v["entity"]["qualified_name"] == "crate::target"
+                    && v["entity"]["snapshot_sha"] == head
+                    && v["direct_dependants"] == 1
+                    && v["resolved_dependants"] == 2
+                    && v["dependant_paths"].as_array().is_some_and(|paths| {
+                        paths.iter().any(|p| {
+                            p["entities"]
+                                .as_array()
+                                .is_some_and(|entities| entities.len() == 3)
+                                && p["edges"].as_array().is_some_and(|edges| edges.len() == 2)
+                        })
+                    })
+            }),
+            "expected target -> service -> client dependency chain: {:?}",
+            output.evidence
+        );
+    };
+    let cancelled = AtomicBool::new(false);
+    let warmup = scan(ctx.clone(), &cancelled).unwrap();
+    check(&warmup);
+    let reference = serde_json::to_value(&warmup.coverage).unwrap();
+    let mut samples = Vec::new();
+    for _ in 0..10 {
+        let start = std::time::Instant::now();
+        let output = scan(ctx.clone(), &cancelled).unwrap();
+        samples.push(start.elapsed().as_micros());
+        check(&output);
+        assert_eq!(serde_json::to_value(&output.coverage).unwrap(), reference);
+    }
+    println!("native_structure_us={samples:?} base={base} head={head} analyzed_files=3");
+}
