@@ -115,7 +115,11 @@
   let insightsError = $state<string | null>(null);
   let insightsLoading = $state(false);
   let insightsRequest = 0;
-  let includeHistorical = $state(false);
+  let historicalItems = $state<FindingItem[] | null>(null);
+  let historicalSnapshotId = $state<string | null>(null);
+  let historicalLoading = $state(false);
+  let historicalLoadError = $state<string | null>(null);
+  let historicalRequest = 0;
   let findingPending = $state<string | null>(null);
   let findingError = $state<string | null>(null);
   let findingsLoadError = $state<string | null>(null);
@@ -216,11 +220,26 @@
     });
   }
 
+  function loadHistorical() {
+    const request = ++historicalRequest;
+    historicalLoading = true;
+    historicalLoadError = null;
+    void fetchFindings(true).then((result) => {
+      if (request !== historicalRequest) return;
+      historicalItems = result.items.filter((item) => item.label === 'historical');
+      historicalSnapshotId = result.last.snapshotId;
+    }).catch((failure) => {
+      if (request === historicalRequest) historicalLoadError = failure instanceof Error ? failure.message : String(failure);
+    }).finally(() => {
+      if (request === historicalRequest) historicalLoading = false;
+    });
+  }
+
   /** Fire-and-forget; read-only. Latest request wins. */
   function loadInsights() {
     const request = ++insightsRequest;
     insightsLoading = true;
-    void Promise.allSettled([fetchQueue(), fetchFindings(includeHistorical)]).then(([q, f]) => {
+    void Promise.allSettled([fetchQueue(), fetchFindings()]).then(([q, f]) => {
       if (request !== insightsRequest) return;
       insightsLoading = false;
       if (q.status === 'fulfilled') queue = q.value;
@@ -585,8 +604,10 @@
         <section id="workspace-prep" hidden={activeView !== 'prep'} aria-label="Review prep">
           <ReviewPrep {session} {queue} findings={findingsSnapshotId === session.analysis.snapshotId ? currentFindings : null}
             threads={session.threads} {insightsError} onOpenFile={openPrepFinding} onOpenThread={openPrepThread} onStart={startReview} />
-          <FindingBrowser findings={findingsSnapshotId === session.analysis.snapshotId ? findingItems : null} loading={insightsLoading} {includeHistorical} {findingsWithDrafts} onHistorical={(enabled) => { includeHistorical = enabled; loadInsights(); }}
-            pending={findingPending} error={findingError} loadError={findingsLoadError} onRetry={loadInsights} onState={(item, disposition, until) => void changeFinding(item, disposition, until)}
+          <FindingBrowser findings={findingsSnapshotId === session.analysis.snapshotId ? findingItems : null} loading={insightsLoading}
+            historicalFindings={historicalSnapshotId === session.analysis.snapshotId ? historicalItems : null} historicalLoading={historicalLoading}
+            historicalLoadError={historicalLoadError} onHistorical={loadHistorical} {findingsWithDrafts}
+            pending={findingPending} error={findingError} loadError={findingsLoadError} onRetry={loadInsights} onHistoricalRetry={loadHistorical} onState={(item, disposition, until) => void changeFinding(item, disposition, until)}
             onPromote={(item) => void promote(item)} onOpenDraft={openPromotedDraft} />
         </section>
         <section id="workspace-files" hidden={activeView !== 'files'} aria-label="Files changed">

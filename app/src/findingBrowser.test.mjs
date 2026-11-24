@@ -11,8 +11,10 @@ afterEach(() => { if (app) unmount(app); app = null; document.body.innerHTML = '
 function render(items, drafts = new Set()) {
   const actions = [];
   app = mount(FindingBrowser, { target: document.body, props: {
-    findings: items, loading: false, includeHistorical: true, pending: null, error: null, findingsWithDrafts: drafts,
-    onHistorical: (value) => actions.push(['historical', value]),
+    findings: items.filter((item) => item.label === 'current'), loading: false,
+    historicalFindings: items.filter((item) => item.label === 'historical'), historicalLoading: false, historicalLoadError: null,
+    pending: null, error: null, findingsWithDrafts: drafts,
+    onHistorical: () => actions.push(['historical']), onHistoricalRetry: () => actions.push(['retry-history']),
     onState: (item, disposition, until) => actions.push(['state', item.finding.id, disposition, until]),
     onPromote: (item) => actions.push(['promote', item.finding.id]),
     onOpenDraft: (item) => actions.push(['draft', item.finding.id]),

@@ -2,12 +2,15 @@
   import type { FindingItem } from '../api';
   import FindingCard from './FindingCard.svelte';
 
-  let { findings, loading, includeHistorical, onHistorical, pending, error, loadError = null, onRetry, onState, onPromote, onOpenDraft, findingsWithDrafts = new Set<string>() }: {
+  let { findings, loading, historicalFindings, historicalLoading, historicalLoadError, onHistorical, onHistoricalRetry, pending, error, loadError = null, onRetry, onState, onPromote, onOpenDraft, findingsWithDrafts = new Set<string>() }: {
     findings: FindingItem[] | null;
     loading: boolean;
+    historicalFindings: FindingItem[] | null;
+    historicalLoading: boolean;
+    historicalLoadError: string | null;
+    onHistorical: () => void;
+    onHistoricalRetry: () => void;
     findingsWithDrafts?: ReadonlySet<string>;
-    includeHistorical: boolean;
-    onHistorical: (enabled: boolean) => void;
     pending: string | null;
     error: string | null;
     loadError?: string | null;
@@ -19,9 +22,12 @@
   type Bucket = 'open' | 'dismissed_local' | 'snoozed' | 'historical';
   let bucket = $state<Bucket>('open');
   let snoozeDays = $state(1);
-  const visible = $derived((findings ?? []).filter((item) => bucket === 'historical'
+  const activeLoading = $derived(bucket === 'historical' ? historicalLoading : loading);
+  const activeError = $derived(bucket === 'historical' ? historicalLoadError : loadError);
+  const activeFindings = $derived(bucket === 'historical' ? historicalFindings : findings);
+  const visible = $derived((activeFindings ?? []).filter((item) => bucket === 'historical'
     ? item.label === 'historical'
-    : item.label === 'current' && (bucket === 'open' ? !['dismissed_local', 'snoozed'].includes(item.disposition ?? 'untouched') : item.disposition === bucket)));
+    : item.label === 'current' && (bucket === 'open' ? !['dismissed_local', 'snoozed'].includes(item.disposition) : item.disposition === bucket)));
 </script>
 
 <section class="workspace-panel p-3" aria-label="Browse findings">
@@ -29,20 +35,22 @@
   <p class="mt-1 text-xs text-muted">Dismissed and snoozed findings stay available here. Historical findings are read-only.</p>
   <div class="mt-2 flex flex-wrap gap-2" role="group" aria-label="Finding status">
     {#each [['open', 'Open'], ['dismissed_local', 'Dismissed'], ['snoozed', 'Snoozed'], ['historical', 'Historical']] as option}
-      <button type="button" class="workspace-button" aria-pressed={bucket === option[0]} onclick={() => { bucket = option[0] as Bucket; if (bucket === 'historical' && !includeHistorical) onHistorical(true); }}>{option[1]}</button>
+      <button type="button" class="workspace-button" aria-pressed={bucket === option[0]} onclick={() => { bucket = option[0] as Bucket; if (bucket === 'historical') onHistorical(); }}>{option[1]}</button>
     {/each}
   </div>
-  {#if bucket === 'historical' && includeHistorical}
+  {#if bucket === 'historical'}
     <p class="mt-2 text-xs text-muted">Past snapshots only. These findings cannot be changed or promoted.</p>
   {/if}
   {#if error}<p role="alert" class="mt-2 text-danger">{error}</p>{/if}
-  {#if loading}<p class="mt-2 text-sm text-muted">Loading findings…</p>
-  {:else if loadError}
+  {#if activeLoading}<p class="mt-2 text-sm text-muted">Loading findings…</p>
+  {:else if activeError}
     <div class="mt-2" role="alert">
-      <p>Could not load findings: {loadError}</p>
-      <button type="button" class="workspace-button" onclick={onRetry}>Retry finding load</button>
+      <p>Could not load findings: {activeError}</p>
+      <button type="button" class="workspace-button" onclick={bucket === 'historical' ? onHistoricalRetry : onRetry}>Retry finding load</button>
     </div>
-  {:else if findings === null}<p class="mt-2 text-sm text-muted">Waiting for findings from the current snapshot…</p>
+  {:else if activeFindings === null && bucket === 'historical'}
+    <button type="button" class="workspace-button mt-2" onclick={onHistorical}>Load historical findings</button>
+  {:else if activeFindings === null}<p class="mt-2 text-sm text-muted">Waiting for findings from the current snapshot…</p>
   {:else if !visible.length}<p class="mt-2 text-sm text-muted">No {bucket.replace('_local', '').replace('_', ' ')} findings.</p>
   {:else}
     <ul class="mt-3 space-y-3">

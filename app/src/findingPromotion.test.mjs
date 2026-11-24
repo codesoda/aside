@@ -16,7 +16,11 @@ let view;
 let current;
 
 class FakeEventSource {
-  addEventListener() {}
+  static latest;
+  listeners = new Map();
+  constructor() { FakeEventSource.latest = this; }
+  addEventListener(name, listener) { this.listeners.set(name, listener); }
+  emit(name) { this.listeners.get(name)?.(); }
   close() {}
 }
 
@@ -37,7 +41,7 @@ beforeEach(() => {
   globalThis.fetch = async (input, init = {}) => {
     const url = new URL(String(input), 'http://127.0.0.1');
     const method = init.method ?? 'GET';
-    calls.push({ method, path: url.pathname, body: init.body });
+    calls.push({ method, path: url.pathname, search: url.search, body: init.body });
     const handler = routes[`${method} ${url.pathname}`];
     return handler ? handler(url, init) : json({ error: 'not_found', message: `no route ${method} ${url.pathname}` }, 404);
   };
@@ -150,12 +154,65 @@ test('HTTP 408 after a committed promotion replays the original operation', asyn
   assert.equal(document.querySelector('.desktop-conversation [aria-label="Review comment draft"]').value, committed.thread.reviewComment.body);
 });
 
+test('paginated history is isolated from repeated visibility and session refreshes', async () => {
+  const historical = Array.from({ length: 3 }, (_, index) => ({
+    ...structuredClone(findings[1]), label: 'historical',
+    finding: { ...structuredClone(findings[1].finding), id: `old-${index}`, title: `Old finding ${index}` },
+  }));
+  routes['GET /api/v1/analysis/findings'] = (url) => {
+    if (url.searchParams.get('includeHistorical') !== 'true') return json(page([current]));
+    const cursor = Number(url.searchParams.get('cursor') ?? 0);
+    return json({ ...page([historical[cursor]]), hasMore: cursor < 2, nextCursor: cursor < 2 ? String(cursor + 1) : null });
+  };
+  await start();
+  const browser = () => document.querySelector('[aria-label="Browse findings"]');
+  const click = (label) => [...browser().querySelectorAll('button')].find((button) => button.textContent.trim() === label).click();
+  click('Historical');
+  await settle();
+  assert.ok(browser().textContent.includes('Old finding 2'));
+  const historyCalls = () => calls.filter((call) => call.path === '/api/v1/analysis/findings' && call.search.includes('includeHistorical=true'));
+  assert.equal(historyCalls().length, 3);
+  click('Open');
+  for (let index = 0; index < 3; index++) {
+    document.dispatchEvent(new window.Event('visibilitychange'));
+    FakeEventSource.latest.emit('analysis.findings.upserted');
+    await settle();
+    assert.ok(browser().textContent.includes(current.finding.title));
+  }
+  assert.equal(historyCalls().length, 3, 'routine refreshes never request history again');
+  assert.ok(calls.filter((call) => call.path === '/api/v1/analysis/findings' && !call.search.includes('includeHistorical=true')).length >= 7);
+});
+
+test('current refresh completes while historical pagination is pending; stale history is never current', async () => {
+  let releaseHistory;
+  const pendingHistory = new Promise((resolve) => { releaseHistory = resolve; });
+  routes['GET /api/v1/analysis/findings'] = (url) => {
+    if (url.searchParams.get('includeHistorical') !== 'true') return json(page([current]));
+    if (url.searchParams.has('cursor')) return pendingHistory;
+    return json({ ...page([]), hasMore: true, nextCursor: 'next' });
+  };
+  await start();
+  const browser = () => document.querySelector('[aria-label="Browse findings"]');
+  const click = (label) => [...browser().querySelectorAll('button')].find((button) => button.textContent.trim() === label).click();
+  click('Historical');
+  await settle();
+  click('Open');
+  current = { ...current, finding: { ...current.finding, title: 'Fresh current finding' } };
+  document.dispatchEvent(new window.Event('visibilitychange'));
+  await settle();
+  assert.match(browser().textContent, /Fresh current finding/);
+  releaseHistory(json(page([{ ...structuredClone(findings[1]), label: 'historical' }])));
+  await settle();
+  assert.match(browser().textContent, /Fresh current finding/);
+  assert.doesNotMatch(browser().textContent, /Loading findings/);
+});
+
 test('historical load failure is not shown as empty history and can be retried', async () => {
   let historicalAttempts = 0;
   const historical = { ...structuredClone(findings[1]), label: 'historical' };
   routes['GET /api/v1/analysis/findings'] = (url) => {
     if (url.searchParams.get('includeHistorical') !== 'true') return json(page([current]));
-    if (++historicalAttempts === 1) return json({ error: 'unavailable', message: 'Temporary read failure' }, 503);
+    if (++historicalAttempts <= 2) return json({ error: 'unavailable', message: 'Temporary read failure' }, 503);
     return json(page([current, historical]));
   };
   const browser = () => document.querySelector('[aria-label="Browse findings"]');
@@ -166,9 +223,14 @@ test('historical load failure is not shown as empty history and can be retried',
   await settle();
   assert.match(browser().textContent, /Could not load findings/);
   assert.doesNotMatch(browser().textContent, /No historical findings/);
+  click('Open');
+  await settle();
+  assert.ok(browser().textContent.includes(current.finding.title), 'retained current finding remains visible after history fails');
+  click('Historical');
+  await settle();
   click('Retry finding load');
   await settle();
-  assert.equal(historicalAttempts, 2);
+  assert.equal(historicalAttempts, 3);
   assert.ok(browser().textContent.includes(historical.finding.title));
   assert.doesNotMatch(browser().textContent, /Could not load findings/);
 });
