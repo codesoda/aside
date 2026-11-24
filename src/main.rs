@@ -24,6 +24,8 @@ mod update;
 mod util;
 
 #[cfg(test)]
+mod a1_validation;
+#[cfg(test)]
 mod prd_acceptance;
 
 use std::{
