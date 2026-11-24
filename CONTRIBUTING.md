@@ -88,6 +88,15 @@ actionlint .github/workflows/*.yml
 
 The Unix installer tests use a temporary home directory and mocked downloads/build tools, so they do not install Aside into your real home or fetch releases. The `Installer tests` workflow runs this suite on Ubuntu for changes to `install.sh`, `tests/install_test.py`, or the workflow itself; it does not cover `install.ps1`.
 
-For frontend changes, also run the offline demo from an embedded release build (`pnpm -C app build` followed by `cargo build --locked --release`). Copy the executable to a temporary folder and run it there with `demo --no-open` and the isolated data directory. Use the private login URL to check that the UI loads without Vite or Node on the executable's path.
+For frontend changes, build the release binary and run the embedded-UI smoke. It serves `aside demo --no-open` from the binary with an isolated data directory and with Node removed from `PATH`:
+
+```sh
+pnpm -C app install --frozen-lockfile
+pnpm -C app build
+cargo build --locked --release
+bash tests/embedded_asset_smoke.sh target/release/aside
+```
+
+Do not print or commit the private login URL. Copying the executable out of `target/` before the smoke is optional; the script never needs Vite or Node beside the binary.
 
 Do not test GitHub publication against another person's PR. Use the offline demo or fake GitHub runner for mutation tests. See [`aside-prd.md`](docs/plans/aside-prd.md) for the behavior and security contracts.

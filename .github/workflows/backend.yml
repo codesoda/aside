@@ -11,6 +11,8 @@ on:
       - 'build.rs'
       - '.cargo/**'
       - '.github/workflows/backend.yml'
+      - 'app/**'
+      - 'tests/embedded_asset_smoke.sh'
 
 permissions:
   contents: read
@@ -29,3 +31,28 @@ jobs:
       - run: cargo fmt --check
       - run: cargo test --locked
       - run: cargo clippy --locked --all-targets -- -D warnings
+
+  embedded-ui:
+    name: Embedded UI smoke
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: embedded-ui
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+      - name: Build frontend and release binary
+        run: |
+          pnpm -C app install --frozen-lockfile
+          pnpm -C app build
+          cargo build --locked --release
+      - name: Serve embedded UI without Node
+        run: bash tests/embedded_asset_smoke.sh target/release/aside

@@ -46,3 +46,31 @@ pub(super) async fn static_asset(uri: Uri) -> Response {
         None => (StatusCode::NOT_FOUND, "frontend not embedded").into_response(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::{body::to_bytes, http::StatusCode};
+
+    use super::static_asset;
+
+    #[tokio::test]
+    async fn embedded_index_is_served_and_dot_paths_are_rejected() {
+        let response = static_asset("/".parse().unwrap()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 1_000_000).await.unwrap();
+        let text = String::from_utf8_lossy(&body);
+        assert!(
+            text.to_ascii_lowercase().contains("<!doctype html"),
+            "embedded document missing: {text}"
+        );
+        assert!(
+            !text.contains("frontend not embedded"),
+            "index fallback must be the embedded document"
+        );
+
+        for path in ["/../Cargo.toml", "/.git/config", "/assets/../index.html"] {
+            let denied = static_asset(path.parse().unwrap()).await;
+            assert_eq!(denied.status(), StatusCode::NOT_FOUND, "{path}");
+        }
+    }
+}

@@ -23,6 +23,9 @@ mod structure;
 mod update;
 mod util;
 
+#[cfg(test)]
+mod prd_acceptance;
+
 use std::{
     io::{self, IsTerminal, Write},
     net::SocketAddr,
