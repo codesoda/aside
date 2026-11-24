@@ -25,7 +25,6 @@
 //! so contract values this build does not recognise are passed through rather
 //! than collapsed to `unknown`.
 //!
-//! TODO(#26): finding triage mutation (`PATCH .../state`) is not exposed here.
 //! TODO(#34): rerun/cancel endpoints (`POST /analysis/runs`, `.../cancel`).
 //! Findings pages stay in stable first-seen order; the ranked, explainable
 //! review order (#30) is served whole by `GET /api/v1/analysis/queue` (#38).
@@ -410,6 +409,9 @@ pub(super) struct FindingItem {
     latest_applicability: String,
     first_seen_at: String,
     last_seen_at: String,
+    user_state: Option<crate::model::FindingUserState>,
+    disposition: crate::model::UserDisposition,
+    can_promote: bool,
 }
 
 /// `GET /api/v1/analysis/findings`: current findings (`includeHistorical`
@@ -425,6 +427,14 @@ pub(super) async fn findings(
         Ok((|| {
             let mut items = Vec::new();
             let mut excluded = 0;
+            let now = crate::util::now_rfc3339();
+            let mut user_states: std::collections::HashMap<_, _> = read
+                .store
+                .list_finding_user_states(read.pr_id)
+                .map_err(db_error)?
+                .into_iter()
+                .map(|state| (state.finding_id.clone(), state))
+                .collect();
             for stored in read
                 .store
                 .list_findings(read.pr_id, include_historical)
@@ -439,7 +449,18 @@ pub(super) async fn findings(
                     ObservationLabel::Current => "current",
                     ObservationLabel::Historical => "historical",
                 };
-                let key = format!("{}\0{label}", stored.finding.value().id.as_str());
+                let finding = stored.finding.value();
+                let user_state = user_states.remove(&finding.id);
+                let disposition = user_state
+                    .as_ref()
+                    .map_or(crate::model::UserDisposition::Untouched, |state| {
+                        state.effective_disposition(&now)
+                    });
+                let can_promote = stored.label == ObservationLabel::Current
+                    && in_scope(&read, path)
+                    && super::triage::promotion_anchor(finding, &read.head_sha, &read.files)
+                        .is_some();
+                let key = format!("{}\0{label}", finding.id.as_str());
                 items.push((
                     key,
                     FindingItem {
@@ -449,6 +470,9 @@ pub(super) async fn findings(
                         latest_applicability: stored.latest_applicability,
                         first_seen_at: stored.first_seen_at,
                         last_seen_at: stored.last_seen_at,
+                        user_state,
+                        disposition,
+                        can_promote,
                     },
                 ));
             }
@@ -873,20 +897,16 @@ pub(super) async fn queue(State(state): State<AppState>) -> ApiResult<Json<Queue
                 .map_err(db_error)?;
             let findings: Vec<ObservedFinding> = stored.iter().map(ObservedFinding::from).collect();
             let mut relations = Vec::new();
-            let mut user_states = Vec::new();
+            let user_states = read
+                .store
+                .list_finding_user_states(read.pr_id)
+                .map_err(db_error)?;
             for f in &findings {
                 relations.extend(
                     read.store
                         .list_finding_relations(&f.finding.id)
                         .map_err(db_error)?,
                 );
-                if let Some(state) = read
-                    .store
-                    .get_finding_user_state(read.session_id, &f.finding.id)
-                    .map_err(db_error)?
-                {
-                    user_states.push(state);
-                }
             }
             let input = QueueInput {
                 files: &read.file_states,
@@ -895,6 +915,7 @@ pub(super) async fn queue(State(state): State<AppState>) -> ApiResult<Json<Queue
                 relations: &relations,
                 threads: &read.github_threads,
                 user_states: &user_states,
+                now: &crate::util::now_rfc3339(),
                 coverage: &read.summary.sources,
             };
             Ok(QueueView {

@@ -12,6 +12,7 @@ use crate::model::{
     EvidenceKind, FindingKeyInput, FindingKind, FindingSource, NativeSourceKey, RunKeyInput,
     Severity, SeverityRecord, SourceKind, SourceStatus, ValidationRecord, ValidationStatus,
 };
+use crate::store::PromotionAnchor;
 use crate::store::schema::{self, MIGRATIONS};
 
 const REPO: &str = "R_test";
@@ -347,7 +348,7 @@ fn released_v9_drafts_gain_selection_without_reset() {
     // retain all drafts, not reset the database to create selection state.
     store.conn.execute_batch("CREATE TABLE legacy_pending_replies (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, body TEXT NOT NULL, selected INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, reserved_attempt_id TEXT, original_seq INTEGER NOT NULL);
         INSERT INTO legacy_pending_replies VALUES ('reply', 'thread', 'later', 0, 'now', 'now', NULL, 2);
-        ALTER TABLE review_comment_drafts DROP COLUMN publish_selected; ALTER TABLE review_sessions DROP COLUMN selection_revision; ALTER TABLE review_threads DROP COLUMN legacy_reply_seq; DELETE FROM schema_migrations WHERE version = 10;").unwrap();
+        DROP TABLE finding_promotion_operations; ALTER TABLE review_comment_drafts DROP COLUMN publish_selected; ALTER TABLE review_sessions DROP COLUMN selection_revision; ALTER TABLE review_threads DROP COLUMN legacy_reply_seq; DELETE FROM schema_migrations WHERE version >= 10;").unwrap();
     store.conn.pragma_update(None, "user_version", 9).unwrap();
     drop(store);
     let migrated = Store::open(&path).unwrap();
@@ -446,7 +447,8 @@ fn branch_v7_deselected_root_and_deferred_reply_survive_upgrade() {
         ALTER TABLE review_sessions DROP COLUMN selection_revision;
         ALTER TABLE review_sessions ADD COLUMN selection_revision INTEGER NOT NULL DEFAULT 0;
         ALTER TABLE review_comments ADD COLUMN publish_selected INTEGER NOT NULL DEFAULT 1;
-        DELETE FROM schema_migrations WHERE version > 7;
+        DROP TABLE finding_promotion_operations;
+         DELETE FROM schema_migrations WHERE version > 7;
         INSERT INTO repositories VALUES ('repo1', 'github.com', 'acme', 'widget', 'R', 'now');
         INSERT INTO pull_requests VALUES ('pr1', 'repo1', 42, 'title', 'url', 'now');
         INSERT INTO review_sessions (pr_id, created_at, last_opened_at, selection_revision) VALUES ('pr1', 'now', 'now', 8);
@@ -1069,6 +1071,203 @@ impl Store {
 }
 
 #[test]
+fn promotion_is_atomic_replayable_and_terminal_after_discard() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("promotion.db");
+    let mut f = fixture_at(Store::open(&path).unwrap());
+    let snapshot = f.add_snapshot("head", true);
+    let run = f.queue(&snapshot, "p", 0);
+    let b = simple_batch(&run, &["claim"]);
+    let id = b.findings[0].value().id.clone();
+    let anchor = b.findings[0].value().anchor.clone();
+    f.store.commit_analysis_batch(&b).unwrap();
+    f.store.conn.execute("INSERT OR IGNORE INTO review_sessions (pr_id, created_at, last_opened_at) VALUES (?1, 'now', 'now')", [&f.pr]).unwrap();
+    let first = f
+        .store
+        .promote_finding(
+            &f.pr,
+            &id,
+            "op",
+            0,
+            PromotionAnchor {
+                anchor: &anchor,
+                head_sha: "head",
+                line_text: None,
+            },
+        )
+        .unwrap();
+    assert!(first.changed);
+    assert!(!first.draft.selected);
+    assert_eq!(first.state.revision, 1);
+    f.store
+        .upsert_review_comment(&f.pr, &first.thread_id, "edited", None)
+        .unwrap();
+    f.store
+        .set_publish_selection(&f.pr, std::slice::from_ref(&first.draft.id), true)
+        .unwrap();
+    let revision = f.store.review_state(&f.pr).unwrap().selection_revision;
+    drop(f);
+    let mut store = Store::open(&path).unwrap();
+    let replay = store
+        .promote_finding(
+            &first.state.session_id,
+            &id,
+            "op",
+            0,
+            PromotionAnchor {
+                anchor: &anchor,
+                head_sha: "head",
+                line_text: None,
+            },
+        )
+        .unwrap();
+    assert!(!replay.changed);
+    assert_eq!(replay.draft.body, "edited");
+    assert!(replay.draft.selected);
+    assert_eq!(
+        store
+            .review_state(&first.state.session_id)
+            .unwrap()
+            .selection_revision,
+        revision
+    );
+    assert!(
+        store
+            .promote_finding(
+                &first.state.session_id,
+                &id,
+                "other",
+                0,
+                PromotionAnchor {
+                    anchor: &anchor,
+                    head_sha: "head",
+                    line_text: None
+                }
+            )
+            .unwrap_err()
+            .downcast_ref::<RevisionConflict>()
+            .is_some()
+    );
+    store
+        .clear_review_comment(&first.state.session_id, &first.thread_id)
+        .unwrap();
+    assert!(
+        store
+            .promote_finding(
+                &first.state.session_id,
+                &id,
+                "op",
+                0,
+                PromotionAnchor {
+                    anchor: &anchor,
+                    head_sha: "head",
+                    line_text: None
+                }
+            )
+            .is_err()
+    );
+    assert_eq!(
+        store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM finding_promotion_operations",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn promotion_concurrent_cas_and_failed_promotions_leave_no_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("promotion-cas.db");
+    let mut f = fixture_at(Store::open(&path).unwrap());
+    let snapshot = f.add_snapshot("head", true);
+    let run = f.queue(&snapshot, "p", 0);
+    let b = simple_batch(&run, &["claim"]);
+    let id = b.findings[0].value().id.clone();
+    let anchor = b.findings[0].value().anchor.clone();
+    f.store.commit_analysis_batch(&b).unwrap();
+    f.store.conn.execute("INSERT OR IGNORE INTO review_sessions (pr_id, created_at, last_opened_at) VALUES (?1, 'now', 'now')", [&f.pr]).unwrap();
+    let mut bad_anchor = anchor.clone();
+    bad_anchor.current_path = Some("wrong.rs".into());
+    assert!(
+        f.store
+            .promote_finding(
+                &f.pr,
+                &id,
+                "bad",
+                0,
+                PromotionAnchor {
+                    anchor: &bad_anchor,
+                    head_sha: "head",
+                    line_text: None
+                }
+            )
+            .is_err()
+    );
+    assert!(
+        f.store
+            .promote_finding(
+                "other-pr",
+                &id,
+                "bad",
+                0,
+                PromotionAnchor {
+                    anchor: &anchor,
+                    head_sha: "head",
+                    line_text: None
+                }
+            )
+            .is_err()
+    );
+    assert_eq!(f.count("finding_promotion_operations"), 0);
+    assert_eq!(f.count("review_comment_drafts"), 0);
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let threads: Vec<_> = (0..2)
+        .map(|i| {
+            let (path, pr, id, anchor, barrier) = (
+                path.clone(),
+                f.pr.clone(),
+                id.clone(),
+                anchor.clone(),
+                barrier.clone(),
+            );
+            std::thread::spawn(move || {
+                let mut store = Store::open(&path).unwrap();
+                barrier.wait();
+                store
+                    .promote_finding(
+                        &pr,
+                        &id,
+                        &format!("op{i}"),
+                        0,
+                        PromotionAnchor {
+                            anchor: &anchor,
+                            head_sha: "head",
+                            line_text: None,
+                        },
+                    )
+                    .is_ok()
+            })
+        })
+        .collect();
+    assert_eq!(
+        threads
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .filter(|ok| *ok)
+            .count(),
+        1
+    );
+    assert_eq!(f.count("finding_promotion_operations"), 1);
+    assert_eq!(f.count("review_comment_drafts"), 1);
+    assert_eq!(f.count("review_threads"), 1);
+}
+
+#[test]
 fn concurrent_triage_updates_cannot_lose_writes() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cas.db");
@@ -1549,6 +1748,53 @@ fn dispositions_survive_restart_and_use_revisions() {
     assert_eq!(s.put_finding_user_state(&pr, &next, 1).unwrap().revision, 2);
     s.delete_finding_user_state("session", &id).unwrap();
     assert!(s.get_finding_user_state("session", &id).unwrap().is_none());
+}
+
+#[test]
+fn user_state_batch_is_pr_scoped_and_matches_individual_reads() {
+    let mut f = fixture();
+    let snapshot = f.add_snapshot("h", true);
+    let run = f.queue(&snapshot, "p", 0);
+    let batch = simple_batch(&run, &["one", "two"]);
+    f.store.commit_analysis_batch(&batch).unwrap();
+    let ids: Vec<_> = batch
+        .findings
+        .iter()
+        .map(|f| f.value().id.clone())
+        .collect();
+    let mut state = FindingUserState::untouched(ids[0].clone(), &f.pr, "now");
+    state.disposition = UserDisposition::Investigating;
+    state.note = Some("keep".into());
+    let expected = f.store.put_finding_user_state(&f.pr, &state, 0).unwrap();
+    let repo = f
+        .store
+        .resolve_repository("github.com", "acme", "widget", Some(REPO))
+        .unwrap();
+    let other = f
+        .store
+        .upsert_pull_request(&repo.id, 43, "other", "u")
+        .unwrap();
+    for i in 0..150 {
+        f.store.conn.execute(
+            "INSERT INTO finding_user_state (session_id, finding_id, pr_id, disposition, updated_at, revision) VALUES (?1, ?2, ?3, 'dismissed_local', 'now', 1)",
+            rusqlite::params![other, format!("foreign_{i}"), other],
+        ).unwrap();
+    }
+    // A synthetic session with this PR id must not replace the individual
+    // PR-session lookup for the second finding.
+    f.store.conn.execute(
+        "INSERT INTO finding_user_state (session_id, finding_id, pr_id, disposition, updated_at, revision) VALUES ('old_session', ?1, ?2, 'dismissed_local', 'now', 1)",
+        rusqlite::params![ids[1].as_str(), f.pr],
+    ).unwrap();
+    let states = f.store.list_finding_user_states(&f.pr).unwrap();
+    assert_eq!(states, vec![expected.clone()]);
+    for id in &ids {
+        assert_eq!(
+            states.iter().find(|state| &state.finding_id == id),
+            f.store.get_finding_user_state(&f.pr, id).unwrap().as_ref()
+        );
+    }
+    assert_eq!(f.store.list_finding_user_states(&other).unwrap().len(), 150);
 }
 
 #[test]

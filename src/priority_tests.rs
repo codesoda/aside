@@ -13,6 +13,7 @@ use crate::{
 const SSH: &str = "internal/identity/ssh_command.go";
 const CONFIG: &str = "internal/config/config.go";
 const SCRIPT: &str = "script/multiaccount-review/02-repository.sh";
+const NOW: &str = "2026-11-20T00:00:00Z";
 
 struct Fixture {
     files: Vec<FileState>,
@@ -70,6 +71,7 @@ impl Fixture {
             relations: &self.relations,
             threads: &self.threads,
             user_states: &self.user_states,
+            now: NOW,
             coverage: &self.coverage,
         }
     }
@@ -514,6 +516,74 @@ fn locally_dismissed_findings_stay_listed_but_do_not_drive_rank() {
             .findings
             .iter()
             .any(|f| f.attention == AttentionLevel::High)
+    );
+}
+
+#[test]
+fn snooze_expiry_is_effective_at_exact_boundary_without_mutating_state() {
+    let mut fixture = Fixture::load();
+    let finding = fixture
+        .findings
+        .iter()
+        .find(|o| o.finding.anchor.current_path.as_deref() == Some(CONFIG))
+        .unwrap()
+        .finding
+        .id
+        .clone();
+    fixture.user_states.retain(|s| s.finding_id != finding);
+    let state = FindingUserState {
+        disposition: UserDisposition::Snoozed,
+        snoozed_until: Some(NOW.into()),
+        ..FindingUserState::untouched(finding.clone(), "s", NOW)
+    };
+    fixture.user_states.push(state.clone());
+
+    let mut before = fixture.input();
+    before.now = "2026-11-19T23:59:59.999Z";
+    let queue = build_queue(&before);
+    let config = item(&queue, CONFIG);
+    assert_eq!(config.bucket, Bucket::NeedsReview);
+    assert_eq!(config.attention, AttentionLevel::None);
+    assert!(
+        config
+            .findings
+            .iter()
+            .any(|f| f.id == finding && f.disposition == UserDisposition::Snoozed)
+    );
+
+    let queue = fixture.queue();
+    let config = item(&queue, CONFIG);
+    assert_eq!(config.attention, AttentionLevel::High);
+    assert!(
+        config
+            .findings
+            .iter()
+            .any(|f| f.id == finding && f.disposition == UserDisposition::Untouched)
+    );
+    assert_eq!(fixture.user_states.last(), Some(&state));
+    assert_eq!(
+        state.effective_disposition("2026-11-19T19:00:00-05:00"),
+        UserDisposition::Untouched
+    );
+    assert_eq!(
+        state.effective_disposition("invalid"),
+        UserDisposition::Snoozed
+    );
+    let no_deadline = FindingUserState {
+        snoozed_until: None,
+        ..state.clone()
+    };
+    assert_eq!(
+        no_deadline.effective_disposition(NOW),
+        UserDisposition::Snoozed
+    );
+    let dismissed = FindingUserState {
+        disposition: UserDisposition::DismissedLocal,
+        ..state.clone()
+    };
+    assert_eq!(
+        dismissed.effective_disposition(NOW),
+        UserDisposition::DismissedLocal
     );
 }
 

@@ -81,6 +81,8 @@ pub struct QueueInput<'a> {
     /// Native GitHub review threads from the snapshot.
     pub threads: &'a [GithubThread],
     pub user_states: &'a [FindingUserState],
+    /// Explicit evaluation time for read-only snooze expiry.
+    pub now: &'a str,
     /// Every source of the current snapshot (`AnalysisSummary::sources`).
     pub coverage: &'a [SourceCoverage],
 }
@@ -417,7 +419,7 @@ pub fn build_queue(input: &QueueInput<'_>) -> ReviewQueue {
     let dispositions: HashMap<&str, UserDisposition> = input
         .user_states
         .iter()
-        .map(|s| (s.finding_id.as_str(), s.disposition))
+        .map(|s| (s.finding_id.as_str(), s.effective_disposition(input.now)))
         .collect();
     let disposition = |id: &FindingId| {
         dispositions

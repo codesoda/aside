@@ -13,6 +13,7 @@ mod explain_tests;
 mod files;
 mod review;
 mod threads;
+mod triage;
 
 use std::{
     convert::Infallible,
@@ -198,8 +199,7 @@ fn db_error(error: anyhow::Error) -> ApiError {
             "draft is reserved for publication",
         )
     } else if let Some(conflict) = error.downcast_ref::<RevisionConflict>() {
-        // Recoverable: carries the authoritative state to retry against
-        // (analyze.md §12.4). TODO(#26): the triage PATCH that raises it.
+        // Recoverable: carries the authoritative state to retry against.
         let mut api = ApiError::new(
             StatusCode::CONFLICT,
             "revision_conflict",
@@ -247,6 +247,11 @@ pub fn router(state: AppState) -> Router {
         .route("/analysis/queue", get(analysis::queue))
         .route("/analysis/findings", get(analysis::findings))
         .route("/analysis/findings/{id}/evidence", get(analysis::evidence))
+        .route(
+            "/analysis/findings/{id}/state",
+            axum::routing::patch(triage::update),
+        )
+        .route("/analysis/findings/{id}/promote", post(triage::promote))
         .route("/github-feedback/threads", get(analysis::feedback))
         .route("/github-feedback/checks", get(analysis::checks))
         .route("/github-feedback/records", get(analysis::records))

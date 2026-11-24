@@ -1,5 +1,4 @@
 import type { Evidence } from './generated/Evidence';
-import type { FindingItem } from './generated/FindingItem';
 import type { Page } from './generated/Page';
 import type { PublishBlocker } from './generated/PublishBlocker';
 import type { PublishOutcome } from './generated/PublishOutcome';
@@ -12,6 +11,9 @@ import type { SessionView } from './generated/SessionView';
 import type { Verdict } from './generated/Verdict';
 import type { ReviewThread } from './generated/ReviewThread';
 import type { GithubThread } from './generated/GithubThread';
+import type { FindingItem } from './generated/FindingItem';
+import type { FindingUserState } from './generated/FindingUserState';
+import type { ReviewCommentDraft } from './generated/ReviewCommentDraft';
 
 export type { Evidence, FindingItem, PublishBlocker, PublishOutcome, PublishPlan, QueueView, SessionView, Verdict };
 
@@ -209,8 +211,25 @@ export function fetchFeedbackRecords(): Promise<{ items: NativeFeedbackRecord[];
 }
 
 /** Current findings, including ignored files so they can be revealed. */
-export function fetchFindings(): Promise<{ items: FindingItem[]; last: Page<FindingItem> }> {
-  return fetchAllPages<FindingItem>('/api/v1/analysis/findings?includeIgnored=true');
+export function fetchFindings(includeHistorical = false): Promise<{ items: FindingItem[]; last: Page<FindingItem> }> {
+  return fetchAllPages<FindingItem>(`/api/v1/analysis/findings?includeIgnored=true${includeHistorical ? '&includeHistorical=true' : ''}`);
+}
+
+export function setFindingState(findingId: string, expectedRevision: number, disposition: 'untouched' | 'dismissed_local' | 'snoozed', snoozedUntil?: string): Promise<{ state: FindingUserState }> {
+  const path = `/api/v1/analysis/findings/${encodeURIComponent(findingId)}/state`;
+  return requestFinding<{ state: FindingUserState }>(path, 'PATCH', { expectedRevision, disposition, ...(snoozedUntil ? { snoozedUntil } : {}) });
+}
+
+export function promoteFinding(findingId: string, expectedRevision: number, operationId: string): Promise<{ state: FindingUserState; thread: ConversationThread; draft: ReviewCommentDraft }> {
+  return requestFinding(`/api/v1/analysis/findings/${encodeURIComponent(findingId)}/promote`, 'POST', { expectedRevision, operationId });
+}
+
+async function requestFinding<T>(path: string, method: 'PATCH' | 'POST', body: object): Promise<T> {
+  const response = await fetch(path, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) throw new ApiError(response.status, payload?.message ?? `${method} ${path} failed: ${response.status}`, payload?.error ?? '', payload?.details);
+  if (!payload) throw new Error(`Invalid response to ${method} ${path}`);
+  return payload as T;
 }
 
 export async function fetchEvidence(findingId: string): Promise<Evidence[]> {
@@ -252,7 +271,7 @@ export function watchSession(
     'analysis.run.queued', 'analysis.run.started', 'analysis.run.succeeded',
     'analysis.run.partial', 'analysis.run.skipped', 'analysis.run.cancelled',
     'analysis.run.failed', 'analysis.run.stale', 'analysis.findings.upserted',
-    'analysis.findings.invalidated',
+    'analysis.findings.invalidated', 'analysis.finding.state_changed',
   ]) {
     source.addEventListener(event, refresh);
   }
