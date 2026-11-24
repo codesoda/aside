@@ -63,6 +63,16 @@ jobs:
       - name: Build release CLI
         run: cargo build --locked --release --target ${{ matrix.target }}
 
+      - name: Smoke embedded UI without Node
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            bin="target/${{ matrix.target }}/release/aside.exe"
+          else
+            bin="target/${{ matrix.target }}/release/aside"
+          fi
+          bash tests/embedded_asset_smoke.sh "$bin"
+
       - name: Package Unix binary
         if: runner.os != 'Windows'
         shell: bash
