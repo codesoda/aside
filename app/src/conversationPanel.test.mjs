@@ -42,6 +42,16 @@ for (const operation of ['reply', 'save', 'clear']) {
     else assert.equal(drafts.A.outgoing, operation === 'clear' ? '' : 'A outgoing');
   });
 }
+test('untrusted comment markup stays text', () => {
+  const { props, update } = setup();
+  const payload = '<script>alert(1)</script><img src=x onerror=alert(1)>';
+  props.thread = { ...thread('A'), comments: [{ id: 'c', author: 'evil', authorKind: 'github', publishState: 'published', body: payload }] };
+  update();
+  assert.equal(document.querySelector('script'), null);
+  assert.equal(document.querySelector('img'), null);
+  assert.match(document.body.textContent, /<script>alert\(1\)<\/script>/);
+  assert.match(document.body.innerHTML, /&lt;script&gt;/);
+});
 test('native thread offers an outgoing reply without local resolution', () => {
   const { props, update } = setup(); props.thread = { ...thread('A'), source: 'github', githubThreadId: 'GH_1' }; update();
   assert.ok(document.querySelector('[aria-label="Review comment draft"]'));
