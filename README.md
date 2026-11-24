@@ -57,15 +57,15 @@ irm https://raw.githubusercontent.com/codesoda/aside/main/install.ps1 | iex
 
 **These commands execute remote code.** Use them only if you trust the source; for a safer path, download and inspect the [Unix script](https://raw.githubusercontent.com/codesoda/aside/main/install.sh) or [PowerShell script](https://raw.githubusercontent.com/codesoda/aside/main/install.ps1) before running it. Agents must ask for consent and preferably inspect the script; they must not auto-run either command. The Windows quick installer currently supports x86-64 only. For other architectures, [build from source](#install-from-source) rather than using a release installer.
 
-The installer installs Aside and its agent skill. Inspect is not required for native review and is not installed by default. After installation, it offers an optional live example (`[y/N]`) with `claude`, `codex`, or `pi`; declining does not start it. A live PR requires [GitHub CLI (`gh`)](https://cli.github.com/) authentication (`gh auth login`). The bundled offline demo (`aside demo`) is separate and does not require `gh`.
+The installer installs Aside and its agent skill, then attempts to install the standalone Inspect executable. Aside does not need Inspect for native review. After installation, it offers an optional live example (`[y/N]`) with `claude`, `codex`, or `pi`; declining does not start it. A live PR requires [GitHub CLI (`gh`)](https://cli.github.com/) authentication (`gh auth login`). The bundled offline demo (`aside demo`) is separate and does not require `gh`.
 
 The installers resolve the [latest stable Aside release](https://github.com/codesoda/aside/releases/latest) and verify the matching asset against published SHA-256 checksums. If no stable release or matching asset is available, use the source-build instructions below. A source install requires an explicit `sh install.sh --from-source` or `./install.ps1 -FromSource` from the checkout.
 
-### Optional: install Inspect separately
+### Skip Inspect
 
-If you choose to install Inspect, download and review the installer first. Then run `sh install.sh --with-inspect` on macOS ARM or Linux x86-64, or `.\install.ps1 -WithInspect` on Windows x86-64. These flags also work with the source-install flags.
+To install only Aside and its agent skill, download and review the installer first. Then run `sh install.sh --without-inspect` on macOS ARM or Linux x86-64, or `.\install.ps1 -WithoutInspect` on Windows x86-64. These flags also work with the source-install flags.
 
-The installer downloads the standalone Inspect v0.1.1 executable directly from [Inspect’s GitHub Releases](https://github.com/Ataraxy-Labs/inspect/releases/tag/v0.1.1) and checks its pinned SHA-256. Inspect has its own [FSL-1.1-ALv2 licence](https://github.com/Ataraxy-Labs/inspect/blob/v0.1.1/LICENSE.md). Aside does not bundle or run Inspect. Without the opt-in flag, existing Inspect installations are left alone. If the optional download or verification fails, Aside stays installed. See the [Inspect evaluation](docs/inspect-evaluation.md).
+The installer downloads the standalone Inspect v0.1.1 executable directly from [Inspect’s GitHub Releases](https://github.com/Ataraxy-Labs/inspect/releases/tag/v0.1.1) and checks its pinned SHA-256. Inspect has its own [FSL-1.1-ALv2 licence](https://github.com/Ataraxy-Labs/inspect/blob/v0.1.1/LICENSE.md). Aside does not bundle or run Inspect. Skipping Inspect leaves existing copies untouched. The default installer does not replace a different existing Inspect executable. If the optional download or verification fails, Aside stays installed. See the [Inspect evaluation](docs/inspect-evaluation.md).
 
 ### Prerequisites for building from source
 

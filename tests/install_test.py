@@ -138,8 +138,8 @@ esac
         finally:
             os.close(master)
 
-    def test_verified_install_skill_and_noninteractive_demo(self):
-        result = self.run_installer()
+    def test_without_inspect_installs_skill_without_probe_or_demo(self):
+        result = self.run_installer('--without-inspect')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.home / 'calls').read_text(), '--version\nskill\n')
         self.assertNotIn('sample review?', result.stdout)
@@ -151,13 +151,16 @@ esac
         self.assertNotIn('Inspect', result.stdout)
         self.assertFalse((self.home / 'inspect-requested').exists())
 
-    def test_opted_in_installs_verified_inspect_without_executing_it(self):
+    def mock_inspect_hash(self):
         # The official v0.1.1 Linux hash is pinned, not taken from a downloaded manifest.
         official_hash = '99cf4ea2a2a1048d8e9369a6a5a11e5f84ee3f3c706e0bde072f9b2bd44e96ba'
         self.mock('sha256sum', f'''#!/bin/sh
 case "$1" in *inspect-linux-x86_64) printf '{official_hash}  %s\\n' "$1" ;; *) shasum -a 256 "$1" ;; esac
 ''')
-        result = self.run_installer('--with-inspect')
+
+    def test_default_installs_verified_inspect_without_executing_it(self):
+        self.mock_inspect_hash()
+        result = self.run_installer()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((self.home / 'inspect-requested').exists())
         self.assertIn('FSL-1.1-ALv2', result.stdout)
@@ -166,6 +169,18 @@ case "$1" in *inspect-linux-x86_64) printf '{official_hash}  %s\\n' "$1" ;; *) s
         self.assertEqual(os.readlink(self.home / '.local/bin/inspect'),
                          str(self.home / '.aside/bin/inspect'))
         self.assertEqual((self.home / 'calls').read_text(), '--version\nskill\n')
+
+    def test_inspect_flags_reject_duplicates_and_conflicts(self):
+        for options in (('--with-inspect', '--with-inspect'),
+                        ('--without-inspect', '--without-inspect'),
+                        ('--with-inspect', '--without-inspect'),
+                        ('--without-inspect', '--with-inspect')):
+            with self.subTest(options=options):
+                result = self.run_installer(*options)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('Inspect option', result.stderr)
+                self.assertFalse((self.home / 'calls').exists())
+                self.assertFalse((self.home / 'inspect-requested').exists())
 
     def test_opted_in_reuses_validated_binary_and_link_without_network(self):
         managed = self.home / '.aside/bin'
@@ -311,13 +326,28 @@ fi
         source.chmod(0o755)
         self.mock('cargo', '#!/bin/sh\n[ "$*" = "build --locked --release" ]\n')
         self.mock('pnpm', '#!/bin/sh\nexit 0\n')
-        self.mock('curl', '#!/bin/sh\nprintf attempted > "$HOME/source-download"\nexit 99\n')
+        self.mock_inspect_hash()
+        self.mock('curl', '''#!/bin/sh
+case " $* " in
+  *inspect-linux-x86_64*)
+    printf attempted > "$HOME/inspect-requested"
+    for arg do
+      if [ "$prev" = '-o' ]; then dest=$arg; fi
+      prev=$arg
+    done
+    cp "$FIXTURES/inspect" "$dest"
+    printf 200 ;;
+  *) printf attempted > "$HOME/source-download"; exit 99 ;;
+esac
+''')
         result = self.run_installer('--from-source')
         self.assertFalse((self.home / 'source-download').exists())
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.home / 'calls').read_text(), '--version\nskill\n')
-        self.assertFalse((self.home / '.aside/bin/inspect').exists())
-        self.assertFalse((self.home / '.local/bin/inspect').is_symlink())
+        self.assertTrue((self.home / 'inspect-requested').exists())
+        self.assertEqual((self.home / '.aside/bin/inspect').read_bytes(), self.inspect_binary)
+        self.assertEqual(os.readlink(self.home / '.local/bin/inspect'),
+                         str(self.home / '.aside/bin/inspect'))
 
     def test_checkout_still_downloads_latest_by_default(self):
         (self.root / 'Cargo.toml').write_text('[package]\nname="aside"\n')

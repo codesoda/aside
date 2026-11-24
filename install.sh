@@ -186,12 +186,16 @@ sample_review() {
 }
 
 from_source=0
-with_inspect=0
+with_inspect=1
+inspect_option=
 for option do
   case "$option" in
     --from-source) [ "$from_source" = 0 ] || fail 'duplicate --from-source'; from_source=1 ;;
-    --with-inspect) [ "$with_inspect" = 0 ] || fail 'duplicate --with-inspect'; with_inspect=1 ;;
-    *) fail 'usage: install.sh [--from-source] [--with-inspect]' ;;
+    --with-inspect|--without-inspect)
+      [ -z "$inspect_option" ] || fail "conflicting or duplicate Inspect option: $option"
+      inspect_option=$option
+      [ "$option" != --without-inspect ] || with_inspect=0 ;;
+    *) fail 'usage: install.sh [--from-source] [--with-inspect|--without-inspect]' ;;
   esac
 done
 

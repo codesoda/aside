@@ -1,4 +1,4 @@
-param([switch] $FromSource, [switch] $WithInspect)
+param([switch] $FromSource, [switch] $WithInspect, [switch] $WithoutInspect)
 
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Net.Http
@@ -164,6 +164,7 @@ function Install-Inspect {
 }
 
 try {
+    if ($WithInspect -and $WithoutInspect) { throw 'Cannot specify both -WithInspect and -WithoutInspect' }
     # Keep the existing Windows x64-only installer scope, including source mode.
     $Target = Get-Target
     if ($Target -ne 'x86_64-pc-windows-msvc') { throw 'This installer supports Windows x64 only; Windows ARM64 is not supported' }
@@ -219,7 +220,7 @@ try {
     # User PATH changes do not update this PowerShell process or agents launched from it.
     $env:Path = "$InstallDir;$env:Path"
     Write-Host "Installed aside at $Binary."
-    if ($WithInspect) {
+    if (-not $WithoutInspect -and (-not $PSBoundParameters.ContainsKey('WithInspect') -or $WithInspect)) {
         try { Install-Inspect }
         catch { Write-Warning "Inspect installation failed; Aside remains installed: $_" }
     }

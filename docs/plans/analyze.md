@@ -372,7 +372,7 @@ Detect changes to exported/public signatures, schema files, database migrations,
 
 ## 7. `ataraxy-labs/inspect` integration: exact intent and constraints
 
-**Evaluation decision (#37):** Aside does not bundle or invoke Inspect. An explicit installer option downloads the standalone, checksum-pinned executable from upstream; the default install skips it. The native structural engine remains the shipping path. See the [evaluation record](../inspect-evaluation.md) for the licence, source contract, sandbox gaps and benchmark. The options and command shapes below describe a possible future integration, not shipped behavior.
+**Evaluation decision (#37):** Aside does not bundle or invoke Inspect. By default, the installers try to download the standalone, checksum-pinned executable from upstream. Users can skip it, and it is not required for installation or review. The native structural engine remains the shipping path. See the [evaluation record](../inspect-evaluation.md) for the licence, source contract, sandbox gaps and benchmark. The options and command shapes below describe a possible future integration, not shipped behavior.
 
 Repository: <https://github.com/ataraxy-labs/inspect>. The upstream documentation describes Rust/Tree-sitter-based **entity-level classification, dependency graphs, blast-radius scoring, independent change grouping, JSON output, six MCP tools and optional LLM-powered review**. These are different capabilities and must remain separate in Aside's user settings and provenance.
 
